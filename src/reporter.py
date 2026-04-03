@@ -406,8 +406,8 @@ def run_and_report(
 
         step_data.append({
             'step': step,
-            'obs': obs,
-            'obs_after': obs_after,
+            'obs': {k: v.copy() for k, v in obs.items()},
+            'obs_after': {k: v.copy() for k, v in obs_after.items()},
             'state': state,
             'action': action_name,
             'delta': delta,

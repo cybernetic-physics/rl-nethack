@@ -53,9 +53,10 @@ def serialize_game_data(result: dict) -> dict:
         state = sd['state']
         delta = sd['delta']
 
-        # Map before action
-        map_text = render_map_text(obs['chars'])
-        player_pos = find_player_pos(obs['chars'])
+        # Map: use obs_after (state after action) so map shows where player moved TO
+        map_obs = obs_after if obs_after is not None else obs
+        map_text = render_map_text(map_obs['chars'])
+        player_pos = find_player_pos(map_obs['chars'])
 
         # Build step info
         step_info = {
