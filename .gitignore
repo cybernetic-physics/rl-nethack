@@ -1,0 +1,11 @@
+.env
+deploy/key.pem
+*.safetensors
+*.bin
+wandb/
+__pycache__/
+*.pyc
+.pytest_cache/
+output/
+data/
+*.egg-info/
