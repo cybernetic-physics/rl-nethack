@@ -270,12 +270,25 @@ body {{
 
 /* === MAIN LAYOUT === */
 .replay-layout {{
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
   gap: 15px;
+  align-items: flex-start;
+}}
+.map-col {{
+  width: 42%;
+  flex-shrink: 0;
+  position: sticky;
+  top: 10px;
+  z-index: 10;
+}}
+.info-col {{
+  width: 58%;
+  min-width: 0;
+  flex-shrink: 0;
 }}
 @media (max-width: 1000px) {{
-  .replay-layout {{ grid-template-columns: 1fr; }}
+  .replay-layout {{ flex-direction: column; }}
+  .map-col, .info-col {{ width: 100%; position: static; }}
 }}
 
 /* === MAP PANEL === */
@@ -298,8 +311,8 @@ body {{
   padding: 10px;
   font-size: 13px;
   line-height: 15px;
-  min-height: 200px;
-  overflow: auto;
+  height: 420px;
+  overflow: hidden;
   white-space: pre;
   position: relative;
 }}
@@ -334,6 +347,23 @@ body {{
 }}
 @keyframes fadein {{
   from {{ color: #0d1117; }}
+}}
+/* Trail: fading path showing last ~5 player positions */
+.map-char.trail {{
+  border-radius: 2px;
+}}
+.map-char.trail-age-1 {{ background: rgba(88,166,255,0.22); }}
+.map-char.trail-age-2 {{ background: rgba(88,166,255,0.16); }}
+.map-char.trail-age-3 {{ background: rgba(88,166,255,0.11); }}
+.map-char.trail-age-4 {{ background: rgba(88,166,255,0.07); }}
+.map-char.trail-age-5 {{ background: rgba(88,166,255,0.04); }}
+/* Tile flash: brief pulse when a tile changes */
+@keyframes tilePulse {{
+  0% {{ background: rgba(255,255,100,0.5); }}
+  100% {{ background: transparent; }}
+}}
+.map-char.tile-flash {{
+  animation: tilePulse 0.6s ease-out;
 }}
 
 /* === HP BAR === */
@@ -556,6 +586,10 @@ let isPlaying = false;
 let playSpeed = 1000; // ms
 let playTimer = null;
 
+// Persistent map grid state per game
+const mapGrids = {{}};      // gi -> {{ rows, cols, spans:[][] }}
+const prevMapText = {{}};     // gi -> previous map text for change detection
+
 // ===== INIT =====
 function init() {{
   // Set stats
@@ -624,20 +658,23 @@ function buildGamePanelHTML(game, gi) {{
 
     <!-- Main replay layout -->
     <div class="replay-layout">
-      <!-- Left: Map -->
-      <div class="map-panel">
-        <div class="panel-title">&#128506; Dungeon Map</div>
-        <div class="map-container" id="map-${{gi}}"></div>
-        <div class="hp-section">
-          <div class="hp-bar-outer">
-            <div class="hp-bar-fill" id="hp-fill-${{gi}}"></div>
-            <div class="hp-bar-text" id="hp-text-${{gi}}">HP: ?/?</div>
+      <!-- Left: Map (fixed viewport) -->
+      <div class="map-col">
+        <div class="map-panel">
+          <div class="panel-title">&#128506; Dungeon Map</div>
+          <div class="map-container" id="map-${{gi}}"></div>
+          <div class="hp-section">
+            <div class="hp-bar-outer">
+              <div class="hp-bar-fill" id="hp-fill-${{gi}}"></div>
+              <div class="hp-bar-text" id="hp-text-${{gi}}">HP: ?/?</div>
+            </div>
           </div>
         </div>
       </div>
 
-      <!-- Right: Info -->
-      <div class="info-panel">
+      <!-- Right: Info (scrollable) -->
+      <div class="info-col">
+        <div class="info-panel">
         <!-- Action -->
         <div class="info-card">
           <div class="panel-title">&#127918; Action &amp; Outcome</div>
@@ -663,6 +700,7 @@ function buildGamePanelHTML(game, gi) {{
           </div>
         </div>
       </div>
+      </div>
     </div>
 
     <!-- Step Timeline -->
@@ -686,8 +724,8 @@ function renderStep(gi, si) {{
   const pct = game.total_steps > 0 ? ((si + 1) / game.total_steps * 100) : 0;
   document.getElementById('progress-' + gi).style.width = pct + '%';
 
-  // Render map
-  renderMap(gi, step);
+  // Render map (persistent grid, updates in-place)
+  renderMap(gi, step, si);
 
   // HP bar
   renderHP(gi, step);
@@ -702,32 +740,97 @@ function renderStep(gi, si) {{
   renderTimeline(gi, si);
 }}
 
-function renderMap(gi, step) {{
-  const container = document.getElementById('map-' + gi);
-  const mapText = step.map;
-  const playerPos = step.player_pos;
-  const lines = mapText.split('\\n');
+function initMapGrid(gi) {{
+  const game = GAMES[gi];
+  let maxRows = 0, maxCols = 0;
+  game.steps.forEach(step => {{
+    const lines = step.map.split('\\n');
+    maxRows = Math.max(maxRows, lines.length);
+    lines.forEach(line => {{ maxCols = Math.max(maxCols, line.length); }});
+  }});
 
-  let html = '';
-  lines.forEach((line, rowIdx) => {{
-    let lineHtml = '<span class="map-line">';
-    for (let colIdx = 0; colIdx < line.length; colIdx++) {{
-      const ch = line[colIdx];
+  const container = document.getElementById('map-' + gi);
+  container.innerHTML = '';
+  const spans = [];
+  for (let r = 0; r < maxRows; r++) {{
+    const rowSpans = [];
+    const lineSpan = document.createElement('span');
+    lineSpan.className = 'map-line';
+    for (let c = 0; c < maxCols; c++) {{
+      const sp = document.createElement('span');
+      sp.className = 'map-char unseen';
+      sp.textContent = ' ';
+      lineSpan.appendChild(sp);
+      rowSpans.push(sp);
+    }}
+    container.appendChild(lineSpan);
+    if (r < maxRows - 1) container.appendChild(document.createTextNode('\\n'));
+    spans.push(rowSpans);
+  }}
+  mapGrids[gi] = {{ rows: maxRows, cols: maxCols, spans }};
+  prevMapText[gi] = '';
+}}
+
+function renderMap(gi, step, stepIndex) {{
+  if (!mapGrids[gi]) initMapGrid(gi);
+
+  const grid = mapGrids[gi];
+  const game = GAMES[gi];
+  const lines = step.map.split('\\n');
+  const playerPos = step.player_pos;
+  const prevText = prevMapText[gi];
+  const prevLines = prevText ? prevText.split('\\n') : [];
+
+  // Build trail from previous steps (last 5 positions before current)
+  const trailMap = {{}}; // "r,c" -> age (1=newest, 5=oldest)
+  const trailLen = 5;
+  for (let i = Math.max(0, stepIndex - trailLen); i < stepIndex; i++) {{
+    const pp = game.steps[i] && game.steps[i].player_pos;
+    if (pp) {{
+      const key = pp[0] + ',' + pp[1];
+      if (!trailMap[key]) {{
+        trailMap[key] = stepIndex - i;
+      }}
+    }}
+  }}
+
+  for (let r = 0; r < grid.rows; r++) {{
+    const line = r < lines.length ? lines[r] : '';
+    const prevLine = r < prevLines.length ? prevLines[r] : '';
+    for (let c = 0; c < grid.cols; c++) {{
+      const ch = c < line.length ? line[c] : ' ';
+      const prevCh = c < prevLine.length ? prevLine[c] : ' ';
+      const span = grid.spans[r][c];
+
       let cls = CHAR_STYLES[ch] || 'unseen';
       if (isMonsterChar(ch)) cls = 'monster';
       if (ch === 'I') cls = 'unseen';
 
-      // Highlight player
-      const isPlayer = playerPos && rowIdx === playerPos[0] && colIdx === playerPos[1];
+      const isPlayer = playerPos && r === playerPos[0] && c === playerPos[1];
       if (isPlayer) cls = 'player';
 
-      const escaped = ch.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      lineHtml += '<span class="map-char ' + cls + '">' + escaped + '</span>';
+      // Trail highlight (not on current player position)
+      let trailCls = '';
+      if (!isPlayer) {{
+        const tKey = r + ',' + c;
+        const age = trailMap[tKey];
+        if (age) trailCls = ' trail trail-age-' + Math.min(age, 5);
+      }}
+
+      // Detect changed tiles: newly visible, entity appeared/disappeared
+      let flashCls = '';
+      const becameVisible = (prevCh === ' ' || !prevCh) && ch !== ' ' && cls !== 'unseen';
+      const entityChanged = prevCh !== ch && ch !== ' ' && prevCh !== ' ' &&
+                            (isMonsterChar(ch) || '$?!/='.includes(ch) ||
+                             isMonsterChar(prevCh) || '$?!/='.includes(prevCh));
+      if (becameVisible || entityChanged) flashCls = ' tile-flash';
+
+      span.textContent = ch;
+      span.className = 'map-char ' + cls + trailCls + flashCls;
     }}
-    lineHtml += '</span>\\n';
-    html += lineHtml;
-  }});
-  container.innerHTML = html;
+  }}
+
+  prevMapText[gi] = step.map;
 }}
 
 function renderHP(gi, step) {{
@@ -852,7 +955,7 @@ function switchGame(gi) {{
     panel.classList.toggle('active', i === gi);
   }});
 
-  // Render first step
+  // Render first step (grid will init if needed)
   currentStep = 0;
   renderStep(gi, 0);
 }}
