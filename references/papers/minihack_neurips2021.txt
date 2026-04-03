@@ -1,0 +1,3964 @@
+MiniHack the Planet: A Sandbox for Open-Ended
+Reinforcement Learning Research
+
+arXiv:2109.13202v2 [cs.LG] 16 Nov 2021
+
+Mikayel Samvelyan+! Robert Kirk! Vitaly Kurin# Jack Parker-Holder# Minqi Jiang+!
+Eric Hambro+ Fabio Petroni+ Heinrich Küttler+ Edward Grefenstette+! Tim Rocktäschel+!
+
++ Facebook AI Research ! University College London # University of Oxford
+{samvelyan,rockt}@fb.com
+
+Abstract
+Progress in deep reinforcement learning (RL) is heavily driven by the availability
+of challenging benchmarks used for training agents. However, benchmarks that
+are widely adopted by the community are not explicitly designed for evaluating
+specific capabilities of RL methods. While there exist environments for assessing
+particular open problems in RL (such as exploration, transfer learning, unsupervised environment design, or even language-assisted RL), it is generally difficult
+to extend these to richer, more complex environments once research goes beyond
+proof-of-concept results. We present MiniHack, a powerful sandbox framework
+for easily designing novel RL environments.1 MiniHack is a one-stop shop for
+RL experiments with environments ranging from small rooms to complex, procedurally generated worlds. By leveraging the full set of entities and environment
+dynamics from NetHack, one of the richest grid-based video games, MiniHack
+allows designing custom RL testbeds that are fast and convenient to use. With
+this sandbox framework, novel environments can be designed easily, either using a
+human-readable description language or a simple Python interface. In addition to
+a variety of RL tasks and baselines, MiniHack can wrap existing RL benchmarks
+and provide ways to seamlessly add additional complexity.
+
+1
+
+Introduction
+
+Advancing deep reinforcement learning [RL, 52] methods goes hand in hand with developing
+challenging benchmarks for evaluating these methods. In particular, simulation environments like the
+Arcade Learning Environment [ALE, 6] and the MuJoCo physics simulator [54] have driven progress
+in model-free RL and continuous control respectively. However, after several years of sustained
+improvement, results in these environments have started to reach superhuman performance [18, 61, 3]
+while many open problems in RL remain [16, 27, 25]. To make further progress, novel challenging
+RL environments and testbeds are needed.
+On one hand, there are popular RL environments such as Atari [7], StarCraft II [57], DotA 2 [41],
+Procgen [13], Obstacle Tower [29] and NetHack [33] that consist of entire games, but lack the
+ability to test specific components or open problems of RL methods in well-controlled proof-ofconcept test cases. On the other hand, small-scale tightly controlled RL environments such as
+MiniGrid [12], DeepMind Lab [5], Alchemy [58], MetaWorld [60], and bsuite [43] have emerged
+that enable researchers to prototype their RL methods as well as to create custom environments
+to test specific open research problems (such as exploration, credit assignment, and memory) in
+1
+
+Code available at https://github.com/facebookresearch/minihack
+
+35th Conference on Neural Information Processing Systems (NeurIPS 2021) Track on Datasets and Benchmarks.
+
+Figure 1: Examples of procedurally generated environments using the des-file format. (Top):
+MAZEWALK command applied on a 15x15 grid, (Middle) corridors generated via RANDOM_CORRIDOR,
+(Bottom): environments generated using the code snippet from Figure 2.
+isolation. However, once specific research hypotheses are verified in these controllable simplified
+environments, RL practitioners find themselves between a rock and a hard place. Systematically
+extending such environments and gradually dropping simplifying assumptions can require arduous
+engineering and excessive time commitment, while opting for more challenging benchmarks [e.g.
+33] often deprives researchers of a controllable path for assessing subsequent hypotheses. While
+frameworks like PyVGDL [48], GVGAI [44], and Griddly [4] can be used to design custom testbeds,
+creating complex environments with rich entities and environment dynamics would still require
+substantial engineering effort as complex environment interactions would have to be designed from
+scratch. Thus, there is a gap in terms of a framework that allows one to easily specify a suite of rich,
+gradually more difficult tasks, while also providing a large set of entities with complex environment
+interactions ready to be used to implement these tasks.
+To fill this gap, we present MiniHack, a sandbox framework for easily designing novel RL environments and enriching existing ones. At the core of MiniHack are description files for defining
+procedurally generated worlds via the powerful domain-specific language (DSL) of the game of
+NetHack [47]. The full game of NetHack, arguably the richest gridworld benchmark in RL [33], is
+not suitable for answering specific research questions in isolation. However, NetHack’s DSL allows
+MiniHack to tap into the richness of the game with its hundreds of pre-implemented entities and
+the complex interaction mechanics between them [38]. Furthermore, this DSL is flexible enough to
+easily build a wide range of testbeds, creating rich and diverse custom environments using only a few
+lines of human-readable code (see examples in Figure 1). Once written, either directly or using a
+convenient Python interface, MiniHack compiles the provided description files and wraps them as
+standard Gym environments [8].
+The clear taxonomy of increasingly difficult tasks, the availability of multi-modal observations (symbolic, pixel-based, and textual), its speed and ease of use, make MiniHack an appealing framework
+for a variety of different RL problems. In particular, MiniHack could be used to make progress in
+areas such as unsupervised skill discovery, unsupervised environment design, transfer learning, and
+language-assisted RL. In addition to a broad range of environments that can easily be designed in the
+MiniHack framework, we also provide examples on how to import other popular RL benchmarks,
+such as MiniGrid [12] or Boxoban [21], to the MiniHack planet. Once ported, these environments
+can easily be extended by adding several layers of complexity from NetHack (e.g. monsters, objects,
+dungeon features, stochastic environment dynamics, etc) with only a few lines of code.
+In order to get started with MiniHack environments, we provide a variety of baselines using frameworks such as TorchBeast [32] and RLlib [34], as well as best practices for benchmarking (see
+Section 3.5). Furthermore, we demonstrate how it is possible to use MiniHack for unsupervised
+environment design, with a demonstration of the recently proposed PAIRED algorithm [14]. Lastly,
+we provide baseline learning curves in Weights&Biases format2 for all of our experiments and a
+detailed documentation of the framework.3
+2
+3
+
+https://wandb.ai/minihack
+https://minihack.readthedocs.io
+
+2
+
+In summary, this paper makes the following core contributions: (i) we present MiniHack, a sandbox
+RL framework that makes it easy for users to create new complex environments, (ii) we release a
+diverse suite of existing tasks, making it possible to test a variety of components of RL algorithms,
+with a wide range of complexity, (iii) we showcase MiniHack’s ability to port existing gridworld
+environments and easily enrich them with additional challenges using concepts from NetHack, and
+(iv) we provide a set of baseline agents for testing a wide range of RL agent capabilities that are
+suitable for a variety of computational budgets.
+
+2
+
+Background: NetHack and the NetHack Learning Environment
+
+The NetHack Learning Environment [NLE, 33] is a Gym interface [8] to the game of NetHack [47].
+NetHack is among the oldest and most popular terminal-based games. In NetHack, players find
+themselves in randomly generated dungeons where they have to descend to the bottom of over 50
+procedurally generated levels, retrieving a special object and thereafter escape the dungeon the way
+they came, overcoming five difficult final levels. Actions are taken in a turn-based fashion, and
+the game has many stochastic events (e.g. when attacking monsters). Despite the visual simplicity,
+NetHack is widely considered as one of the hardest games in history [53]. It often takes years for
+a human player to win the game for the first time despite consulting external knowledge sources,
+such as the NetHack Wiki [38]. The dynamics of the game require players to explore the dungeon,
+manage their resources, and learn about the many entities and their game mechanics. The full game
+of NetHack is beyond the capabilities of modern RL approaches [33].
+NLE, which focuses on the full game of NetHack using the game’s existing mechanisms for procedurally generating levels and dungeon topologies, makes it difficult for practitioners to answer
+specific research questions in isolation. In contrast, with MiniHack we present an extendable and
+rich sandbox framework for defining a variety of custom tasks while making use of NetHack’s game
+assets and complex environment dynamics.
+
+3
+
+MiniHack
+
+MiniHack is a powerful sandbox framework for easily designing novel RL environments. It not only
+provides a diverse suite of challenging tasks but is primarily built for easily designing new ones. The
+motivation behind MiniHack is to be able to perform RL experiments in a controlled setting while
+being able to increasingly scale the difficulty and complexity of the tasks by removing simplifying
+assumptions. To this end, MiniHack leverages the description file (des-file) format of NetHack
+and its level compiler (see Section 3.1), thereby enabling the creation of many challenging and diverse
+environments (see Section 3.4).
+3.1
+
+des-file format: A Domain Specific Language for Designing Environments
+
+The des-file format [39] is a domain-specific language created by the developers of NetHack
+for describing the levels of the game. des-files are human-readable specifications of levels:
+distributions of grid layouts together with monsters, objects on the floor, environment features (e.g.
+walls, water, lava), etc. All of the levels in the full game of NetHack have pre-defined des-files.
+The des-files are compiled into binary using the NetHack level compiler, and MiniHack maps
+them to Gym environments.
+Levels defined via des-file can be fairly rich, as the underlying programming language has support
+for variables, loops, conditional statements, as well as probability distributions. Crucially, it supports
+underspecified statements, such as generating a random monster or an object at a random location
+on the map. Furthermore, it features commands that procedurally generate diverse grid layouts
+in a single line. For example, the MAZEWALK command generates complex random mazes (see
+Figure 1 Top), while the RANDOM_CORRIDORS command connects all of the rooms in the dungeon
+level using procedurally generated corridors (see Figure 1 Middle). Figure 2 presents a des-file
+code snippet that procedurally generates diverse environment instances on a 10x10 grid, as presented
+in Figure 1 Bottom.
+Figure 3 shows a des-file for a level with fixed, pre-defined map layout (lines 3-13). Here, the ‘.‘,
+‘+‘, and ‘S‘ characters denote grid cells for floor, closed door, and secret door, respectively, while ‘|‘
+3
+
+$river = TERRAIN :{ 'L ' , 'W ' , 'I '}
+SHUFFLE : $river
+LOOP [2] {
+TERRAIN : randline (0 ,0) ,(10 ,10) ,5 ,
+$river [0]
+MONSTER : random , random
+}
+REPLACE_TERRAIN :(0 ,0 ,10 ,10) , '. ' , 'T ' ,5%
+STAIR : random , down
+
+Figure 2: A sample code snippet in des-file format
+language. The $river variable is used to sample a
+terrain feature (‘L‘ for lava, ‘W‘ for water and ‘I‘ for ice).
+The LOOP block draws two rivers via the randline
+command and places two random monsters at random
+locations. The REPLACE_TERRAIN commands replaces
+5% of floors (‘.‘) with trees (‘T‘). A stair down is added
+at random locations.
+
+water
+water
+water
+water
+water
+(a) Pixels
+
+(b) Symbols
+
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+
+MAZE : " simple_maze " , ' '
+GEOMETRY : center , center
+MAP
+--- --- --|.| |.| |.|
+---S - - -S - - -S - - | .. . .. .. + .+ .. . |
+- - -+ - - - - -. - - - - | .. . .. .. + .+ .. . |
+---S - - -S - - -S - - |.| |.| |.|
+--- --- --ENDMAP
+LOOP [5] {
+OBJECT : '% ' , random
+TRAP : random , random
+}
+[10%]: GOLD : 100 , random
+MONSTER :( 'B ' ," bat " ) ,(3 ,3)
+
+Figure 3: A des-file example for a
+simple NetHack level.
+
+floor
+an apple
+floor
+floor
+a boulder
+
+floor
+floor
+agent
+floor
+floor
+
+killer bee
+floor
+floor
+floor
+green dragon
+
+wall
+wall
+wall
+closed door
+wall
+
+(c) Textual descriptions
+
+Figure 4: Different forms of agent-centred observations of the grid of the map in MiniHack.
+and ‘-‘ denote walls. The loop block (lines 14-17) places five random comestibles (‘%‘) and random
+traps at random positions. Line 18 adds 100 golds at a random location with 10% probability. Line
+19 adds a bat at a fixed location. These examples only provide a glimpse into the variety of levels that
+can be generated (see Appendix A for more examples and details on the des-file format).
+3.2
+
+MiniHack Environments
+
+By tapping into the richness of the game of NetHack, MiniHack environments can make use of a
+large set of pre-existing assets. One can add one of more than 580 possible monster types, each of
+which has unique characteristics such as attack distance and type; health points; resistance against
+certain attacks; and special abilities such as changing shape, moving through walls, and teleporting.
+Practitioners can also choose from 450 items in the game, including various types of weapons, armour,
+tools, wands, scrolls, spellbooks, comestibles, potions, and more. These items can be used by the
+agent as well as monsters.
+Observations. MiniHack supports several forms of observations, including global or agent-centred
+viewpoints (or both) of the grid (such as entity ids, characters, and colours), as well as textual
+messages, player statistics and inventory information [33]. In addition to existing observations in
+NLE, MiniHack also supports pixel-based observations, as well as text descriptions for all entities on
+the map (see Figure 4).
+Action Space. NetHack has a large, structured and context-sensitive action space [47]. We give
+practitioners an easy way to restrict the action space in order to promote targeted skill discovery. For
+example, navigation tasks mostly require movement commands, and occasionally, kicking doors,
+searching or eating. Skill acquisition tasks, on the other hand, require interactions with objects, e.g.
+managing the inventory, casting spells, zapping wands, reading scrolls, eating comestibles, quaffing
+potions, etc. 75 actions are used in these tasks. A large number of actions and their nontrivial
+interactions with game objects offer additional opportunities for designing rich MiniHack tasks. For
+4
+
+example, a towel can be used as a blindfold (for protection from monsters that harm with their gaze),
+for wiping off slippery fingers (e.g. after eating deep-fried food from a tin), or even serve as a weapon
+when wet (which can be achieved by dipping the towel into water).
+Reward. Reward functions in MiniHack can easily be configured. Our RewardManager provides
+a convenient way to specify one or more events that can provide different (positive or negative)
+rewards, and control which subsets of events are sufficient or required for episode termination (see
+Appendix B.4 for further details).
+3.3
+
+Interface
+
+MiniHack uses the popular Gym interface [8] for the
+interactions between the agent and the environment.
+One way to implement MiniHack Gym environments
+is to write the description file in the human-readable
+des-file format and then pass it directly to MiniHack
+(see Figure 16a in Appendix B.2). However, users might
+find it more convenient to construct the environment
+directly in Python. Our LevelGenerator allows users
+to do this by providing the functionality to add monsters,
+objects, environment features, etc. Figure 5 presents an
+example code snippet of this process. Here, the agent
+starts near the entrance of a labyrinth and needs to reach
+its centre to eat the apple. A Minotaur, which is a powerful monster capable of instantly killing the agent in
+melee combat, is placed deep inside the labyrinth. There
+is a wand of death placed in a random location in the
+labyrinth. The agent needs to pick the wand up, and
+upon seeing the Minotaur, zap it in the direction of the
+monster. Once the Minotaur is killed, the agent would
+be able to reach the centre of the labyrinth and eat the
+apple to complete the task. The RewardManager is used
+to specify the goal that needs to be completed (eating
+an apple). Our LevelGenerator and RewardManager
+are described in more detail in Appendix B.2.
+3.4
+
+Tasks: A World of Possibilities
+
+We release a collection of example environments that can
+be used to test various capabilities of RL agents, as well
+as serve as building blocks for researchers wishing to
+develop their own environments. All these environments
+are built using the interface described in Section 3.3,
+which demonstrates the flexibility and power of MiniHack for designing new environments.
+
+# Define the labyrinth as a string
+grid = """
+-------------------|.......|.|........|
+|.-----.|.|.-----|.|
+|.|...|.|.|......|.|
+|.|.|.|.|.|-----.|.|
+|.|.|...|....|.|.|.|
+|.|.--------.|.|.|.|
+|.|..........|...|.|
+|.|--------------|.|
+|..................|
+-------------------"""
+# Define a level generator
+level = LevelGenerator(map=grid)
+level.set_start_pos((9, 1))
+# Add wand of death and apple
+level.add_object("death", "/")
+level.add_object("apple",
+place=(14, 5))
+# Add a Minotaur at fixed position
+level.add_monster(name="minotaur",
+place=(14, 6), args=("asleep",))
+# Define the goal
+reward_mngr = RewardManager()
+reward_mngr.add_eat_event("apple")
+# Declare task a Gym environment
+env = gym.make(
+"MiniHack-Skill-Custom-v0",
+des_file=level.get_des(),
+reward_manager=reward_mngr)
+
+Figure 5: A sample code snippet for creating a custom MiniHack task using the
+LevelGenerator and RewardManager.
+
+Navigation Tasks. MiniHack’s navigation tasks challenge the agent to reach the goal position by
+overcoming various difficulties on their way, such as fighting monsters in corridors (see Figure 6a),
+crossing a river by pushing boulders into it (see Figure 6b), navigating through complex or procedurally generated mazes (see Figure 1 Top and Medium). These tasks feature a relatively small
+action space.4 Furthermore, they can be easily extended or adjusted with minimal effort by either
+changing their definition in Python or the corresponding des-file. For instance, once the initial
+version of the task is mastered, one can add different types of monsters, traps or dungeon features, or
+remove simplifying assumptions (such as having a fixed map layout or full observability), to further
+challenge RL methods. Our suite of 44 diverse environments is meant to assess several of the core
+capabilities of RL agents, such as exploration, planning, memory, and generalisation. The detailed
+4
+
+Movement towards 8 compass directions, and based on the environment, search, kick, open, and eat actions.
+
+5
+
+(a) CorridorBattle requires
+luring monsters into a corridor
+and fighting them one at a time.
+
+(b) River requires pushing boulders into a river to reach the goal
+via the generated bridge.
+
+(c) Two versions of MultiRoom-N4-S5 task.
+(left) Regular version (right) Extreme version
+that includes random monsters, locked doors,
+and lava tiles instead of walls.
+
+(d) Boxoban requires
+pushing boulders into
+different goals (here
+represented as four
+fountains).
+
+Figure 6: Screenshots of several MiniHack tasks.
+descriptions of all navigation tasks, as well as the full list of 44 registered environments, can be found
+in Appendix C.1.
+Skill Acquisition Tasks. Our skill acquisition tasks enable utilising the rich diversity of NetHack
+objects, monsters and dungeon features, and the interactions between them. These tasks are different
+from navigation tasks in two ways. First, the skill acquisition tasks feature a large action space (75
+actions), where the actions are instantiated differently depending on which object they are acting on.
+Given the large number of entities in MiniHack, usage of objects with an appropriate action in the
+setting of sparse rewards is extremely difficult, requiring a thorough exploration of the joint stateaction space.5 Second, certain actions in skill acquisition tasks are factorised autoregresively [45],
+i.e., require performing a sequence of follow-up actions for the initial action to have an effect. For
+example, to put on a ring, the agent needs to select the PUTON action, choose the ring from the
+inventory and select which hand to put it on. As a result, MiniHack allows getting rid of simplifying
+assumptions that many RL environments impose, such as having a single "schema" action used with
+a variety of objects regardless of the context. For the full list of tasks, see Appendix C.2.
+Porting Existing Environments to MiniHack. Transitioning to using a new environment or benchmark for RL research can be troublesome as it becomes more difficult to compare with prior work
+that was evaluated on previous environments or benchmarks. Here, we show that prior benchmarks
+such as MiniGrid [12] and Boxoban [21] can be ported to MiniHack. While the MiniHack versions of
+these tasks are not visually identical to the originals, they still test the same capabilities as the original
+versions, which enables researchers familiar with the original tasks to easily analyse the behaviour of
+agents in these new tasks. Due to the flexibility and richness of MiniHack, we can incrementally add
+complexity to the levels in these previous benchmarks and assess the limits of current methods. This
+is especially useful for MiniGrid, where current methods are able to solve all existing tasks [20, 62].
+As an example, we present how to patch the navigation tasks in MiniGrid [12] and increase their
+complexity by adding monsters, locked doors, lava tiles, etc (see Figure 6c). Similarly, we make
+use of publicly available levels of Boxoban [21] to offer these task in MiniHack (see Figure 6d).
+Once ported to MiniHack, these levels can easily be extended, for example, by adding monsters to
+fight while solving puzzles. An added benefit of porting such existing benchmarks is that they can
+use a common observation and action space. This enables investigating transfer learning and easily
+benchmarking a single algorithm or architecture on a wide variety of challenges, such as the planning
+problems present in Boxoban and the sparse-reward exploration challenges of MiniGrid.
+While MiniHack has the ability to replace a large set of entities ported from original environments, it is
+worth noting that not all entities have identical replacements. For example, MiniGrid’s KeyCorridor
+includes keys and doors of different colours, whereas the corresponding objects in NetHack have no
+colour. The randomly moving objects in MiniGrid’s Dynamic-Obstacles tasks are also absent.
+5
+
+Most of the state-of-the-art exploration methods, such as RND [9], RIDE [46], BeBold [62], and AGAC
+[20], rely on state space exploration rather than the state-action space exploration.
+
+6
+
+Despite MiniHack versions of ported environments having minor differences compared to originals,
+they nonetheless assess the exact same capabilities of RL agents. In particular, while the underlying
+dynamics of the environment are identical to the original in the case of Boxoban, our MiniGrid
+version includes slight changes to the agent’s action space (turning and moving forwards vs only
+directional movement) and environment dynamics (the event of opening doors is probabilistic in
+MiniHack).
+3.5
+
+Evaluation Methodology
+
+Here we describe the evaluation methodology and experimental practice we take in this paper in
+more detail, as a recommendation for future work evaluating methods on the MiniHack suite of
+tasks. To ensure a fair comparison between methods, performance should be evaluated in standard
+conditions. Specifically to MiniHack, this means using the same: action space,6 observation keys,7
+fixed episode length, reward function, game character,8 or any other environment parameter that
+can potentially affect the difficulty of tasks. When reporting results, we recommend reporting the
+median reward achieved over at least 5 independent training runs with different seeds. Reporting
+the median avoids the effects of any outliers, and five independent runs strike a balance between
+statistical validity and computational requirements. When evaluating the generalisation, agents should
+be trained on a limited number of seeds and tested on held-out seeds or the full distribution of levels.
+As well as sharing final performance, sharing full learning curves (provide all independent runs or
+present an error metric, such as standard deviation), wall-clock time and examples of behaviour are
+recommended as it can be helpful to other researchers building on or comparing against the results. If
+additional information has been used during training or testing, then that should be made clear in any
+comparisons with other work.
+
+4
+
+Experiments
+
+In this section, we present experiments on tasks described in Section 3.4. The purpose of these
+experiments is to assess various capabilities of RL agents, and highlight how incremental changes
+in the environments using the rich entities in MiniHack further challenge existing RL methods. We
+highlight and discuss results on several different tasks, while results for all tasks can be found in
+Appendix E.
+Our main baseline for all tasks is based on IMPALA [19], as implemented in TorchBeast [32]. For
+navigation tasks, we also use two popular exploration techniques – Random Network Distillation
+[RND, 9] and RIDE [46], the latter being designed specifically for procedurally generated environments where an agent is unlikely to visit a state more than once. We train and test agents on the full
+distribution of levels in each environment. We make use of the same agent architecture as in [33]. All
+details on agent architectures and training setting are described in Appendix D. Full results on all
+MiniHack tasks are available in Appendix E.
+Navigation Tasks. Figure 7 summarises results on various challenging MiniHack navigation tasks.
+While simpler versions of the tasks are often quickly solved by the baseline approaches, adding
+layers of complexity (such as increasing the size of procedurally generated mazes, resorting to
+partially observable settings, and adding monsters and traps) renders the baselines incapable of
+making progress. For example, our baselines fail to get any reward on the most difficult version of
+the River task that includes moving monsters and deadly lava tiles, challenging the exploration,
+planning and generalisation capabilities of the agent. The results on the KeyRoom tasks highlight the
+inability of RL methods to handle generalisation at scale. Though the smaller version of the task
+(KeyRoom-Random-S5) is solved by all baselines, the larger variant (KeyRoom-Random-S15) is not
+solved by any of the methods.
+6
+
+Larger action spaces can often increase the difficulty of the task.
+Abstractly, the same observation space. There are multiple (multimodal) options which may change the
+difficulty of the task.
+8
+The default character in MiniHack is a chaotic human male rogue (rog-hum-cha-mal) for navigation tasks
+and a neutral human male caveman (cav-hum-new-mal) for skill acquisition tasks. For the CorridorBattle
+tasks, we override the default and use a lawful human female knight (kni-hum-law-fem) instead.
+7
+
+7
+
+Episode Return
+Episode Return
+Episode Return
+
+Room-15x15
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+0
+
+1.0
+
+10M
+
+MazeWalk-15x15
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+Room-Random-15x15
+
+0
+
+10M
+
+MazeWalk-45x19
+
+1.0
+0.5
+
+0.5
+
+0.0
+
+0.0
+
+0.5
+
+0.5
+
+0
+
+1.00
+
+250M
+
+ExploreMaze-Hard
+
+1.0
+
+0
+
+Corridor-R2
+
+1.0
+
+0.75
+
+250M
+
+0.25
+
+0.0
+
+0.00
+
+0
+
+Step
+
+250M
+
+0.5
+
+0
+
+Step
+
+0
+
+50M
+
+River-Narrow
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+0
+
+1.00
+
+0.5
+
+0.50
+
+Room-Dark-15x15
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+10M
+
+15M
+
+KeyRoom-Random-S5
+
+0
+
+0
+
+1.00
+0.75
+
+0.50
+
+0.50
+
+0.25
+
+0.25
+
+0.00
+
+0.00
+
+Step
+
+100M
+
+Room-Trap-15x15
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+10M
+
+River
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+0.75
+
+0
+
+Room-Monster-15x15
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+0
+
+150M
+
+KeyRoom-Random-S15
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+10M
+
+10M
+
+ExploreMaze-Easy
+
+2
+1
+
+0
+
+1.0
+
+200M
+
+Step
+
+4
+3
+
+0
+
+150M
+
+Memento-Short-F2
+
+0
+
+1.0
+
+Memento-F2
+
+250M
+
+0.5
+0.0
+
+0.0
+
+0
+
+Room-Ultimate-15x15
+
+0
+
+River-MonsterLava
+
+0.5
+
+0.25
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+0.5
+
+0.5
+
+0
+
+50M
+
+Step
+
+1.0
+
+0
+
+Step
+
+150M
+
+Episode Return
+
+Figure 7: Mean episode returns on several MiniHack navigation tasks across five independent runs.
+The median of the runs is bolded.
+Eat
+
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+
+0
+
+Step
+
+75M
+
+Pray
+
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+
+0
+
+Step
+
+WoD-Easy
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+75M 0
+
+Step
+
+25M
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+WoD-Medium
+
+0
+
+Step
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+LavaCross--PotionInv
+
+100M 0
+
+1.00
+
+LavaCross
+
+0.75
+0.50
+0.25
+0.00
+
+100M
+
+Step
+
+0
+
+Step
+
+100M
+
+Figure 8: Mean episode returns on several skill acquisition tasks across five independent runs. The
+median of the runs is bolded.
+
+Skill Acquisition Tasks. Figure 8 presents our results on various skill acquisition tasks. While
+the simple tasks that require discovering interaction between a single entity and an action of the
+agent (e.g., eating comestibles, zapping a wand of death towards a monster, etc.) can be solved by
+the baselines, the discovery of a sequence of entity-action relations in the presence of environment
+randomisation and distracting entities remains challenging for RL methods. For instance, none of the
+runs is able to make progress on WoD-Medium or LavaCross tasks due to insufficient state-action
+space exploration despite mastering the simplified versions of them.
+
+Episode Return
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+Episode Return
+
+Ported Environments. Figure 9 presents the results of different versions of the MultiRoom environment ported from MiniGrid [12]. In the version with two rooms, adding additional layers of
+complexity, such as locked doors, monsters, or lava tiles instead of walls, makes the learning more
+difficult compared to regular versions of the task. In the Extreme version with all the aforementioned
+complexities, there is no learning progress at all. In the version with four rooms, the baseline agents
+only make progress on the simplest version and the version with added monsters. All additional
+complexities are beyond the capabilities of baseline methods due to the hard exploration that they
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+0
+
+0
+
+MultiRoom-N2
+
+MultiRoomN4
+
+Step
+
+50M
+
+200M
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+MultiRoom-N2-Monster
+
+0
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+50M
+
+MultiRoom-N4-Monster
+
+0
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+0
+
+1.00
+
+MultiRoom-N2Locked
+
+50M
+
+MultiRoom-N4-Locked
+
+0.75
+0.50
+0.25
+0.00
+
+Step
+
+200M
+
+0
+
+Step
+
+200M
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+0
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+0
+
+MultiRoom-N2-Lava
+
+50M
+
+MultiRoom-N4-Lava
+
+Step
+
+100M
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+MultiRoom-N2-Extreme
+
+0
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+50M
+
+MultiRoom-N4-Extreme
+
+0
+
+Step
+
+100M
+
+Figure 9: Mean episode returns on various MultiRoom environments ported from MiniGrid [12]
+across five independent runs. The median of the runs is bolded.
+8
+
+Solved Path Length
+3.6
+3.5
+3.4
+3.3
+3.2
+
+0
+
+Step
+
+1.0
+
+Room-Monster-15x15
+
+MazeWalk-9x9
+
+1.0
+0.8
+
+0.8
+
+0.6
+
+0.6
+
+0.6
+
+0.4
+
+0.4
+
+0.4
+
+0.2
+
+0.2
+
+0.2
+
+250M 0.0 0
+
+Step
+
+250M 0.0 0
+
+Step
+
+MazeWalk-15x15
+
+1.0
+
+0.8
+
+0.04
+
+MultiRoom-N2-Extreme
+
+0.03
+0.02
+0.01
+
+250M 0.0 0
+
+Step
+
+250M
+
+0.00
+
+0
+
+250M
+
+Step
+
+Episode Return
+
+Figure 10: Results from the PAIRED algorithm, showing the solved path length of UED environments
+and zero-shot transfer performance. Plots show five independent runs with the median bolded.
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+0
+
+Room-Ultimate-15x15
+
+1.0
+
+Memento-Short-F2
+
+0.5
+0.0
+0.5
+
+Step
+
+30M
+
+1.0
+
+0
+
+Step
+
+50M
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+0
+
+CorridorBattle
+
+Step
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+100M
+
+0
+
+Corridor-R3
+
+Step
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+200M
+
+0
+
+River-Monster
+small
+medium
+large
+
+Step
+
+150M
+
+Figure 11: Mean episode returns of a baseline IMPALA agent using three model architectures.
+require. Consequently, all independent runs fail to obtain any positive reward. These results highlight
+the ability of MiniHack to assess the limits of RL algorithms in an extendable, well-controlled setting.
+Unsupervised Environment Design. MiniHack also enables research in Unsupervised Environment Design (UED), whereby an adaptive task distribution is learned during training by dynamically
+adjusting free parameters of the task MDP. MiniHack allows overriding the description file of the
+environment, making it easy to adjust the MDP configuration as required by UED. To test UED in
+MiniHack, we implement the recent PAIRED algorithm [14], which trains an environment adversary
+to generate environments in order to ultimately train a robust protagonist agent, by maximizing the
+regret, defined as the difference in return between a third, antagonist agent and the protagonist. We
+allow our adversary to place four objects in a small 5x5 room: {walls, lava, monster, locked
+door}. As a result of the curriculum induced by PAIRED, the protagonist is able to improve zero-shot
+performance on challenging out-of-distribution environments such as MultiRoom-N2-Extreme,
+despite only ever training on a much smaller environment (see Figure 10).
+
+RLlib Example. To help kickstart the development of RL models using MiniHack, we also provide integration with RLlib [34].
+RLlib enables using a wide range of RL algorithms within the framework, ensuring that research on MiniHack can be performed with
+varying computational constraints. Figure 12 presents the results of
+DQN [36], A2C [35], and PPO [51] methods on the Room-15x15
+task. See Appendix D.4 for more details.
+
+5
+
+Episode Return
+
+Agent Architecture Comparison. We perform additional experiments to compare the performance
+of the baseline IMPALA agent using different neural architectures. Figure 11 presents results using
+three architectures (small, medium, and large) on selected MiniHack tasks which differ in the number
+of convolutional layers, the size of hidden MLP layers, as well as the entity embedding dimension (see
+Appendix D.3 for full details). The performances of medium and large agent architectures are on par
+with each other across all five tasks. Interestingly, the small model demonstrates poor performance
+on Room-Ultimate-15 and CorridorBattle environments, but outperforms larger models on
+the Corridor-3 task. While it is known that small models can outperform larger models (both in
+terms of depth and width) depending on the complexity of the environment [1, 24], MiniHack opens
+door to investigate this phenomenon in a more controlled setting due to the generous environment
+customisation abilities it provides. We thus believe MiniHack would be a useful testbed for exploring
+the impact of architecture on RL agent training.
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+
+0
+
+Room-15x15
+A2C
+DQN
+PPO
+
+Step
+
+5M
+
+Figure 12: RLlib results.
+
+Related Work
+
+The RL community has made extensive use of video games as testbeds for RL algorithms [7, 57,
+41, 40, 31]. However, such games are computationally expensive to run and not easily modifiable.
+Furthermore, they provide only a fixed set of levels, which results in the overfitting of trained policies.
+ProcGen [13] partially addresses this issue by providing a collection of 2D games with procedurally
+generated levels. However, the richness of games is still limited and only minor modifications are
+9
+
+possible, unlike the rich environment creation capabilities that MiniHack provides. Based on the
+C/C++ engines of NetHack and NLE, MiniHack is 16 times faster than ALE [7] and faster than
+ProcGen by approximately 10% (see Appendix D of [33] for an approximate comparison).
+MiniGrid [12] addresses the issue of computational efficiency by providing a collection of procedurally generated grid-world tasks. Nevertheless, the complexity of the environments is still limited,
+containing only a few types of entities and small action space. Moreover, extending the existing
+environments is difficult as it requires understanding the internals of the library. MiniHack provides
+a much richer set of entities (hundreds of objects, monsters, dungeon features) and a much larger
+action space. Moreover, MiniHack is designed to be easy to extend and build on top of, only requiring
+familiarity with a flexible and expressive high-level DSL but no underlying implementation details.
+bsuite [43] features a set of simple environments designed to test specific capabilities of RL agents,
+such as memory or exploration. In contrast, MiniHack is not confined to a static task set allowing
+researchers to easily extend the existing task set without the need to understand the implementation
+details of the framework.
+Several roguelike games, a genre of video games characterised by progressing through procedurally generated dungeon levels and grid-based movements, have been proposed as RL benchmarks.
+Rogueinabox [2] provides an interface to Rogue, a roguelike game with simple dynamics and limited
+complexity. Rogue-Gym [30] introduces a simple roguelike game built for evaluating generalisation
+in RL and uses parameterisable generation of game levels. NLE [33] and gym-nethack [10, 11]
+provide a Gym interface around the game of NetHack. However, these benchmarks use either fixed,
+predefined level descriptions of the full games, or a fixed set of concrete subtask (e.g., 1-on-1 combat
+with individual monsters [11]). In contrast, MiniHack allows easily customising dungeon layouts
+and placement of environment features, monsters and objects by a convenient Python interface or a
+human-readable description language.
+MiniHack is not the first to provide a sandbox for developing environments. PyVGDL [48, 49] uses a
+concrete realisation of the Video Game Description Language [VGDL, 17] for creating 2D video
+games. The original software library of PyVGDL is no longer supported, while the 2.0 version is
+under development [56]. The GVGAI framework [44] is also based on the VGDL but suffers from a
+computational overhead due to its Java implementation. Griddly [4] provides a highly configurable
+mechanism for designing diverse environments using a custom description language. Similar to
+MiniHack, Griddly is based on an efficient C/C++ core engine and is fast to run experiments on.
+Griddly is approximately an order of magnitude faster than MiniHack for simple environments, but it
+is unclear to what extent adding complex dynamics to Griddly, equivalent to what MiniHack provides,
+will decrease its speed. Furthermore, Griddly supports multi-agent and real-time strategy (RTS)
+games, unlike MiniHack. While PyVGDL, GVGAI, and Griddly can be used to create various entities,
+developing rich environment dynamics requires a significant amount of work. In contrast, MiniHack
+features a large collection of predefined objects, items, monsters, environment features, spells, etc
+and complex environment mechanics from the game of NetHack, thus hitting the sweet spot between
+customizability and the richness of entities and environment dynamics to draw upon. MiniHack
+also provides a rich set of multimodal observations (textual descriptions, symbolic and pixel-based
+observations) and a convenient Python interface for describing environments in only a few lines of
+code. Finally, the Malmo Platform [28] and MineRL [23] provides an interface to a popular game of
+Minecraft. While being rich in the environment dynamics, Minecraft is computationally intensive
+compared to NetHack [47] (MiniHack is approximately 240 times faster than MineRL [33]).
+
+6
+
+Conclusion
+
+In this work, we presented MiniHack, an easy-to-use framework for creating rich and varied RL
+environments, as well as a suite of tasks developed using this framework. Built upon NLE and the
+des-file format, MiniHack enables the use of rich entities and dynamics from the game of NetHack
+to create a large variety of RL environments for targeted experimentation, while also allowing painless
+scaling-up of the difficulty of existing environments. MiniHack’s environments are procedurally
+generated by default, ensuring the evaluation of systematic generalization of RL agents. The suite
+of tasks we release with MiniHack tests the limits of RL methods and enables researchers to test a
+wide variety of capabilities in a unified experimental setting. To enable further experimentation and
+research, we open-source our code for training agents with numerous RL algorithms, outline best
+practices on how to evaluate algorithms on the benchmark suite of tasks, and provide baseline results
+on all of the tasks that we released.
+10
+
+Acknowledgements
+We thank Danielle Rothermel, Zhengyao Jiang, Pasquale Minervini, Vegard Mella, Olivier Teytaud,
+and Luis Pineda for insightful discussions and valuable feedback on this work. We also thank our
+anonymous reviewers for their recommendations on improving this paper.
+
+References
+[1] Marcin Andrychowicz, Anton Raichuk, Piotr Stańczyk, Manu Orsini, Sertan Girgin, Raphaël
+Marinier, Leonard Hussenot, Matthieu Geist, Olivier Pietquin, Marcin Michalski, Sylvain Gelly,
+and Olivier Bachem. What matters for on-policy deep actor-critic methods? a large-scale study.
+In International Conference on Learning Representations, 2021.
+[2] Andrea Asperti, Carlo De Pieri, and Gianmaria Pedrini. Rogueinabox: an environment for
+roguelike learning. International Journal of Computers, 2, 2017.
+[3] Adrià Puigdomènech Badia, Bilal Piot, Steven Kapturowski, Pablo Sprechmann, Alex Vitvitskyi,
+Daniel Guo, and Charles Blundell. Agent57: Outperforming the atari human benchmark. In
+Proceedings of the 37th International Conference on Machine Learning, 2020.
+[4] Chris Bamford, Shengyi Huang, and Simon M. Lucas. Griddly: A platform for AI research in
+games. CoRR, abs/2011.06363, 2020.
+[5] Charles Beattie, Joel Z. Leibo, Denis Teplyashin, Tom Ward, Marcus Wainwright, Heinrich
+Küttler, Andrew Lefrancq, Simon Green, Víctor Valdés, Amir Sadik, Julian Schrittwieser, Keith
+Anderson, Sarah York, Max Cant, Adam Cain, Adrian Bolton, Stephen Gaffney, Helen King,
+Demis Hassabis, Shane Legg, and Stig Petersen. Deepmind lab. CoRR, abs/1612.03801, 2016.
+[6] Marc Bellemare, Sriram Srinivasan, Georg Ostrovski, Tom Schaul, David Saxton, and Remi
+Munos. Unifying count-based exploration and intrinsic motivation. In NeurIPS, 2016.
+[7] Marc G. Bellemare, Yavar Naddaf, Joel Veness, and Michael Bowling. The Arcade Learning
+Environment: An Evaluation Platform for General Agents. CoRR, abs/1207.4708, 2012.
+[8] Greg Brockman, Vicki Cheung, Ludwig Pettersson, Jonas Schneider, John Schulman, Jie Tang,
+and Wojciech Zaremba. OpenAI Gym. CoRR, abs/1606.01540, 2016.
+[9] Yuri Burda, Harrison Edwards, Amos Storkey, and Oleg Klimov. Exploration by random
+network distillation. In ICML, 2019.
+[10] Jonathan Campbell and Clark Verbrugge. Learning combat in NetHack. In AIIDE, 2017.
+[11] Jonathan Campbell and Clark Verbrugge. Exploration in NetHack with secret discovery. IEEE
+Transactions on Games, 2018.
+[12] Maxime Chevalier-Boisvert, Lucas Willems, and Suman Pal. Minimalistic Gridworld Environment for OpenAI Gym. https://github.com/maximecb/gym-minigrid, 2018.
+[13] Karl Cobbe, Christopher Hesse, Jacob Hilton, and John Schulman. Leveraging procedural
+generation to benchmark reinforcement learning. arXiv preprint arXiv:1912.01588, 2019.
+[14] Michael Dennis, Natasha Jaques, Eugene Vinitsky, Alexandre Bayen, Stuart Russell, Andrew
+Critch, and Sergey Levine. Emergent complexity and zero-shot transfer via unsupervised
+environment design. In Advances in Neural Information Processing Systems, volume 33, 2020.
+[15] Michael Dennis, Natasha Jaques, Eugene Vinitsky, Alexandre Bayen, Stuart Russell, Andrew
+Critch, and Sergey Levine. Emergent complexity and zero-shot transfer via unsupervised
+environment design. In H. Larochelle, M. Ranzato, R. Hadsell, M. F. Balcan, and H. Lin,
+editors, Advances in Neural Information Processing Systems, volume 33, pages 13049–13061.
+Curran Associates, Inc., 2020.
+[16] Gabriel Dulac-Arnold, Nir Levine, Daniel J. Mankowitz, Jerry Li, Cosmin Paduraru, Sven
+Gowal, and Todd Hester. An empirical investigation of the challenges of real-world reinforcement learning. CoRR, abs/2003.11881, 2020.
+[17] Marc Ebner, John Levine, Simon M. Lucas, Tom Schaul, Tommy Thompson, and Julian
+Togelius. Towards a Video Game Description Language. page 16 pages, 2013. Artwork
+Size: 16 pages Medium: application/pdf Publisher: Schloss Dagstuhl - Leibniz-Zentrum fuer
+Informatik GmbH, Wadern/Saarbruecken, Germany Version Number: 1.0.
+11
+
+[18] Adrien Ecoffet, Joost Huizinga, Joel Lehman, Kenneth O. Stanley, and Jeff Clune. Go-Explore:
+A New Approach for Hard-exploration Problems. arXiv preprint arXiv:1901.10995, 2019.
+[19] Lasse Espeholt, Hubert Soyer, Remi Munos, Karen Simonyan, Vlad Mnih, Tom Ward, Yotam
+Doron, Vlad Firoiu, Tim Harley, Iain Dunning, et al. Impala: Scalable distributed deep-rl
+with importance weighted actor-learner architectures. In International Conference on Machine
+Learning, pages 1407–1416. PMLR, 2018.
+[20] Yannis Flet-Berliac, Johan Ferret, Olivier Pietquin, Philippe Preux, and Matthieu Geist. Adversarially guided actor-critic. CoRR, abs/2102.04376, 2021.
+[21] Arthur Guez, Mehdi Mirza, Karol Gregor, Rishabh Kabra, Sebastien Racaniere, Theophane
+Weber, David Raposo, Adam Santoro, Laurent Orseau, Tom Eccles, Greg Wayne, David Silver,
+Timothy Lillicrap, and Victor Valdes. An investigation of model-free planning: boxoban levels.
+https://github.com/deepmind/boxoban-levels/, 2018.
+[22] Yijie Guo, Jongwook Choi, Marcin Moczulski, Shengyu Feng, Samy Bengio, Mohammad
+Norouzi, and Honglak Lee. Memory based trajectory-conditioned policies for learning from
+sparse rewards. Advances in Neural Information Processing Systems, 33, 2020.
+[23] William H. Guss, Cayden Codel, Katja Hofmann, Brandon Houghton, Noboru Kuno, Stephanie
+Milani, Sharada Mohanty, Diego Perez Liebana, Ruslan Salakhutdinov, Nicholay Topin, et al.
+The MineRL competition on sample efficient reinforcement learning using human priors.
+NeurIPS Competition Track, 2019.
+[24] Peter Henderson, Riashat Islam, Philip Bachman, Joelle Pineau, Doina Precup, and David
+Meger. Deep reinforcement learning that matters. CoRR, abs/1709.06560, 2017.
+[25] Felix Hill, Andrew Lampinen, Rosalia Schneider, Stephen Clark, Matthew Botvinick, James L.
+McClelland, and Adam Santoro. Environmental drivers of systematicity and generalization in a
+situated agent. In International Conference on Learning Representations, 2020.
+[26] Sepp Hochreiter and Jürgen Schmidhuber. Long short-term memory. Neural Computation,
+9(8):1735–1780, 1997.
+[27] Julian Ibarz, Jie Tan, Chelsea Finn, Mrinal Kalakrishnan, Peter Pastor, and Sergey Levine. How
+to train your robot with deep reinforcement learning: lessons we have learned. The International
+Journal of Robotics Research, 40(4-5):698–721, 2021.
+[28] Matthew Johnson, Katja Hofmann, Tim Hutton, and David Bignell. The malmo platform for
+artificial intelligence experimentation. In IJCAI, 2016.
+[29] Arthur Juliani, Ahmed Khalifa, Vincent-Pierre Berges, Jonathan Harper, Ervin Teng, Hunter
+Henry, Adam Crespi, Julian Togelius, and Danny Lange. Obstacle tower: A generalization
+challenge in vision, control, and planning. In Sarit Kraus, editor, Proceedings of the TwentyEighth International Joint Conference on Artificial Intelligence, IJCAI 2019, Macao, China,
+August 10-16, 2019, pages 2684–2691. ijcai.org, 2019.
+[30] Yuji Kanagawa and Tomoyuki Kaneko. Rogue-gym: A new challenge for generalization in
+reinforcement learning. In IEEE Conference on Games, 2019.
+[31] Michał Kempka, Marek Wydmuch, Grzegorz Runc, Jakub Toczek, and Wojciech Jaśkowski.
+Vizdoom: A doom-based ai research platform for visual reinforcement learning. In IEEE
+Conference on Computational Intelligence and Games, 2016.
+[32] Heinrich Küttler, Nantas Nardelli, Thibaut Lavril, Marco Selvatici, Viswanath Sivakumar, Tim
+Rocktäschel, and Edward Grefenstette. TorchBeast: A PyTorch Platform for Distributed RL.
+arXiv preprint arXiv:1910.03552, 2019.
+[33] Heinrich Küttler, Nantas Nardelli, Alexander H Miller, Roberta Raileanu, Marco Selvatici,
+Edward Grefenstette, and Tim Rocktäschel. The nethack learning environment. NeurIPS 2020,
+2020.
+[34] Eric Liang, Richard Liaw, Robert Nishihara, Philipp Moritz, Roy Fox, Ken Goldberg, Joseph
+Gonzalez, Michael Jordan, and Ion Stoica. RLlib: Abstractions for distributed reinforcement
+learning. In Proceedings of the 35th International Conference on Machine Learning, volume 80
+of Proceedings of Machine Learning Research, pages 3053–3062. PMLR, 10–15 Jul 2018.
+[35] Volodymyr Mnih, Adria Puigdomenech Badia, Mehdi Mirza, Alex Graves, Timothy Lillicrap, Tim Harley, David Silver, and Koray Kavukcuoglu. Asynchronous methods for deep
+12
+
+reinforcement learning. In International conference on machine learning, pages 1928–1937,
+2016.
+[36] Volodymyr Mnih, Koray Kavukcuoglu, David Silver, Andrei A Rusu, Joel Veness, Marc G
+Bellemare, Alex Graves, Martin Riedmiller, Andreas K Fidjeland, Georg Ostrovski, et al.
+Human-level control through deep reinforcement learning. nature, 518(7540):529–533, 2015.
+[37] Philipp Moritz, Robert Nishihara, Stephanie Wang, Alexey Tumanov, Richard Liaw, Eric Liang,
+Melih Elibol, Zongheng Yang, William Paul, Michael I Jordan, et al. Ray: A distributed
+framework for emerging {AI} applications. In 13th {USENIX} Symposium on Operating
+Systems Design and Implementation ({OSDI} 18), pages 561–577, 2018.
+[38] NetHack Wiki. NetHackWiki. https://nethackwiki.com/, 2020. Accessed: 2021-05-01.
+[39] NetHack Wiki. des-file format. https://nethackwiki.com/wiki/Des-file_format,
+2021. Accessed: 2021-05-20.
+[40] Alex Nichol, Vicki Pfau, Christopher Hesse, Oleg Klimov, and John Schulman. Gotta learn fast:
+A new benchmark for generalization in rl. arXiv preprint arXiv:1804.03720, 2018.
+[41] OpenAI, Christopher Berner, Greg Brockman, Brooke Chan, Vicki Cheung, Przemysław
+D˛ebiak, Christy Dennison, David Farhi, Quirin Fischer, Shariq Hashme, Chris Hesse, Rafal
+Józefowicz, Scott Gray, Catherine Olsson, Jakub Pachocki, Michael Petrov, Henrique Pondé
+de Oliveira Pinto, Jonathan Raiman, Tim Salimans, Jeremy Schlatter, Jonas Schneider, Szymon
+Sidor, Ilya Sutskever, Jie Tang, Filip Wolski, and Susan Zhang. Dota 2 with large scale deep
+reinforcement learning. arXiv, abs/1912.06680, 2019.
+[42] Ian Osband, Charles Blundell, Alexander Pritzel, and Benjamin Van Roy. Deep exploration via
+bootstrapped dqn. In Advances in neural information processing systems, pages 4026–4034,
+2016.
+[43] Ian Osband, Yotam Doron, Matteo Hessel, John Aslanides, Eren Sezener, Andre Saraiva,
+Katrina McKinney, Tor Lattimore, Csaba Szepesvári, Satinder Singh, Benjamin Van Roy,
+Richard Sutton, David Silver, and Hado van Hasselt. Behaviour suite for reinforcement learning.
+In International Conference on Learning Representations, 2020.
+[44] Diego Perez-Liebana, Jialin Liu, Ahmed Khalifa, Raluca D. Gaina, Julian Togelius, and Simon M. Lucas. General video game ai: A multitrack framework for evaluating agents, games,
+and content generation algorithms. IEEE Transactions on Games, 11(3):195–214, 2019.
+[45] Thomas PIERROT, Valentin Macé, Jean-Baptiste Sevestre, Louis Monier, Alexandre Laterre,
+Nicolas Perrin, Karim Beguir, and Olivier Sigaud. Factored action spaces in deep reinforcement
+learning, 2021.
+[46] Roberta Raileanu and Tim Rocktäschel. RIDE: Rewarding impact-driven exploration for
+procedurally-generated environments. In ICLR, 2020.
+[47] Eric S. Raymond, Mike Stephenson, et al. A Guide to the Mazes of Menace: Guidebook for
+NetHack. NetHack DevTeam, 2020.
+[48] Tom Schaul. A video game description language for model-based or interactive learning. In
+2013 IEEE Conference on Computational Inteligence in Games (CIG), pages 1–8, 2013.
+[49] Tom Schaul. An Extensible Description Language for Video Games. IEEE Transactions on
+Computational Intelligence and AI in Games, 6(4):325–331, December 2014. Conference
+Name: IEEE Transactions on Computational Intelligence and AI in Games.
+[50] Tom Schaul, John Quan, Ioannis Antonoglou, and David Silver. Prioritized experience replay.
+arXiv preprint arXiv:1511.05952, 2015.
+[51] John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal
+policy optimization algorithms. ArXiv, abs/1707.06347, 2017.
+[52] Richard S Sutton, Andrew G Barto, et al. Introduction to reinforcement learning, volume 135.
+MIT press Cambridge, 1998.
+[53] The Telepraph. The 25 hardest video games ever. https://www.telegraph.co.uk/gaming/
+what-to-play/the-15-hardest-video-games-ever/nethack/, 2021. Accessed: 202105-05.
+13
+
+[54] Emanuel Todorov, Tom Erez, and Yuval Tassa. Mujoco: A physics engine for model-based
+control. In Intelligent Robots and Systems (IROS), 2012 IEEE/RSJ International Conference on,
+pages 5026–5033. IEEE, 2012.
+[55] Hado Van Hasselt, Arthur Guez, and David Silver. Deep reinforcement learning with double
+q-learning. In Proceedings of the AAAI Conference on Artificial Intelligence, volume 30, 2016.
+[56] Ruben Vereecken. PyVGDL 2.0: A video game description language for AI research. https:
+//github.com/rubenvereecken/py-vgdl, 2020.
+[57] Oriol Vinyals, Timo Ewalds, Sergey Bartunov, Petko Georgiev, Alexander Sasha Vezhnevets,
+Michelle Yeo, Alireza Makhzani, Heinrich Küttler, John Agapiou, Julian Schrittwieser, et al.
+StarCraft II: A New Challenge for Reinforcement Learning. arXiv preprint arXiv:1708.04782,
+2017.
+[58] Jane Wang, Michael King, Nicolas Porcel, Zeb Kurth-Nelson, Tina Zhu, Charlie Deck, Peter
+Choy, Mary Cassin, Malcolm Reynolds, Francis Song, Gavin Buttimore, David Reichert, Neil
+Rabinowitz, Loic Matthey, Demis Hassabis, Alex Lerchner, and Matthew Botvinick. Alchemy:
+A structured task distribution for meta-reinforcement learning. arXiv preprint arXiv:2102.02926,
+2021.
+[59] Ziyu Wang, Tom Schaul, Matteo Hessel, Hado Hasselt, Marc Lanctot, and Nando Freitas.
+Dueling network architectures for deep reinforcement learning. In International conference on
+machine learning, pages 1995–2003. PMLR, 2016.
+[60] Tianhe Yu, Deirdre Quillen, Zhanpeng He, Ryan Julian, Karol Hausman, Chelsea Finn, and
+Sergey Levine. Meta-world: A benchmark and evaluation for multi-task and meta reinforcement
+learning. In Conference on Robot Learning (CoRL), 2019.
+[61] Baohe Zhang, Raghu Rajan, Luis Pineda, Nathan Lambert, André Biedenkapp, Kurtland Chua,
+Frank Hutter, and Roberto Calandra. On the importance of hyperparameter optimization for
+model-based reinforcement learning. In Proceedings of The 24th International Conference on
+Artificial Intelligence and Statistics, volume 130 of Proceedings of Machine Learning Research.
+PMLR, 13–15 Apr 2021.
+[62] Tianjun Zhang, Huazhe Xu, Xiaolong Wang, Yi Wu, Kurt Keutzer, Joseph E. Gonzalez, and
+Yuandong Tian. Bebold: Exploration beyond the boundary of explored regions. CoRR,
+abs/2012.08621, 2020.
+[63] Xiang Zhang, Junbo Jake Zhao, and Yann LeCun. Character-level convolutional networks for
+text classification. CoRR, abs/1509.01626, 2015.
+
+14
+
+A
+
+The des-file Format
+
+A.1
+
+Tutorial
+
+As part of the release of MiniHack, we release an interactive tutorial jupyter notebook for the
+des-file format, which utilises MiniHack to visualise how the des-file affects the generated
+level.9 Here we present an overview of the different kinds of des-files, how to add entities to
+levels, and the main sources of randomness that can be used to create a distribution of levels on which
+to train RL agents. An in-depth reference can also be found in [39].
+A.2
+
+Types of des-files
+
+There are two types of levels that can be created using des-file format, namely MAZE-type and
+ROOM-type:
+1. MAZE-type levels are composed of maps of the level (specified with the MAP command)
+which are drawn using ASCII characters (see Figure 3 lines 4-14), followed by descriptions
+of the contents of the level, described in detail below. In MAZE-type environments, the
+layout of the map is fixed, but random terrain can be created around (or within) that map
+using the MAZEWALK command, which creates a random maze from a given location and
+filling all available space of a certain terrain type.
+2. ROOM-type levels are composed of descriptions of rooms (specified by the ROOM command),
+each of which can have its contents specified by the commands described below. Generally,
+the RANDOM_CORRIDORS command is then used to create random corridors between all
+the rooms so that they are accessible. On creation, the file specifies (or leaves random)
+the room’s type, lighting and approximate location. It is also possible to create subrooms
+(using the SUBROOM command) which are rooms guaranteed to be within the outer room
+and are otherwise specified as normal rooms (but with a location relative to the outer room).
+Figure 15 illustrates an instance of the Oracle level specified by the ROOM-type des-file
+in Figure 14.
+A.3
+
+Adding Entities to des-files
+
+As we have seen above, there are multiple ways to define the layout of a level using the des-file
+format. Once the layout is defined, it is useful to be able to add entities to the level. These could
+be monsters, objects, traps or other specific terrain features (such as sinks, fountains or altars). In
+general, the syntax for adding one of these objects is:
+ENTITY : specification , location , extra - details
+
+For example:
+MONSTER : ( 'F ' ," lichen " ) , (1 ,1)
+OBJECT : ( '% ' ," apple " ) , (10 ,10)
+TRAP : ' fire ' , (1 ,1)
+# Sinks and Fountains have no specification
+SINK : (1 ,1)
+FOUNTAIN : (0 ,0)
+
+As can be seen in Figure 14 lines 4-11, some objects (such as statues) have extra details that can be
+specified, such as the monster type (montype) of the statue. Note that many of the details here can
+instead be set to random, as shown for example in Figure 14, lines 29 and 33-36. In this case, the
+game engine chooses a suitable value for that argument randomly each time the level is generated. For
+monsters and objects, this randomness can be controlled by just specifying the class of the monster or
+object and letting the specific object or monster be chosen randomly. For example:
+MONSTER : 'F ' , (1 ,1)
+OBJECT : '% ' , (10 ,10)
+9
+
+The tutorial can be found in MiniHack’s documentation at https://minihack.readthedocs.io.
+
+15
+
+This code would choose a random monster from the Fungus class (https://nethackwiki.com/
+wiki/Fungus), and a random object from the Comestible class (https://nethackwiki.com/
+wiki/Comestible).
+A.4
+
+Sources of Randomness in des-file
+
+We have seen how to create either very fixed (MAZE-type) or very random (ROOM-type) levels, and
+how to add entities with some degree of randomness. The des-file format has many other ways of
+adding randomness, which can be used to control the level generation process, including where to
+add terrain and in what way. Many of these methods are used in IF statements, which can be in one
+of two forms:
+IF [50%] {
+MONSTER : 'F ' , (1 ,1)
+} ELSE {
+# ELSE is not always necessary
+OBJECT : '% ' , (1 ,1)
+}
+IF [ $variable_name < 15] {
+MONSTER : 'F ' , (1 ,1)
+}
+
+In the first form, a simple percentage is used for the random choice, whereas in the second, a variable
+(which could have been randomly determined earlier in the file) is used. A natural way to specify
+this variable is either in other conditional statements (perhaps you randomly add some number of
+monsters, and want to count the number of monsters you add such that if there are many monsters,
+you also add some extra weapons for the agent), or through dice notation. Dice notation is used to
+specify random expressions which resolve to integers (and hence can be used in any place an integer
+would be). They are of the form NdM, which means to roll N M-sided dice and sum the result. For
+example:
+$roll = 2 d6
+IF [ $roll < 7] {
+MONSTER : random , random
+}
+
+Dice rolls can also be used for accessing arrays, another feature of the des-file format. Arrays are
+initialised with one or more objects of the same type, and can be indexed with integers (starting at 0),
+for example:
+# An array of monster classes
+$mon_letters = { 'A ' , 'L ' , 'V ' , 'H ' }
+# An array of monster names from each monster class respectively
+$mon_names = { " Archon " , " arch - lich " , " vampire lord " , " minotaur " }
+# The monster to choose
+$mon_index = 1 d4 - 1
+MONSTER :( $mon_letters [ $mon_index ] , $mon_names [ $mon_index ]) ,(10 ,18)
+
+Another way to perform random operations with arrays is using the SHUFFLE command. This
+command takes an array and randomly shuffles it. This would not work with the above example, as
+the monster name needs to match the monster class (i.e. we could not use (’A’, "minotaur")).
+For example:
+$object = object : { '[ ' , ') ' , '* ' , '% ' }
+SHUFFLE : $object
+
+Now the $object array will be randomly shuffled. Often, something achievable with shuffling can
+also be achieved with dice-rolls, but it is simpler to use shuffled arrays rather than dice-rolls (for
+example, if you wanted to guarantee each of the elements of the array was used exactly once, but
+randomise the order, it is much easier to just shuffle the array and select them in order rather than try
+and generate exclusive dice rolls).
+16
+
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+
+MAZE : " mylevel " , ' '
+GEOMETRY : center , center
+MAP
+...........
+...........
+...........
+...........
+...........
+...........
+...........
+...........
+...........
+ENDMAP
+REGION :(0 ,0 ,11 ,9) ,lit , " ordinary "
+REPLACE_TERRAIN :(0 ,0 ,11 ,9) , '. ' , 'C ' , 33%
+REPLACE_TERRAIN :(0 ,0 ,11 ,9) , '. ' , 'T ' , 25%
+TERRAIN : randline (0 ,9) ,(11 ,0) , 5 , '. '
+TERRAIN : randline (0 ,0) ,(11 ,9) , 5 , '. '
+$center = selection : fillrect (5 ,5 ,8 ,8)
+$apple_location = rndcoord $center
+OBJECT : ( '% ' , " apple " ) , $apple_location
+$monster = monster : { 'L ' , 'N ' , 'H ' , 'O ' , 'D ' , 'T ' }
+SHUFFLE : $monster
+$place = { (10 ,8) ,(0 ,8) ,(10 ,0) }
+SHUFFLE : $place
+MONSTER : $monster [0] , $place [0] , hostile
+STAIR : $place [2] , down
+BRANCH :(0 ,0 ,0 ,0) ,(1 ,1 ,1 ,1)
+
+Figure 13: An example des-file based on the HideNSeek environment. Figure 22 presents several
+instances of environments generated using this des-file.
+
+A.5
+
+Random Terrain Placement
+
+When creating a level, we may want to specify the structure or layout of the level (using a MAZE-type
+level), but then randomly create the terrain within the level, which will determine accessibility and
+observability for the agent and monsters in the level. As an example, consider the example des-file
+in Figure 13. In this level, we start with an empty 11x9 MAP (lines 3-13). We first replace 33% of
+the squares with clouds C, and then 25% with trees T (lines 15,16). To ensure that any corner is
+accessible from any other, we create two random-walk lines using randline from opposite corners
+and make all squares on those lines floor (.). To give the agent a helping hand, we choose a random
+square in the centre of the room with rndcoord (which picks a random coordinate from a selection
+of coordinates, see lines 19,20) and place an apple there.
+Several other methods of randomly creating selections such as filter (randomly remove points
+from a selection) and gradient (create a selection based on a probability gradient across an area)
+are described in the NetHack wiki des-file format page [39].
+17
+
+LEVEL : " oracle "
+
+ROOM : " ordinary " , random ,
+random , random , random {
+STAIR : random , up
+OBJECT : random , random
+}
+
+ROOM : " ordinary " , lit , (3 ,3) , (
+center , center ) , (11 ,9) {
+OBJECT :( ' ` ' ," statue " ) ,(0 ,0) ,
+montype : 'C ' ,1
+OBJECT :( ' ` ' ," statue " ) ,(0 ,8) ,
+montype : 'C ' ,1
+OBJECT :( ' ` ' ," statue " ) ,(10 ,0) ,
+montype : 'C ' ,1
+OBJECT :( ' ` ' ," statue " ) ,(10 ,8) ,
+montype : 'C ' ,1
+OBJECT :( ' ` ' ," statue " ) ,(5 ,1) ,
+montype : 'C ' ,1
+OBJECT :( ' ` ' ," statue " ) ,(5 ,7) ,
+montype : 'C ' ,1
+OBJECT :( ' ` ' ," statue " ) ,(2 ,4) ,
+montype : 'C ' ,1
+OBJECT :( ' ` ' ," statue " ) ,(8 ,4) ,
+montype : 'C ' ,1
+
+ROOM : " ordinary " , random ,
+random , random , random {
+STAIR : random , down
+OBJECT : random , random
+TRAP : random , random
+MONSTER : random , random
+MONSTER : random , random
+}
+ROOM : " ordinary " , random ,
+random , random , random {
+OBJECT : random , random
+OBJECT : random , random
+MONSTER : random , random
+}
+
+SUBROOM : " delphi " , lit , (4 ,3)
+, (3 ,3) {
+FOUNTAIN : (0 , 1)
+FOUNTAIN : (1 , 0)
+FOUNTAIN : (1 , 2)
+FOUNTAIN : (2 , 1)
+MONSTER : ( '@ ' , " Oracle " ) ,
+(1 ,1)
+ROOMDOOR : false , nodoor ,
+random , random
+}
+
+ROOM : " ordinary " , random ,
+random , random , random {
+OBJECT : random , random
+TRAP : random , random
+MONSTER : random , random
+}
+ROOM : " ordinary " , random ,
+random , random , random {
+OBJECT : random , random
+TRAP : random , random
+MONSTER : random , random
+}
+
+MONSTER : random , random
+MONSTER : random , random
+
+RANDOM_CORRIDORS
+
+}
+
+Figure 14: The ROOM-type des-file for the Oracle level in NetHack.
+
+Figure 15: A screenshot of the Oracle level specified using the des-file in Figure 14.
+
+B
+
+MiniHack
+
+B.1
+
+Observation Space
+
+MiniHack, like NLE, has a dictionary-structured observation space. Most keys are inherited from NLE,
+while some are added in MiniHack. Note that using different observation keys can make environments
+significantly easier or harder (see Section 3.5 for discussion of how to ensure comparable experiments
+are performed).
+18
+
+• glyphs is a 21 × 79 matrix of glyphs (ids of entities) on the map. Each glyph represents an
+entirely unique entity, so these are integers between 0 and MAX_GLYPH (5991). In the standard
+terminal-based view of NetHack, these glyphs are represented by characters, with colours and other
+possible visual features.
+• chars is a 21 × 79 matrix of the characters representing the map.
+• colors is a 21 × 79 matrix of the colours of each of the characters on the map (some characters
+represent different objects or monsters depending on their colour).
+• specials is a 21 × 79 matrix of special extra information about the view of that cell on the map,
+for example, if the foreground and background colour should be reversed.
+• blstats ("Bottom Line Stats") is a representation of the status line at the bottom of the screen,
+containing information about the player character’s position, health, attributes and other statuses. It
+comes in the form of a dimension 25 vector.
+• message is the utf-8 encoding of the on-screen message displayed at the top of the screen. It’s a
+256-dimensional vector.
+• tty_chars is the character representation of the entire screen, including the message and map, of
+size 24 × 80.
+• tty_colors is the color representation of the entire screen, including the message and map, of
+size 24 × 80.
+• tty_cursor is the location of the cursor on the screen, a 2-dimensional vector of (x,y) coordinates.
+• inv_glyphs is a 55-dimensional vector representing the glyphs present in the current inventory
+view.
+• inv_letters is a 55-dimensional vector representing the letters present in the current inventory
+view.
+• inv_oclasses is a 55-dimensional vector representing the class of objects present in the current
+inventory view.
+• inv_strs is a 55 × 80 matrix containing utf-8 encodings of textual descriptions of objects present
+in the current inventory view.
+MiniHack adds the following observation keys:
+• screen_descriptions is a 21 × 79 × 80 tensor of utf-8 encodings of textual descriptions of each
+cell present in the map. NetHack provides these textual descriptions (which can be accessed by the
+user by using the describe action on a specific tile).
+• pixel. We provide pixel-level observations based on the official NetHack tile-set. This is a
+representation of the current screen in image form, where each cell is represented by a 16x16x3
+image, meaning the entire observation is so 336 × 1264 × 3 (with 3 channels for RGB). Examples
+of this pixel observation can be seen in Figure 1 and Figure 6.
+• Cropped observations. For glyphs, chars, colors, specials, tty_chars, tty_colors,
+pixel, and screen_descriptions a cropped observation centered the agent can be used by
+passing the observation name suffixed with _crop (e.g. chars_crop). This is a NxN matrix
+centered on the agent’s current location containing the information normally present in the full view.
+The size of the crop can easily be configured using corresponding flags. Cropped observations can
+facilitate the learning, as the egocentric input makes representation learning easier.
+B.2
+
+Interface
+
+There are two main MiniHack base classes to chose from, both derived from a common MiniHack
+base class.
+MiniHackNavigation can be used to design mazes and navigation tasks that only require a small
+action space. All MiniHack navigation tasks we release, as well as MiniGrid and Boxoban examples,
+make use of the MiniHackNavigation interface. Here the pet is disabled by default. The in-game
+multiple-choice question prompts as well as menu navigation, are turned off by default.
+MiniHackSkill provides a convenient mean for designing diverse skill acquisition tasks that require
+a large action space and more complex goals. All skill acquisition tasks in MiniHack use this
+19
+
+base class. The in-game multiple-choice question prompts is turned on by default, while the menu
+navigation is turned off. The player’s pet and auto-pickup are disabled by default.
+When designing environments, we particularly suggest using partially underspecified levels in order
+to use the built-in procedural content generator that changes the environment after every episode.
+For example, several aspects of the level described in Figure 3, such as the types and locations of
+monsters, objects, and traps, are not fully specified. The NetHack engine will make corresponding
+selections at random, making that specific feature of the environment procedurally generated. This
+enables a vast number of environment instances to be created. These could be instances the agent has
+never seen before, allowing for evaluation of test-time generalisation.
+B.3
+
+Level Generator
+
+When creating a new MiniHack environment, a des-file must be provided. One way of providing
+this des-file is writing it entirely from scratch (for example files see Figure 14 and Figure 3, and for
+example environment creation see Figure 16a). However, this requires learning the des-file format
+and is more difficult to do programmatically, so as part of MiniHack we provide the LevelGenerator
+class which provides a convenient wrapper around writing a des-file. The LevelGenerator class
+can be used to create MAZE-type levels with specified heights and widths, and can then fill those
+levels with objects, monsters and terrain, and specify the start point of the level. Combined with the
+RewardManager which handles rewards (see Appendix B.4), this enables flexible creation of a wide
+variety of environments.
+The level generator can start with either an empty maze (in which case only height and width are
+specified, see Figure 16b line 2) or with a pre-drawn map (see Figure 16c). After initialisation, the
+level generator can be used to add objects, traps, monsters and other terrain features. These can
+all be either completely or partially specified, in terms of class or location (see Appendix A.3 and
+Appendix A.4 for more information on how this works, and Figure 16b lines 6-10). Terrain can also
+be added programmatically at a later stage (Figure 16b lines 11-12). Once the level is complete, the
+.get_des() function returns the des-file which can then be passed to the environment creation
+function (Figure 16b lines 26-29).
+B.4
+
+Reward Manager
+
+Along with creating the level layout, structure and content through the LevelGenerator, we also
+provide an interface to design custom reward functions. The default reward function of MiniHack is a
+sparse reward of +1 for reaching the staircase down (which terminates the episode), and 0 otherwise,
+with episodes terminating after a configurable number of time-steps. Using the RewardManager,
+one can control what events give the agent reward, whether those events can be repeated, and what
+combinations of events are sufficient or required to terminate the episode.
+In Figure 16b lines 14-24 present an example of the reward manager usage. We first instantiate the
+reward manager and add events for eating an apple or wielding a dagger. The default reward is +1,
+and in general, all events are required to be completed for the episode to terminate. In lines 23-24,
+we add an event of standing on a sink which has a reward of -1 and is not required for terminating the
+episode.
+While the basic reward manager supports many events by default, users may want to extend this
+interface to define their own events. This can be done easily by inheriting from the Event class
+and implementing the check and reset methods. Beyond that, custom reward functions can be
+added to the reward manager through add_custom_reward_fn method. These functions take the
+environment instance, the previous observation, action taken and current observation, and should
+return a float.
+We also provide two ways to combine events in a more structured way.
+The
+SequentialRewardManager works similarly to the normal reward manager but requires the events
+to be completed in the sequence they were added, terminating the episode once the last event is complete. The GroupedRewardManager combines other reward managers, with termination conditions
+defined across the reward managers (rather than individual events). This allows complex conjunctions
+and disjunctions of groups of events to specify termination. For example, one could specify a reward
+20
+
+1
+2
+3
+4
+5
+
+# des_file is the path to the des-file
+# or its content as a string
+env = gym.make(
+"MiniHack-Navigation-Custom-v0",
+def_file=des_file)
+(a) Creating a MiniHack navigation task via
+des-file.
+
+1
+2
+
+# Define a 10 by 10 grid area
+lvl_gen = LevelGenerator(w=10, h=10)
+
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+
+# Populate it with different objects,
+# a monster (goblin) and features (lava)
+lvl_gen.add_object("apple", "%")
+lvl_gen.add_object("dagger", ")")
+lvl_gen.add_trap(name="teleport")
+lvl_gen.add_sink()
+lvl_gen.add_monster("goblin")
+lvl_gen.fill_terrain("rect", "L",
+0, 0, 9, 9)
+
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+
+# Define a reward manager
+reward_manager = RewardManager()
+# +1 reward and termination for eating
+# an apple or wielding a dagger
+reward_manager.add_eat_event("apple")
+reward_manager.add_wield_event("dagger")
+# -1 reward for standing on a sink
+# but isn't required for terminating
+env = gym.make(
+# the episode
+"MiniHack-Skill-Custom-v0",
+reward_manager.add_location_event("sink",
+des_file = lvl_gen.get_des())
+reward=-1, terminal_required=False)
+
+25
+26
+27
+28
+29
+
+# Define the maze as a string
+maze = """
+-------------------|.......|.|........|
+|.-----.|.|.-----|.|
+|.|...|.|.|......|.|
+|.|.|.|.|.|-----.|.|
+|.|.|...|....|.|.|.|
+|.|.--------.|.|.|.|
+|.|..........|...|.|
+|.|--------------|.|
+|..................|
+-------------------"""
+# Set a start and goal positions
+lvl_gen = LevelGenerator(map=maze)
+lvl_gen.set_start_pos((9, 1))
+lvl_gen.add_goal_pos((14, 5))
+# Add a Minotaur at fixed position
+lvl_gen.add_monster(name="minotaur",
+place=(19, 9))
+# Add wand of death
+lvl_gen.add_object("death", "/")
+
+(c) Creating a MiniHack skill task using the
+LevelGenerator with a pre-defined map layout.
+
+env = gym.make(
+"MiniHack-Skill-Custom-v0",
+des_file=lvl_gen.get_des(),
+reward_manager=reward_manager)
+(b) Creating a skill task using the LevelGenerator
+and RewardManager.
+
+Figure 16: Three ways to create MiniHack environments: using only a des-file, using the LevelGenerator and the RewardManager, and LevelGenerator with a pre-defined map layout.
+
+function that terminates if a sequence of events (a,b,c) was completed, or all events {d,e,f} were
+completed in any order and the sequence (g,h) was completed.
+B.5
+
+Examples
+
+Figure 16a presents how to create a MiniHack navigation task using only the des-file, as in Figure 3
+or Figure 14.
+Figure 16b shows how to create a simple skill acquisition task that challenges the agent to eat an
+apple and wield a dagger that is randomly placed in a 10x10 room surrounded by lava, alongside a
+goblin and a teleportation trap. Here, the RewardManager is used to specify the tasks that need to be
+completed.
+Figure 16c shows how to create a labyrinth task. Here, the agent starts near the entrance of a maze
+and needs to reach its centre. A Minotaur is placed deep inside the maze, which is a powerful monster
+capable of instantly killing the agent in melee combat. There is a wand of death placed in a random
+location in the maze. The agent needs to pick it up, and upon seeing the Minotaur, zap it in the
+21
+
+direction of the monster. Once the Minotaur is killed, the agent needs to navigate itself towards the
+staircase (this is the default goal when RewardManager is not used).
+
+C
+
+MiniHack tasks
+
+This section presents detailed descriptions of existing MiniHack task and registered configurations.
+Tasks are grouped into similar tasks, within which several attributes are varied to make more difficult
+versions of the same task.
+C.1
+
+Navigation Tasks
+
+Room. These tasks are set in a single square room, where the goal is to reach the staircase down
+(see Figure 17). There are multiple variants of this level. There are two sizes of the room (5x5,
+15x15). In the simplest variants, Room-5x5 and Room-15x15), the start and goal position are
+fixed. In the Room-Random-5x5 and Room-Random-15x15 tasks, the start and goal position are randomised. The rest of the variants add additional complexity to the randomised version of the environment by introducing monsters (Room-Monster-5x5 and Room-Monster-15x15), teleportation traps
+(Room-Trap-5x5 and Room-Trap-15x15), darkness (Room-Dark-5x5 and Room-Dark-15x15), or
+all three combined (Room-Ultimate-5x5 and Room-Ultimate-15x15).10
+
+Figure 17: Various instances of the Room-Ultimate-15x15 task.
+Corridor. These tasks make use of the RANDOM_CORRIDORS command in the des-file. The
+objective is to reach the staircase down, which is in a random room (see Figure 18). The agent is also
+in a random room. The rooms have randomised positions and sizes. The corridors between the rooms
+are procedurally generated and are different for every episode. Different variants of this environment
+have different numbers of rooms, making the exploration challenge more difficult (Corridor-R2,
+Corridor-R3, and Corridor-R5 environments are composed of 2, 3, and 5 rooms, respectively).
+
+Figure 18: Four instances of the Corridor-R5 task.
+KeyRoom. These tasks require an agent to pick up a key, navigate to a door, and use the key to
+unlock the door, reaching the staircase down within the locked room. The action space is the standard
+movement actions plus the PICKUP and APPLY actions (see Figure 19). In the simplest variant of
+this task, (KeyRoom-Fixed-S5), the location of the key, door and staircase are fixed. In the rest of
+the variants, these locations randomised. The size the outer room is 5x5 for KeyRoom-S5 and 15x15
+for KeyRoom-S15. To increase the difficulty of the tasks, dark versions of the tasks are introduced
+10
+
+The agent can attack monsters by moving towards them when located in an adjacent grid cell. Stepping on a
+lava tile instantly kills the agent. When the room is dark, the agent can only observe adjacent grid cells.
+
+22
+
+(KeyRoom-Dark-S5 and KeyRoom-Dark-S15), where the key cannot be seen if it is not in any of
+the agent’s adjacent grid cells.
+
+Figure 19: Various instances of the KeyRoom-S15 task.
+MazeWalk. These navigation tasks make use of the MAZEWALK command in the des-file, which
+procedurally generates diverse mazes on the 9x9, 15x15 and 45x19 grids for MazeWalk-9x9,
+MazeWalk-15x15, and MazeWalk-45x19 environments, respectively (see Figure 20). In
+the mapped versions of these tasks (MazeWalk-Mapped-9x9, MazeWalk-Mapped-15x15, and
+MazeWalk-Mapped-45x19), the map of the maze and the goal’s locations are visible to the agent.
+
+Figure 20: Various instances of the MazeWalk-15x15 task.
+River. This group of tasks requires the agent to cross a river using boulders (see Figure 21).
+Boulders, when pushed into the water, create a dry land to walk on, allowing the agent to cross
+it. While the River-Narrow task can be solved by pushing one boulder into the water, other
+River require the agent to plan a sequence of at least two boulder pushes into the river next
+to each other. In the more challenging tasks of the group, the agent needs to additionally fight
+monsters (River-Monster), avoid pushing boulders into lava rather than water (River-Lava), or
+both (River-MonsterLava).
+
+Figure 21: Three instances of the River task.
+HideNSeek. In the HideNSeek task, the agent is spawned in a big room full of trees and clouds
+(see Figure 22). The trees and clouds block the line of sight of the player and a random monster
+(chosen to be more powerful than the agent). The agent, monsters and spells can pass through clouds
+unobstructed. The agent and monster cannot pass through trees. The goal is to make use of the
+environment features, avoid being seen by the monster and quickly run towards the goal. The layout
+of the map is procedurally generated, hence requires systematic generalisation. Alternative versions
+of this task additionally include lava tiles that need to be avoided (HideNSeek-Lava), have bigger
+size (HideNSeek-Big) or provide the locations of all environment features but not the powerful
+monster (HideNSeek-Mapped).
+
+Figure 22: Four instances of the HideNSeek task.
+23
+
+CorridorBattle. The CorridorBattle task challenges the agent to make best use of the dungeon
+features to effectively defeat a horde of hostile monsters (see Figure 23). Here, if the agent lures the
+rats into the narrow corridor, it can defeat them one at a time. Fighting in rooms, on the other hand,
+would result in the agent simultaneously incurring damage from several directions and quick death.
+The task also is offered in dark mode (CorridorBattle-Dark), challenging the agent to remember
+the number of rats killed in order to plan subsequent actions.
+
+Figure 23: A screenshot of the CorridorBattle task.
+Memento. This group of tasks test the agent’s ability to use memory (within an episode) to pick
+the correct path. The agent is presented with a prompt (in the form of a sleeping monster of a specific
+type) and then navigates along a corridor (see Figure 24). At the end of the corridor, the agent reaches
+a fork and must choose a direction. One direction leads to a grid bug, which if killed terminates the
+episode with a +1 reward. All other directions lead to failure through an invisible trap that terminates
+the episode when activated. The correct path is determined by the cue seen at the beginning of the
+episode. We provide three versions of this environment: one with a short corridor before a fork
+with two paths to choose from (Memento-Short-F2), one with a long corridor with a two-path fork
+(Memento-F2), and one with a long corridor and a four-fork path (Memento-F4).
+
+Figure 24: A screenshot of the Memento-F4 task.
+MazeExplore. These tasks test the agent’s ability to perform deep exploration [42]. It’s inspired
+by the Apple-Gold domain from [22], where a small reward can be achieved easily, but to learn the
+optimal policy deeper exploration is required. The agent must first explore a simple randomised
+maze to reach the staircase down, which they can take for +1 reward (see Figure 25). However, if
+they navigate through a further randomised maze, they reach a room with apples. Eating the apples
+gives a +0.5 reward, and once the apples are eaten the agent should then return to the staircase down.
+We provide an easy and a hard version of this task (MazeExplore-Easy and MazeExplore-Hard),
+with the harder version having a larger maze both before and after the staircase down. Variants can
+also be mapped (MazeExplore-Easy-Mapped and MazeExplore-Hard-Mapped), where the agent
+can observe the layout of the entire grid, making it easier to navigate the maze. Even in the mapped
+setting, the apples are not visible until the agent reaches the final room.
+
+Figure 25: Four instances of the MazeExplore-Hard task. The apples are located near the right
+vertical wall (unobservable in the figure). The goal is located in the middle area of the grid.
+The full list of navigation tasks in MiniHack is provided in Table 1.
+C.2
+C.2.1
+
+Skill Acquisition Tasks
+Skills
+
+The nature of commands in NetHack requires the agent to perform a sequence of actions so that the
+initial action, which is meant for interaction with an object, has an effect. The exact sequence of
+24
+
+Table 1: Full list of MiniHack navigation tasks and corresponding capabilities for assessment.
+Name
+
+Capability
+
+Room-5x5-v0
+Room-15x15-v0
+Room-Random-5x5-v0
+Room-Random-15x15-v0
+Room-Dark-5x5-v0
+Room-Dark-15x15-v0
+Room-Monster-5x5-v0
+Room-Monster-15x15-v0
+Room-Trap-5x5-v0
+Room-Trap-15x15-v0
+Room-Ultimate-5x5-v0
+Room-Ultimate-15x15-v0
+
+Basic Learning
+Basic Learning
+Basic Learning
+Basic Learning
+Basic Learning
+Basic Learning
+Basic Learning
+Basic Learning
+Basic Learning
+Basic Learning
+Basic Learning
+Basic Learning
+
+Corridor-R2-v0
+Corridor-R3-v0
+Corridor-R5-v0
+
+Exploration
+Exploration
+Exploration
+
+KeyRoom-Fixed-S5-v0
+KeyRoom-S5-v0
+KeyRoom-Dark-S5-v0
+KeyRoom-S15-v0
+KeyRoom-Dark-S15-v0
+
+Exploration
+Exploration
+Exploration
+Exploration
+Exploration
+
+MazeWalk-9x9-v0
+MazeWalk-Mapped-9x9-v0
+MazeWalk-15x15-v0
+MazeWalk-Mapped-15x15-v0
+MazeWalk-45x19-v0
+MazeWalk-Mapped-45x19-v0
+
+Exploration & Memory
+Exploration & Memory
+Exploration & Memory
+Exploration & Memory
+Exploration & Memory
+Exploration & Memory
+
+River-Narrow-v0
+River-v0
+River-Monster-v0
+River-Lava-v0
+River-MonsterLava-v0
+
+Planning
+Planning
+Planning
+Planning
+Planning
+
+HideNSeek-v0
+HideNSeek-Mapped-v0
+HideNSeek-Lava-v0
+HideNSeek-Big-v0
+
+Planning
+Planning
+Planning
+Planning
+Planning & Memory
+Planning & Memory
+
+CorridorBattle-v0
+CorridorBattle-Dark-v0
+
+Memory
+Memory
+Memory
+
+Memento-Short-F2-v0
+Memento-F2-v0
+Memento-F4-v0
+MazeExplore-Easy-v0
+MazeExplore-Hard-v0
+MazeExplore-Easy-Mapped-v0
+MazeExplore-Hard-Mapped-v0
+
+25
+
+Deep Exploration
+Deep Exploration
+Deep Exploration
+Deep Exploration
+
+subsequent can be inferred by the in-game message bar prompts.11 For example, when located in the
+same grid with an apple lying on the floor, choosing the Eat action will not be enough for the agent
+to eat it. In this case, the message bar will ask the following question: "There is an apple here; eat it?
+[ynq] (n)". Choosing the Y action at the next timestep will cause the initial EAT action to take effect,
+and the agent will eat the apple. Choosing the N action (or MORE action since N is the default choice)
+will decline the previous EAT action prompt. The rest of the actions will not progress the in-game
+timer and the agent will stay in the same state. We refer to this skill as Confirmation.
+The PickUp skill requires picking up objects from the floor first and put in the inventory. The
+tasks with InventorySelect skill necessities selecting an object from the inventory using the
+corresponding key, for example, "What do you want to wear? [fg or ?*]" or "What do you want to
+zap? [f or ?*]". The Direction skill requires choosing one of the moving directions for applying
+the selected action, e.g., kicking or zapping certain types of wands. In this case, "In what direction?"
+message will appear on the screen. The Navigation skill tests the agent’s ability to solve various
+mazes and labyrinths using the moving commands.
+C.2.2
+
+Tasks
+
+The full list of skill acquisition tasks, alongside the skills they require mastering, is provided in
+Table 2. The skill acquisition tasks are suitable testbeds for fields such as curriculum learning and
+transfer learning, either between different tasks within MiniHack or to the full game of NetHack.
+
+Figure 26: Random instances of the Eat-Distract, Wear-Distract and Pray-Distract tasks.
+Simple Tasks. The simplest skill acquisition tasks require discovering interaction between one
+object and the actions of the agent. These include: eating comestibles (Eat), praying on an altar
+(Pray), wearing armour (Wear), and kicking locked doors (LockedDoors). In the regular versions
+of these tasks, the starting location of the objects and the agent is randomised, whereas in the fixed
+versions of these tasks (Eat-Fixed, Pray-Fixed, Wear-Fixed and LockedDoors-Fixed) both are
+fixed. To add a slight complexity to the randomised version of these tasks, distractions in the form of
+a random object and a random monster are added to the third version of these tasks (Eat-Distract,
+Pray-Distract and Wear-Distract, see Figure 26). These tasks can be used as building blocks
+for more advanced skill acquisition tasks.
+
+Figure 27: Five random instances of the LavaCross task, where the agent needs to cross the lava
+using (i) potion of levitation, (ii) ring of levitation, (iii) levitation boots, (iv) frost horn, or (v) wand
+of cold.
+Lava Crossing. An example of a more advanced task involves crossing a river of lava. The agent
+can accomplish this by either levitating over it (via a potion of levitation or levitation boots) or
+freezing it (by zapping the wand of cold or playing the frost horn). In the simplest version of
+the task (LavaCross-Levitate-Potion-Inv and LavaCross-Levitate-Ring-Inv), the agent
+starts with one of the necessary objects in the inventory. Requiring the agent to pick up the corresponding object first makes the tasks more challenging (LavaCross-Levitate-Potion-PickUp
+11
+
+Hence the messages are also used as part of observations in the skill acquisition tasks.
+
+26
+
+and LavaCross-Levitate-Ring-PickUp). The most difficult variants of this task group require
+the agent to cross the lava river using one of the appropriate objects randomly sampled and placed at
+a random location. In LavaCross-Levitate, one of the objects of levitation is placed on the map,
+while in the LavaCross task these include all of the objects for levitation as well as freezing (see
+Figure 27).
+
+Figure 28: A screenshot of the WoD-Hard task.
+Wand of Death. MiniHack is very convenient for making incremental changes to the difficulty of a
+task. To illustrate this, we provide a sequence of tasks that require mastering the usage of the wand of
+death [WoD, 38]. Zapping a WoD in any direction fires a death ray which instantly kills almost any
+monster it hits. In WoD-Easy environment, the agent starts with a WoD in its inventory and needs to
+zap it towards a sleeping monster. WoD-Medium requires the agent to pick it up, approach the sleeping
+monster, kill it, and go to the staircase. In WoD-Hard the WoD needs to be found first, only then the
+agent should enter the corridor with a monster (who is awake and hostile this time), kill it, and go to
+the staircase (see Figure 28). In the most difficult task of the sequence, the WoD-Pro, the agent starts
+inside a big labyrinth. It needs to find the WoD inside the maze and reach its centre, which is guarded
+by a deadly Minotaur.
+
+Figure 29: Two instances of the Quest-Hard task.
+Quest. Quest tasks require the agent to navigate mazes, cross rivers and fight powerful monsters.
+Quest_Easy, the simplest environment in the group, challenges the agent to use objects in the
+inventory to cross the river of lava and fight a few relatively weak monsters. In Quest_Medium the
+agent engages with a horde of monsters instead and must lure them into the narrow corridors to
+survive. The Quest_Hard task, the most difficult environment of the group, requires the agent to
+solve complex, procedurally generated mazes, find objects for crossing the lava river and make use of
+the wand of death to kill a powerful monster (see Figure 29).
+C.3
+
+Ported Tasks
+
+The full list of tasks ported to MiniHack from MiniGrid [12] and Boxoban [21] which we used
+in our experiments is provided in Table 3. Note that more tasks could have similarly been ported
+from MiniGrid. However, our goal is to showcase MiniHack’s ability to port existing gridworld
+environments and easily enrich them, rather than porting all possible tasks.
+
+D
+
+Experiment Details
+
+Instructions on how to replicate experiments we present can be found in MiniHack’s repository:
+https://github.com/facebookresearch/minihack. Below we provide details on individual
+components.
+D.1
+
+Agent and Environment Details
+
+The agent architecture used throughout all experiments is identical to it in [33]. The observations used
+by the model include the 21 × 79 matrix of grid entity representations and a 21-dimensional vector
+containing agent statistics, such as its coordinates, health points, etc. Every of the 5991 possible
+27
+
+Table 2: Full list of MiniHack skill acquisition tasks.
+Name
+
+Skill
+Confirmation or PickUp+Inventory
+Confirmation or PickUp+Inventory
+Confirmation or PickUp+Inventory
+Confirmation
+Confirmation
+Confirmation
+PickUp+Inventory
+PickUp+Inventory
+PickUp+Inventory
+Direction
+Direction
+
+Eat-v0
+Eat-Fixed-v0
+Eat-Distract-v0
+Pray-v0
+Pray-Fixed-v0
+Pray-Distract-v0
+Wear-v0
+Wear-Fixed-v0
+Wear-Distract-v0
+LockedDoor-v0
+LockedDoor-Random-v0
+
+Inventory
+Inventory
+PickUp+Inventory
+PickUp+Inventory
+PickUp+Inventory
+PickUp+Inventory
+
+LavaCross-Levitate-Ring-Inv-v0
+LavaCross-Levitate-Potion-Inv-v0
+LavaCross-Levitate-Ring-Pickup-v0
+LavaCross-Levitate-Potion-PickUp-v0
+LavaCross-Levitate-v0
+LavaCross-v0
+WoD-Easy
+WoD-Medium
+WoD-Hard
+WoD-Pro
+
+Inventory+Direction
+PickUp+Inventory+Direction
+PickUp+Inventory+Direction
+Navigation+PickUp+Inventory+Direction
+
+Quest-Easy-v0
+Quest-Medium-v0
+Quest-Hard-v0
+
+Inventory
+Navigation+Inventory
+Navigation+PickUp+Inventory+Direction
+
+Table 3: Tasks ported to MiniHack from other benchmarks.
+Name
+
+Capability
+
+MultiRoom-N2-v0 [12]
+MultiRoom-N4-v0 [12]
+MultiRoom-N2-Monster-v0
+MultiRoom-N4-Monster-v0
+MultiRoom-N2-Locked-v0
+MultiRoom-N4-Locked-v0
+MultiRoom-N2-Lava-v0
+MultiRoom-N4-Lava-v0
+MultiRoom-N2-Extreme-v0
+MultiRoom-N4-Extreme-v0
+
+Exploration
+Exploration
+Exploration
+Exploration
+Exploration
+Exploration
+Exploration
+Exploration
+Exploration
+Exploration
+
+Boxoban-Unfiltered-v0 [21]
+Boxoban-Medium-v0 [21]
+Boxoban-Hard-v0 [21]
+
+Planning
+Planning
+Planning
+
+28
+
+entities in NetHack (monsters, items, dungeon features, etc.) is mapped onto a k-dimensional vector
+representation as follows. First, we split the entity ids (glyphs) into one of twelve groups (categories
+of entities) and an id within each group. We construct a partition of the final vector which includes
+the following components as sub-vectors: group, subgroup_id, color, character, and special, each of
+which uses a separate embedding that is learned throughout the training. The relative length of each
+sub-vector is defined as follows: groups=1, subgroup_ids=3, colors=1, chars=2, and specials=1. That
+is, for a k = 64 dimensional embeddings, we make use of an embedding dimension of 24 for the id,
+8 for group, 8 for color, 16 for character, and 8 for special. These settings were determined during a
+set of small-scale experiments.
+Three dense representations are produced. First, all visible entity embeddings are passed to a CNN.
+Second, another CNN is applied to the 9 × 9 crop of entities surrounding the agent. Third, an MLP
+is used to encode the agent’s statistic. These three vectors are concatenated and passed to another
+MLP which produces the final representation ot of the observation. To obtain the action distribution,
+we feed the observations ot to a recurrent layer comprised with an LSTM [26] cells, followed by an
+additional MLP.
+For results on skill acquisition tasks, the in-game message, encoded using a character-level CNN [63],
+is also included as part of observation.
+For all conducted experiments, a penalty of −0.001 is added to the reward function if the selected
+action of the agent does not increment the in-game timer of NetHack. For instance, when the agent
+attempts to move against a wall or navigates in-game menus, it will receive the −0.001 penalty.
+D.2
+
+TorchBeast Details
+
+We employ an embedding dimension of 64 for entity representations. The size of the hidden dimension
+for the observation ot and the output of the LSTM ht is 256. We use a 5-layer CNN architecture
+(filter size 3 × 3, padding 1, stride 1) for encoding both the full screen of entities and the 9 × 9
+agent-centred crop. The input channel of the first layer of the CNN is the embedding size of entities
+(64). The dimensions of all subsequent layers are equal to 16 for both input and output channels.
+The characters within the in-game messages are encoded using an embedding of size 32 and passed
+to a 6-layer CNN architecture, each comprised of a 1D convolution of size 64 and ReLU nonlinearity.
+Maxpooling is applied after the first, second, and sixth layers. The convolutional layers are followed
+by an MLP.
+We apply a gradient norm clipping of 40, but do not clip the rewards. We employ an RMSProp
+optimiser with a learning rate of 2 ∗ 10−4 without momentum and with  = 10−6 .12 The entropy cost
+is set to 10−4 . The γ discounting factor is set to 0.999.
+The hyperparameters for Random Network Distillation [RND, 17] are the same as in [33] and mostly
+follow the
+√author recommendations. The weights are initialised using an orthogonal distribution with
+gains of 2. A two-headed value function is used for intrinsic and extrinsic rewards. The discount
+factor for the intrinsic reward is set to 0.99. We treat both extrinsic and intrinsic rewards as episodic
+in nature. The intrinsic reward is normalised by dividing it by a running estimate of its standard
+deviation. Unlike the original implementation of RND, we do not use observation normalisation due
+to the symbolic nature of observations used in our experiments. The intrinsic reward coefficient is
+0.1. Intrinsic rewards are not clipped.
+For our RIDE [46] baselines, we normalise the intrinsic reward by the number of visits to a state. The
+intrinsic reward coefficient is 0.1. The forward and inverse dynamics models have hidden dimension
+of 128. The loss cost is 1 for the forward model and 0.1 for inverse model.
+These settings were determined during a set of small-scale experiments.
+The training on MiniHack’s Room-5x5 task for two million timesteps using our IMPALA baseline
+takes approximately 4:30 minutes (roughly 7667 steps per second). This estimate is measured using
+2 NVIDIA Quadro GP100 GPUs (one for the learner and one for actors) and 20 Intel(R) Xeon(R)
+E5-2698 v4 @ 2.20GHz CPUs (used by 256 simultaneous actors) on an internal cluster. Our RND
+baseline completes the same number of timesteps in approximately 7:30 minutes (roughly 4092 steps
+per second) using the same computational resources.
+12
+
+For results on skill acquisition tasks, we use a learning rate of 5 ∗ 10−5 .
+
+29
+
+D.3
+
+Agent Architecture Comparison Details
+
+Here we provide details on the architectures of models used in Figure 11. The medium model uses
+the exact architectures described in Appendix D.2, namely a 5-layer CNN, hidden dimension size
+256, and entity embedding size 64. The small model uses a 3-layer CNN, hidden dimension size
+64, and entity embedding size 16. The large model uses a 9-layer CNN, hidden dimension size 512,
+and entity embedding size 128. The rest of the hyperparameters are identical for all models and are
+described in Figure 11.
+
+D.4
+
+RLlib Details
+
+We release examples of training several RL algorithms on MiniHack using RLlib [34]. RLlib is an
+open-source scalable reinforcement learning library built on top of Ray [37], that provides a unified
+framework for running experiments with many different algorithms. We use the same model as in
+the TorchBeast implementation described above, adjusted to not manage the time dimension for the
+models that use an LSTM (as RLlib handles the recurrent network logic separately). To enable future
+research on a variety of methods, we provide examples of training DQN [36], PPO [51] and A2C [35]
+on several simple MiniHack environments. Our DQN agent makes use of Double Q-Learning [55],
+duelling architecture [59] and prioritized experience replay (PER) [50]. We perform a limited sweep
+over hyperparameters, as we are not trying to achieve state-of-the-art results, just provide a starting
+point for future research.
+In all experiments, we use 1 GPU for learning, and 10 CPUs for acting (with multiple instances of
+each environment per CPU), to speed up the wall-clock run-time of the experiments. These options
+can be configured easily in the code we release.
+Results for these experiments can be seen in Figure 12. Hyperparameters for DQN, PPO, and A2C
+are detailed in Table 4, Table 5 and Table 6, respectively.
+
+Table 4: RLlib DQN Hyperparameters
+Name
+value
+learning rate
+replay buffer size
+PER β
+n-step length
+target network update frequency
+learning start steps
+PER annealing timesteps
+
+1e-6
+100000
+0.4
+5
+50000
+50000
+100000
+
+Table 5: RLlib PPO Hyperparameters
+Name
+value
+learning rate
+batch size
+SGD minibatch size
+SGD iterations per epoch
+rollout fragment length
+entropy penalty coefficient
+value function loss coefficient
+shared policy and value representation
+
+30
+
+1e-5
+128
+32
+2
+128
+0.0001
+0.5
+True
+
+Table 6: RLlib A2C Hyperparameters
+Name
+value
+learning rate
+batch size
+rollout fragment length
+entropy penalty coefficient
+value function loss coefficient
+
+D.5
+
+1e-5
+128
+128
+0.001
+0.1
+
+Unsupervised Environment Design
+
+We base our UED experiments using PAIRED on MiniHack largely on those outlined in [15]. The
+hyperparameters used for training are provided in Table 7. Note that except where explicitly noted,
+all agents share the same training hyperparameters.
+The adversary constructs new levels starting from an empty 5 × 5 grid. At each of the first 10
+timesteps, the adversary chooses a position in which to place one of the following objects: {walls,
+lava, monster, locked door}. If a selected cell is already occupied, no additional object cell is
+placed. After placing the objects, the adversary then chooses the goal position followed by the agent’s
+starting position. If a selected cell is already occupied, the position is randomly resampled from
+among the free cells.
+At each time step, the adversary policy encodes the glyph observation using two convolution layers,
+each with kernel size 3 × 3, stride lengths of 1 and 2, and output channels, 16 and 32 respectively,
+followed by a ReLU activation over the flattened outputs. We embed the time step into a 10dimensional space. The image embedding, time-step embedding, and the random noise vector are
+concatenated, and the combined representation is passed through an LSTM with a hidden dimension
+of 256, followed by two fully connected layers with a hidden dimension of 32 and ReLU activations
+to yield the action logits over the 169 possible cell choices.
+We make use of the same architecture for the protagonist and antagonist policies, with the exceptions
+of using the agent-centred crop, rather than the full glyph observation, and producing policy logits
+over the MiniHack action space rather than over the set of possible cell positions.
+Table 7: PAIRED hyperparameters
+
+E
+
+Name
+
+value
+
+γ
+λGAE
+PPO rollout length
+PPO epochs
+PPO minibatches per epoch
+PPO clip range
+PPO number of workers
+Adam learning rate
+Adam 
+PPO max gradient norm
+PPO value clipping
+value loss coefficient
+protagonist/antagonist entropy coefficient
+adversary entropy coefficient
+
+0.995
+0.95
+256
+5
+1
+0.2
+32
+1e-4
+1e-5
+0.5
+yes
+0.5
+0.0
+0.005
+
+Full Results
+
+Figure 30, Figure 31, and Figure 32 present the results of baseline agents on all navigation, skill
+acquisition and ported MiniHack tasks, respectively.
+
+31
+
+Episode Return
+Episode Return
+Episode Return
+
+1.0
+
+Room-Random-5x5
+
+Room-Dark-5x5
+
+1.0
+
+0.8
+
+0.8
+
+0.8
+
+0.6
+
+0.6
+
+0.6
+
+0.6
+
+0.6
+
+0.6
+
+0.4
+
+0.4
+
+0.4
+
+0.4
+
+0.4
+
+0.4
+
+0.2
+
+0.2
+
+0.2
+
+0.2
+
+0.2
+
+0.0
+
+0
+
+1.0
+
+2M
+
+Room-15x15
+
+0.6
+0.4
+0.2
+
+0
+
+Corridor-R2
+
+0
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+0.8
+
+0.0
+
+0.0
+
+10M
+
+0
+1.0
+
+0.5
+
+0.5
+
+0.0
+
+0.0
+
+0.5
+
+0.5
+
+50M
+
+KeyRoom-Random-S15
+
+0
+
+1.00
+
+2M
+
+Room-Dark-15x15
+
+Corridor-R3
+
+10M
+
+0.0
+
+0
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+0
+
+Room-Random-15x15
+
+0
+
+1.00
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+10M
+
+Corridor-R5
+
+0.25
+
+0.00
+
+0.00
+
+0.00
+
+0
+1.0
+
+MazeWalk-9x9
+
+200M
+
+0
+1.0
+
+0.4
+
+0.00
+
+0.00
+
+0.2
+
+0.2
+
+0.0
+
+0.5
+
+0.5
+
+1.0
+
+0
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+0
+
+1.0
+
+River-Narrow
+
+250M
+
+0
+1.00
+
+CorridorBattle
+
+250M
+
+0.75
+0.50
+0.25
+0.00
+
+HideNSeek
+
+15M
+
+0
+1.0
+
+100M
+
+HideNSeek-Mapped
+
+0.0
+
+0
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+River
+
+0
+
+0
+
+0
+
+CorridorBattle-Dark
+1.00
+
+0
+
+1.0
+
+1.0
+
+HideNSeek-Lava
+
+1.0
+
+0.8
+
+0.8
+
+0.8
+
+0.6
+
+0.6
+
+0.6
+
+0.4
+
+0.4
+
+0.4
+
+0.4
+
+0.2
+
+0.2
+
+0.2
+
+0.2
+
+0.0
+
+0
+
+Step
+
+50M
+
+Episode Return
+
+Step
+
+50M
+
+0.0
+
+0
+
+1.00
+0.75
+0.50
+0.25
+0.00
+
+0
+
+Step
+ExploreMaze-Hard
+
+50M
+
+MazeWalk-15x15
+
+River-Lava
+
+100M
+
+150M
+
+Memento-Short-F2
+
+0
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+0
+
+1.0
+
+0
+
+100M
+
+MazeWalk-Mapped-15x15
+
+1.0
+0.5
+0.0
+0.5
+
+0.5
+
+River-Monster
+
+250M
+
+0
+1.0
+
+250M
+
+River-MonsterLava
+
+0.8
+0.6
+0.4
+0.2
+
+Memento-F2
+
+150M
+
+0.0
+
+0
+
+1
+
+0.5
+
+Memento-F4
+
+150M
+
+0
+
+0.0
+1
+
+0.5
+
+0.5
+
+0
+
+1.0
+
+10M
+
+KeyRoom-Dark-S5
+
+0.00
+
+100M
+
+0.0
+
+0.0
+
+100M
+
+0
+
+0.5
+
+0.5
+
+0.6
+
+0
+
+MazeWalk-Mapped-9x9
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+150M
+
+0.75
+0.50
+0.25
+0.00
+0.25
+
+100M
+
+0.0
+
+100M
+
+0.8
+
+0.0
+
+0
+
+0.50
+
+2M
+
+Room-Ultimate-15x15
+
+1.00
+
+0.25
+
+0.6
+
+0.5
+
+10M
+
+KeyRoom-Random-S5
+
+0.25
+
+0.4
+
+0.0
+
+0
+
+0.25
+
+0.25
+
+0.5
+
+0.0
+1.00
+
+0.75
+
+0.25
+
+1.0
+
+KeyRoom-S5
+
+0.50
+
+0.8
+
+200M
+
+0.2
+
+10M
+
+0
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+0.75
+
+0.6
+
+0
+
+0.4
+
+0.0
+
+0.50
+
+0.8
+
+MazeWalk-Mapped-45x19
+1.0
+
+Room-Monster-15x15
+
+0.75
+
+0.50
+
+200M
+
+1.0
+
+2M
+
+0.50
+
+0.75
+
+MazeWalk-45x19
+
+0
+
+0.6
+
+1.00
+
+0.50
+
+0
+
+Room-Trap-15x15
+
+0.2
+
+0.0
+
+0.8
+
+0
+
+0.75
+
+0.25
+
+2M
+
+0.75
+
+200M
+
+KeyRoom-Dark-S15
+
+0.0
+
+2M
+
+Room-Ultimate-5x5
+
+1.0
+
+0.8
+
+1.00
+
+Episode Return
+
+Room-Monster-5x5
+
+1.0
+
+0.8
+
+0
+
+Episode Return
+
+Room-Trap-5x5
+
+1.0
+
+0.8
+
+1.0
+
+Episode Return
+
+Episode Return
+
+Room-5x5
+
+1.0
+
+HideNSeek-Big
+
+50M
+
+1.0
+
+0
+
+4
+
+150M
+
+ExploreMaze-Easy
+
+0
+
+120M
+
+Step
+ExploreMaze-Hard-Mapped
+1.0
+
+0
+
+3
+
+3
+
+2
+
+2
+
+1
+
+0.0
+
+2
+
+1
+
+0
+
+0
+
+250M
+
+ExploreMaze-Easy-Mapped
+4
+
+Step
+
+250M
+
+0
+
+0
+
+Step
+
+250M
+
+0.5
+0.0
+
+Step
+
+250M
+
+0.5
+
+0
+
+Step
+
+250M
+
+Figure 30: Mean episode returns on all MiniHack navigation tasks across five independent runs. The
+median of the runs is bolded.
+
+32
+
+Episode Return
+
+Pray
+
+1.00
+
+Wear
+
+1.00
+
+1.00
+
+LockedDoor
+
+Eat-Fixed
+
+1.00
+
+0.75
+
+0.75
+
+0.75
+
+0.75
+
+0.75
+
+0.50
+
+0.50
+
+0.50
+
+0.50
+
+0.50
+
+0.50
+
+0.25
+
+0.25
+
+0.25
+
+0.25
+
+0.25
+
+0.25
+
+0.00
+
+0.00
+
+0.00
+
+0.00
+
+0.00
+
+0.25
+
+0
+
+Wear-Fixed
+
+1.00
+
+75M
+
+0.25
+
+0
+
+1.00
+
+LockedDoor-Fixed
+
+75M
+
+0.25
+
+0
+
+Eat-Distract
+
+1.00
+
+75M
+
+0.25
+
+0
+
+1.00
+
+Pray-Distract
+
+75M
+
+0.00
+
+0.25
+
+0
+
+1.00
+
+Wear-Distract
+
+0.25
+
+75M
+
+0
+
+1.00
+
+0.75
+
+0.75
+
+0.75
+
+0.75
+
+0.75
+
+0.75
+
+0.50
+
+0.50
+
+0.50
+
+0.50
+
+0.50
+
+0.50
+
+0.25
+
+0.25
+
+0.25
+
+0.25
+
+0.25
+
+0.00
+
+0.00
+
+0.00
+
+0.00
+
+0.00
+
+0.25
+
+0
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+0.25
+
+75M
+
+0
+
+LavaCross--PotionInv
+
+0
+
+Episode Return
+
+Step
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+1.00
+
+75M
+
+LavaCross-RingPickUp
+
+0.75
+0.50
+
+0.25
+
+0.25
+
+0.00
+
+0.00
+
+0
+
+Step
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+100M 0
+
+Step
+
+0.25
+
+1.00
+
+0.50
+
+100M
+
+75M
+
+LavaCross-PotionPickUp
+
+0.75
+
+WoD-Medium
+
+0
+
+0
+
+100M
+
+0
+
+Step
+
+WoD-Hard
+
+1.00
+
+0
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+100M
+
+75M
+
+LavaCross-Levitate
+
+100M
+
+Step
+
+Quest-Easy
+
+0.00
+
+Step
+
+0
+
+0.00
+
+0.25
+
+0
+
+1.00
+
+0.25
+
+0.50
+
+250M
+
+0.00
+
+LavaCross
+
+75M
+
+0.50
+
+0.75
+
+Step
+
+0
+
+200M
+
+0
+
+Quest-Medium
+
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+
+75M
+
+LavaCross-RingInv
+
+0.25
+
+0.25
+
+0.75
+
+0
+
+Pray-Fixed
+
+1.00
+
+0.75
+
+Episode Return
+
+Episode Return
+
+Eat
+
+1.00
+
+100M
+
+Step
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+WoD-Easy
+
+0
+
+Quest-Hard
+
+1.0
+
+Step
+
+100M
+
+25M
+
+0.5
+0.0
+0.5
+
+0
+
+Step
+
+200M
+
+0
+
+200M
+
+Step
+
+Episode Return
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+Episode Return
+
+Figure 31: Mean episode returns on all MiniHack skill acquisition tasks across five independent runs.
+The median of the runs is bolded.
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+0
+
+MultiRoomN4
+
+Step
+
+50M
+
+200M
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+MultiRoom-N2-Monster
+
+0
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+Episode Return
+
+0
+
+MultiRoom-N2
+
+50M
+
+MultiRoom-N4-Monster
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+0
+
+1.00
+
+MultiRoom-N2Locked
+
+50M
+
+MultiRoom-N4-Locked
+
+0.75
+0.50
+0.25
+0.00
+
+0
+
+200M
+
+0
+
+Step
+Boxoban-Unfiltered
+2.0
+
+2.0
+
+1.5
+
+1.5
+
+1.0
+
+1.0
+
+0.5
+
+0.5
+0.0
+
+0.0
+
+0
+
+200M
+
+Step
+Boxoban-Medium
+
+Step
+
+400M
+
+0
+
+Step
+
+400M
+
+MultiRoom-N2-Lava
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+0
+
+50M
+
+MultiRoom-N4-Lava
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+0
+
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+
+0
+
+Step
+Boxoban-Hard
+
+Step
+
+100M
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+MultiRoom-N2-Extreme
+
+0
+
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+
+50M
+
+MultiRoom-N4-Extreme
+
+0
+
+Step
+
+100M
+
+400M
+
+Figure 32: Mean episode returns on tasks ported to MiniHack from existing benchmarks. The median
+of the five runs is bolded.
+
+33
+
+

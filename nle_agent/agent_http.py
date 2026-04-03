@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-NetHack LLM Agent - baseline zero-shot play via Qwen 2.5 3B (llama-server HTTP)
+NetHack LLM Agent - zero-shot play via local llama-server or OpenRouter.
 
-Start the server first:
+Local mode (llama-server):
   llama-server -m model.gguf --threads 6 --port 8765 -c 2048
-
-Then run:
   python agent_http.py --seed 42 --max-steps 100
+
+OpenRouter mode (any cloud model):
+  export OPENROUTER_API_KEY=sk-...
+  python agent_http.py --model openai/gpt-4o --seed 42 --max-steps 100
+  python agent_http.py --model anthropic/claude-sonnet-4 --seed 42 --cot
 """
 
 import json
@@ -20,6 +23,8 @@ import nle.env
 import nle.nethack as nh
 
 SERVER_URL = os.environ.get("LLAMA_SERVER_URL", "http://127.0.0.1:8765")
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 
 
 def _build_action_map():
@@ -97,37 +102,58 @@ def render_state(obs):
     return "\n".join(lines)
 
 
-SYSTEM_PROMPT = "You play NetHack. Reply with one action: north/south/east/west/northeast/northwest/southeast/southwest/wait/pickup/open/search/eat/drink/up/down/kick. @=you d=pet letters=monsters .=floor <>-|=stairs/walls $=gold"
+SYSTEM_PROMPT = (
+    "You play NetHack. Reply with ONE action word. "
+    "Actions: north/south/east/west/northeast/northwest/southeast/southwest/"
+    "wait/pickup/open/search/eat/drink/up/down/kick/wield/wear/apply/zap/read/throw/drop. "
+    "@=you d=pet letters=monsters .=floor <>-|=stairs/walls $=gold ?=scroll !=potion"
+)
 
 
-def query_model(state_text, history):
-    """Query llama-server via HTTP API."""
+def query_model(state_text, history, model=None):
+    """Query local llama-server or OpenRouter."""
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-    # Include recent history for context (keep very short for speed)
-    for h in history[-2:]:
+    window = history[-4:] if model else history[-2:]
+    for h in window:
         messages.append({"role": "user", "content": h["state"]})
         messages.append({"role": "assistant", "content": h["action"]})
-
     messages.append({"role": "user", "content": state_text})
 
-    payload = json.dumps({
+    max_tokens = 16 if model else 8
+    payload_dict = {
         "messages": messages,
-        "max_tokens": 8,
+        "max_tokens": max_tokens,
         "temperature": 0.2,
-    }).encode()
+    }
 
-    req = urllib.request.Request(
-        f"{SERVER_URL}/v1/chat/completions",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-    )
+    if model and OPENROUTER_KEY:
+        payload_dict["model"] = model
+        url = OPENROUTER_URL
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {OPENROUTER_KEY}",
+            "HTTP-Referer": "https://github.com/dstack-lora",
+            "X-Title": "dstack-lora NetHack Agent",
+        }
+    else:
+        url = f"{SERVER_URL}/v1/chat/completions"
+        headers = {"Content-Type": "application/json"}
+
+    payload = json.dumps(payload_dict).encode()
+    req = urllib.request.Request(url, data=payload, headers=headers)
 
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=120) as resp:
             data = json.loads(resp.read())
             content = data["choices"][0]["message"]["content"].strip()
+            if model and "usage" in data:
+                u = data["usage"]
+                print(f"    [tokens: {u.get('prompt_tokens','?')}+{u.get('completion_tokens','?')}]", file=sys.stderr)
             return content
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()[:200]
+        print(f"  [API ERROR {e.code}] {body}", file=sys.stderr)
+        return "wait"
     except Exception as e:
         print(f"  [MODEL ERROR] {e}", file=sys.stderr)
         return "wait"
@@ -158,7 +184,7 @@ def parse_action(raw):
     return ord("."), "wait"
 
 
-def run_game(seed=None, max_steps=100, verbose=True):
+def run_game(seed=None, max_steps=100, model=None, verbose=True):
     """Run a complete NetHack game."""
     env = nle.env.NLE()
     obs, info = env.reset(seed=seed)
@@ -168,10 +194,11 @@ def run_game(seed=None, max_steps=100, verbose=True):
     all_states = []
     start_time = time.time()
 
+    model_display = model if model else "Qwen 2.5 3B (local llama-server)"
     if verbose:
         print("=" * 60)
-        print(f"  NETHACK LLM AGENT - Baseline Zero-Shot")
-        print(f"  Model: Qwen 2.5 3B Instruct (Q4_K_M via llama-server)")
+        print(f"  NETHACK LLM AGENT")
+        print(f"  Model: {model_display}")
         print(f"  Seed: {seed}  |  Max steps: {max_steps}")
         print("=" * 60)
         print()
@@ -179,7 +206,7 @@ def run_game(seed=None, max_steps=100, verbose=True):
     for step in range(max_steps):
         state_text = render_state(obs)
 
-        raw_action = query_model(state_text, history)
+        raw_action = query_model(state_text, history, model=model)
         action_int, action_name = parse_action(raw_action)
 
         hp = int(obs["blstats"][10])
@@ -239,7 +266,7 @@ def run_game(seed=None, max_steps=100, verbose=True):
     if verbose:
         print()
         print("=" * 60)
-        print(f"  RESULTS")
+        print(f"  RESULTS ({model_display})")
         print(f"  Steps survived: {result['steps']}")
         print(f"  Total reward:   {result['total_reward']}")
         print(f"  Final HP:       {result['final_hp']}")
@@ -254,13 +281,15 @@ def run_game(seed=None, max_steps=100, verbose=True):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="NetHack LLM Agent")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-steps", type=int, default=100)
+    parser.add_argument("--model", type=str, default=None,
+                        help="OpenRouter model (e.g. openai/gpt-4o, anthropic/claude-sonnet-4)")
     parser.add_argument("--save", type=str, help="Save JSON log")
     args = parser.parse_args()
 
-    result = run_game(seed=args.seed, max_steps=args.max_steps)
+    result = run_game(seed=args.seed, max_steps=args.max_steps, model=args.model)
 
     if args.save:
         with open(args.save, "w") as f:
