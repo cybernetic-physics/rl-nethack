@@ -210,7 +210,7 @@ class MemoryTracker:
                                     'char': ch_char,
                                     'desc': desc,
                                     'first_seen': self.turn,
-                                    'last_seen': self.turn,
+                                    'last_seen_turn': self.turn,
                                 }
                         elif not ch_char.isalpha() or ch_char.isupper():
                             # Item on floor

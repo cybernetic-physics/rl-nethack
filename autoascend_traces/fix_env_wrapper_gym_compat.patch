@@ -1,0 +1,22 @@
+diff --git a/autoascend/env_wrapper.py b/autoascend/env_wrapper.py
+index 49b748d..388deda 100644
+--- a/autoascend/env_wrapper.py
++++ b/autoascend/env_wrapper.py
+@@ -280,7 +280,7 @@ class EnvWrapper:
+                 self.visualizer.force_next_frame()
+                 return None
+             else:
+-                actions = [a for a in self.env._actions if int(a) == key]
++                actions = [a for a in self.env.unwrapped._actions if int(a) == key]
+                 assert len(actions) < 2
+                 if len(actions) == 0:
+                     print('wrong key', key)
+@@ -319,7 +319,7 @@ class EnvWrapper:
+                 self.visualizer.step(self.last_observation, repr(chr(int(agent_action))))
+             action = agent_action
+ 
+-        obs, reward, done, info = self.env.step(self.env._actions.index(action))
++        obs, reward, done, info = self.env.step(self.env.unwrapped._actions.index(action))
+         self.score += reward
+         self.step_count += 1
+         # if not done:
