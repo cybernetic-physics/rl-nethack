@@ -10,6 +10,7 @@ class EnvConfig:
     max_episode_steps: int = 200
     use_memory_tracker: bool = True
     active_skill_bootstrap: str = "explore"
+    observation_version: str = "v1"
     enforce_action_mask: bool = True
     invalid_action_fallback: str = "wait"
 
@@ -46,6 +47,7 @@ class ModelConfig:
     lstm_size: int = 512
     skill_embedding_dim: int = 32
     share_backbone_across_skills: bool = True
+    bc_init_path: str | None = None
 
 
 @dataclass

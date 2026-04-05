@@ -32,10 +32,11 @@ class NethackSkillEnv(gym.Env):
         self.adapter = SkillEnvAdapter(config)
         self.action_map = _build_action_map()
         self.reward_source = build_reward_source(config.reward.source, config.reward.learned_reward_path)
+        self.observation_version = config.env.observation_version
         self.observation_space = spaces.Box(
             low=-10.0,
             high=10.0,
-            shape=(observation_dim(),),
+            shape=(observation_dim(self.observation_version),),
             dtype=np.float32,
         )
         self.action_space = spaces.Discrete(len(ACTION_SET))
@@ -45,7 +46,7 @@ class NethackSkillEnv(gym.Env):
         del options
         self._episode_steps = 0
         timestep = self.adapter.reset(seed=seed)
-        obs = encode_observation(timestep)
+        obs = encode_observation(timestep, version=self.observation_version)
         info = {
             "active_skill": timestep["active_skill"],
             "allowed_actions": timestep["allowed_actions"],
@@ -97,7 +98,7 @@ class NethackSkillEnv(gym.Env):
         self._episode_steps += 1
         if self._episode_steps >= self.config.env.max_episode_steps:
             truncated = True
-        obs = encode_observation(timestep)
+        obs = encode_observation(timestep, version=self.observation_version)
         info = dict(info)
         info.update(
             {
@@ -128,6 +129,7 @@ def make_nethack_skill_env(full_env_name, cfg, env_config, render_mode=None, **k
     rl_config.env.active_skill_bootstrap = getattr(
         cfg, "active_skill_bootstrap", rl_config.env.active_skill_bootstrap
     )
+    rl_config.env.observation_version = getattr(cfg, "observation_version", rl_config.env.observation_version)
     rl_config.env.enforce_action_mask = str(getattr(cfg, "enforce_action_mask", rl_config.env.enforce_action_mask)).lower() == "true"
     rl_config.env.invalid_action_fallback = getattr(cfg, "invalid_action_fallback", rl_config.env.invalid_action_fallback)
     rl_config.reward.source = getattr(cfg, "reward_source", rl_config.reward.source)

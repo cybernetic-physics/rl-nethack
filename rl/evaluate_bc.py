@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 
 import nle.env
+import torch
 
 from nle_agent.agent_http import _build_action_map
 from rl.bc_model import load_bc_model
@@ -16,9 +17,11 @@ from src.task_harness import evaluate_task_policy
 def evaluate_bc_policy(model_path: str, task: str, seeds: list[int], max_steps: int, compare_baseline: bool = False) -> dict:
     encoder = StateEncoder()
     registry = build_skill_registry()
-    input_dim = 106
-    policy = load_bc_model(model_path, input_dim=input_dim)
+    policy = load_bc_model(model_path)
     action_map = _build_action_map()
+    payload = torch.load(model_path, map_location="cpu")
+    metadata = payload.get("metadata", {})
+    observation_version = metadata.get("observation_version", "v1")
     episodes = []
 
     for seed in seeds:
@@ -40,7 +43,7 @@ def evaluate_bc_policy(model_path: str, task: str, seeds: list[int], max_steps: 
                 "memory_total_explored": memory.total_explored,
                 "rooms_discovered": len(memory.rooms),
             }
-            features = encode_observation(timestep)
+            features = encode_observation(timestep, version=observation_version)
             action_name = policy.act(features, allowed_actions=allowed_actions)
             obs, reward, terminated, truncated, _ = env.step(action_map.get(action_name, action_map["wait"]))
             memory.update(obs)

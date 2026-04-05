@@ -30,6 +30,7 @@ class BCPolicyInference:
     device: torch.device
 
     def act(self, features: np.ndarray, allowed_actions: list[str] | None = None) -> str:
+        features = np.asarray(features, dtype=np.float32)
         with torch.no_grad():
             logits = self.model(torch.from_numpy(features).to(self.device).unsqueeze(0)).squeeze(0)
             if allowed_actions:
@@ -46,10 +47,15 @@ def save_bc_model(model: BCPolicyMLP, path: str, metadata: dict | None = None) -
     torch.save(payload, path)
 
 
-def load_bc_model(path: str, input_dim: int, device: str = "cpu") -> BCPolicyInference:
+def load_bc_model(path: str, input_dim: int | None = None, device: str = "cpu") -> BCPolicyInference:
     torch_device = torch.device(device)
     payload = torch.load(path, map_location=torch_device)
-    model = BCPolicyMLP(input_dim=input_dim)
+    metadata = payload.get("metadata", {})
+    resolved_input_dim = input_dim or metadata.get("input_dim")
+    if resolved_input_dim is None:
+        raise ValueError("BC model input_dim is required and was not found in metadata")
+    hidden_size = metadata.get("hidden_size", 256)
+    model = BCPolicyMLP(input_dim=resolved_input_dim, hidden_size=hidden_size)
     model.load_state_dict(payload["state_dict"])
     model.eval()
     model.to(torch_device)

@@ -21,13 +21,20 @@ def load_trace_rows(path: str) -> list[dict]:
     return rows
 
 
-def train_bc_model(rows: list[dict], output_path: str, epochs: int = 20, lr: float = 1e-3) -> dict:
+def train_bc_model(
+    rows: list[dict],
+    output_path: str,
+    epochs: int = 20,
+    lr: float = 1e-3,
+    hidden_size: int = 256,
+    observation_version: str = "v1",
+) -> dict:
     if not rows:
         raise ValueError("No trace rows to train on")
 
     input_dim = len(rows[0]["feature_vector"])
     device = torch.device("cpu")
-    model = BCPolicyMLP(input_dim=input_dim)
+    model = BCPolicyMLP(input_dim=input_dim, hidden_size=hidden_size)
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
@@ -57,6 +64,8 @@ def train_bc_model(rows: list[dict], output_path: str, epochs: int = 20, lr: flo
         "learning_rate": lr,
         "num_examples": len(rows),
         "input_dim": input_dim,
+        "hidden_size": hidden_size,
+        "observation_version": observation_version,
         "final_loss": losses[-1],
         "train_accuracy": accuracy,
     }
@@ -70,13 +79,22 @@ def parse_args(argv=None):
     parser.add_argument("--output", type=str, required=True)
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--hidden-size", type=int, default=256)
+    parser.add_argument("--observation-version", type=str, default="v1")
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv)
     rows = load_trace_rows(args.input)
-    result = train_bc_model(rows, args.output, epochs=args.epochs, lr=args.lr)
+    result = train_bc_model(
+        rows,
+        args.output,
+        epochs=args.epochs,
+        lr=args.lr,
+        hidden_size=args.hidden_size,
+        observation_version=args.observation_version,
+    )
     print(json.dumps(result, indent=2))
     return 0
 

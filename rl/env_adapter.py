@@ -19,6 +19,7 @@ class EpisodeContext:
     steps_in_skill: int = 0
     recent_state_hashes: deque = field(default_factory=lambda: deque(maxlen=8))
     recent_positions: deque = field(default_factory=lambda: deque(maxlen=8))
+    recent_actions: deque = field(default_factory=lambda: deque(maxlen=8))
     prev_action: str | None = None
 
 
@@ -108,6 +109,7 @@ class SkillEnvAdapter:
         self.ctx.prev_action = action_name
         self.ctx.recent_state_hashes.append(next_hash)
         self.ctx.recent_positions.append(state_after["position"])
+        self.ctx.recent_actions.append(action_name)
         self.obs = obs_after
         self.info = info
         timestep = self._build_timestep(state_after)
@@ -138,6 +140,19 @@ class SkillEnvAdapter:
             "steps_in_skill": self.ctx.steps_in_skill,
             "memory_total_explored": self.memory.total_explored,
             "rooms_discovered": len(self.memory.rooms),
+            "standing_on_down_stairs": bool(state.get("standing_on_down_stairs")),
+            "standing_on_up_stairs": bool(state.get("standing_on_up_stairs")),
+            "recent_positions": [tuple(pos) for pos in self.ctx.recent_positions],
+            "recent_actions": list(self.ctx.recent_actions),
+            "repeated_state_count": sum(
+                1 for h in self.ctx.recent_state_hashes if h == self.ctx.recent_state_hashes[-1]
+            ) if self.ctx.recent_state_hashes else 0,
+            "revisited_recent_tile_count": sum(
+                1 for pos in self.ctx.recent_positions if tuple(pos) == tuple(state["position"])
+            ),
+            "repeated_action_count": sum(
+                1 for action in self.ctx.recent_actions if action == self.ctx.prev_action
+            ) if self.ctx.prev_action is not None else 0,
         }
 
     def close(self):

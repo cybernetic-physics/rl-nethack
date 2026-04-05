@@ -146,8 +146,13 @@ def generate_multi_turn_traces(
         }
 
     bc_policy = None
+    bc_observation_version = "v1"
     if policy == "bc":
-        bc_policy = load_bc_model(bc_model_path, input_dim=106)
+        bc_policy = load_bc_model(bc_model_path)
+        import torch
+
+        payload = torch.load(bc_model_path, map_location="cpu")
+        bc_observation_version = payload.get("metadata", {}).get("observation_version", "v1")
 
     total_rows = 0
     episode_lengths = []
@@ -232,7 +237,7 @@ def generate_multi_turn_traces(
                         "memory_total_explored": memory.total_explored,
                         "rooms_discovered": len(memory.rooms),
                     }
-                    features = encode_observation(timestep)
+                    features = encode_observation(timestep, version=bc_observation_version)
                     action_name = bc_policy.act(features, allowed_actions=allowed_actions)
                 elif policy == "appo":
                     planner_trace = []

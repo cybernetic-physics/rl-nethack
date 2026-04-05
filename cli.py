@@ -319,6 +319,7 @@ def cmd_rl_train_appo(args):
         "--scheduler", args.scheduler,
         "--reward-source", args.reward_source,
         "--enabled-skills", args.enabled_skills,
+        "--observation-version", args.observation_version,
         "--disable-action-mask" if args.disable_action_mask else "",
     ]
     argv = [arg for arg in argv if arg != ""]
@@ -326,6 +327,8 @@ def cmd_rl_train_appo(args):
         argv.extend(["--learned-reward-path", args.learned_reward_path])
     if args.scheduler_model_path:
         argv.extend(["--scheduler-model-path", args.scheduler_model_path])
+    if args.bc_init_path:
+        argv.extend(["--bc-init-path", args.bc_init_path])
     if args.write_plan:
         argv.extend(["--write-plan", args.write_plan])
     if args.dry_run:
@@ -419,6 +422,8 @@ def cmd_rl_train_bc(args):
         "--output", args.output,
         "--epochs", str(args.epochs),
         "--lr", str(args.lr),
+        "--hidden-size", str(args.hidden_size),
+        "--observation-version", args.observation_version,
     ]
     return train_bc_main(argv)
 
@@ -434,6 +439,50 @@ def cmd_rl_evaluate_bc(args):
         max_steps=args.max_steps,
         compare_baseline=args.compare_baseline,
     )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_rl_compare_policies(args):
+    from rl.evaluate import evaluate_appo_policy
+    from rl.evaluate_bc import evaluate_bc_policy
+    from src.task_harness import evaluate_task_policy
+
+    seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
+    baseline = evaluate_task_policy(
+        task=args.task,
+        seeds=seeds,
+        max_steps=args.max_steps,
+        policy="task_greedy",
+    )
+    result = {
+        "task": args.task,
+        "seeds": seeds,
+        "max_steps": args.max_steps,
+        "task_greedy": {"summary": baseline["summary"]},
+    }
+    if args.bc_model:
+        bc_result = evaluate_bc_policy(
+            model_path=args.bc_model,
+            task=args.task,
+            seeds=seeds,
+            max_steps=args.max_steps,
+        )
+        result["bc"] = {"summary": bc_result["summary"]}
+    if args.appo_experiment:
+        appo_result = evaluate_appo_policy(
+            experiment=args.appo_experiment,
+            train_dir=args.appo_train_dir,
+            seeds=seeds,
+            max_steps=args.max_steps,
+            deterministic=True,
+            mask_actions=True,
+        )
+        result["appo"] = {"summary": appo_result["summary"]}
+    if args.output:
+        with open(args.output, "w") as f:
+            json.dump(result, f, indent=2)
+            f.write("\n")
     print(json.dumps(result, indent=2))
     return 0
 
@@ -627,6 +676,10 @@ def main():
                       help='Path to learned scheduler model when using --scheduler learned')
     p_rl.add_argument('--enabled-skills', type=str, default='explore,survive,combat,descend,resource',
                       help='Comma-separated skill list')
+    p_rl.add_argument('--observation-version', type=str, default='v1',
+                      help='Observation encoder version (v1 or v2)')
+    p_rl.add_argument('--bc-init-path', type=str, default=None,
+                      help='Optional BC checkpoint used to warm start APPO')
     p_rl.add_argument('--disable-action-mask', action='store_true',
                       help='Disable env-side invalid action clamping')
     p_rl.add_argument('--write-plan', type=str, default=None,
@@ -649,6 +702,16 @@ def main():
                            help='Disable action masking during checkpoint evaluation')
     p_rl_eval.add_argument('--compare-baseline', action='store_true',
                            help='Also evaluate task_greedy if the checkpoint is single-skill')
+
+    p_rl_cmp = subparsers.add_parser('rl-compare-policies', help='Compare task_greedy, BC, and APPO on a fixed seed suite')
+    p_rl_cmp.add_argument('--task', type=str, default='explore',
+                          choices=['explore', 'survive', 'combat', 'descend', 'resource'])
+    p_rl_cmp.add_argument('--seeds', type=str, default='42,43,44')
+    p_rl_cmp.add_argument('--max-steps', type=int, default=50)
+    p_rl_cmp.add_argument('--bc-model', type=str, default=None)
+    p_rl_cmp.add_argument('--appo-experiment', type=str, default=None)
+    p_rl_cmp.add_argument('--appo-train-dir', type=str, default='train_dir/rl')
+    p_rl_cmp.add_argument('--output', type=str, default=None)
 
     p_rl_rew = subparsers.add_parser('rl-train-reward', help='Train a learned reward model')
     p_rl_rew.add_argument('--task', type=str, default='explore',
@@ -694,6 +757,8 @@ def main():
     p_bc.add_argument('--output', type=str, required=True)
     p_bc.add_argument('--epochs', type=int, default=20)
     p_bc.add_argument('--lr', type=float, default=1e-3)
+    p_bc.add_argument('--hidden-size', type=int, default=256)
+    p_bc.add_argument('--observation-version', type=str, default='v1')
 
     p_bc_eval = subparsers.add_parser('rl-evaluate-bc', help='Evaluate a behavior cloning policy')
     p_bc_eval.add_argument('--model', type=str, required=True)
@@ -760,6 +825,8 @@ def main():
             return cmd_rl_train_appo(args)
         elif args.command == 'rl-evaluate-appo':
             return cmd_rl_evaluate_appo(args)
+        elif args.command == 'rl-compare-policies':
+            return cmd_rl_compare_policies(args)
         elif args.command == 'rl-train-reward':
             return cmd_rl_train_reward(args)
         elif args.command == 'rl-train-scheduler':
