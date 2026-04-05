@@ -8,6 +8,7 @@ from dataclasses import asdict
 import torch
 
 from rl.config import RLConfig
+from rl.checkpoint_tools import TraceCheckpointMonitor
 from rl.io_utils import atomic_torch_save, atomic_write_text, experiment_lock
 from rl.model import build_model_spec
 from rl.sf_env import make_nethack_skill_env
@@ -48,6 +49,9 @@ class APPOTrainerScaffold:
             "teacher_bc_path": self.config.appo.teacher_bc_path,
             "teacher_loss_coef": self.config.appo.teacher_loss_coef,
             "teacher_loss_type": self.config.appo.teacher_loss_type,
+            "trace_eval_input": self.config.appo.trace_eval_input,
+            "trace_eval_interval_env_steps": self.config.appo.trace_eval_interval_env_steps,
+            "trace_eval_top_k": self.config.appo.trace_eval_top_k,
             "episodic_explore_bonus_enabled": self.config.reward.episodic_explore_bonus_enabled,
             "episodic_explore_bonus_scale": self.config.reward.episodic_explore_bonus_scale,
             "episodic_explore_bonus_mode": self.config.reward.episodic_explore_bonus_mode,
@@ -93,6 +97,9 @@ class APPOTrainerScaffold:
             f"--teacher_loss_coef={cfg.appo.teacher_loss_coef}",
             f"--teacher_loss_type={cfg.appo.teacher_loss_type}",
             f"--teacher_bc_path={cfg.appo.teacher_bc_path or ''}",
+            f"--trace_eval_input={cfg.appo.trace_eval_input or ''}",
+            f"--trace_eval_interval_env_steps={cfg.appo.trace_eval_interval_env_steps}",
+            f"--trace_eval_top_k={cfg.appo.trace_eval_top_k}",
             f"--use_rnn={str(cfg.model.use_lstm)}",
             f"--env_max_episode_steps={cfg.env.max_episode_steps}",
             f"--observation_version={cfg.env.observation_version}",
@@ -201,6 +208,9 @@ class APPOTrainerScaffold:
         parser.add_argument("--teacher_bc_path", type=str, default=self.config.appo.teacher_bc_path)
         parser.add_argument("--teacher_loss_coef", type=float, default=self.config.appo.teacher_loss_coef)
         parser.add_argument("--teacher_loss_type", type=str, default=self.config.appo.teacher_loss_type)
+        parser.add_argument("--trace_eval_input", type=str, default=self.config.appo.trace_eval_input)
+        parser.add_argument("--trace_eval_interval_env_steps", type=int, default=self.config.appo.trace_eval_interval_env_steps)
+        parser.add_argument("--trace_eval_top_k", type=int, default=self.config.appo.trace_eval_top_k)
         parser.add_argument("--enforce_action_mask", type=str, default=str(self.config.env.enforce_action_mask))
         parser.add_argument("--invalid_action_penalty", type=float, default=self.config.reward.invalid_action_penalty)
         parser.add_argument("--invalid_action_fallback", type=str, default=self.config.env.invalid_action_fallback)
@@ -216,7 +226,20 @@ class APPOTrainerScaffold:
                 actor_critic = create_actor_critic(sf_cfg, spaces.Dict({"obs": env.observation_space}), env.action_space)
                 warmstart_checkpoint = self.maybe_write_bc_warmstart_checkpoint(sf_cfg, actor_critic)
                 env.close()
-            status = run_rl(sf_cfg)
+            monitor = None
+            try:
+                if self.config.appo.trace_eval_input and self.config.appo.trace_eval_interval_env_steps > 0:
+                    monitor = TraceCheckpointMonitor(
+                        experiment=self.config.experiment,
+                        train_dir=self.config.train_dir,
+                        trace_input=self.config.appo.trace_eval_input,
+                        interval_env_steps=self.config.appo.trace_eval_interval_env_steps,
+                    )
+                    monitor.start()
+                status = run_rl(sf_cfg)
+            finally:
+                if monitor is not None:
+                    monitor.stop()
             return {
                 "status": str(status),
                 "plan": plan,

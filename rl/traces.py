@@ -375,6 +375,7 @@ def generate_multi_turn_traces(
                 recent_positions = [state["position"]]
                 recent_actions = []
                 prev_action = None
+                rnn_states = None
 
             action_counts = Counter()
             steps = 0
@@ -422,6 +423,8 @@ def generate_multi_turn_traces(
                 else:
                     memory = env.adapter.memory
                 next_hash = observation_hash(raw_obs_after)
+                active_skill = timestep["active_skill"]
+                allowed_actions = timestep["allowed_actions"]
                 record = {
                     "episode_id": f"{policy}:{seed}",
                     "seed": seed,

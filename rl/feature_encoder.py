@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from rl.options import build_skill_registry
+from src.state_encoder import _tile_name
 
 
 ADJ_TILES = [
@@ -47,7 +48,19 @@ SKILL_SET = list(build_skill_registry().keys())
 _TILE_TO_IDX = {name: i for i, name in enumerate(ADJ_TILES)}
 _SKILL_TO_IDX = {name: i for i, name in enumerate(SKILL_SET)}
 _ACTION_TO_IDX = {name: i for i, name in enumerate(ACTION_SET)}
-_OBS_VERSION_TO_DIM = {"v1": 106, "v2": 160}
+_OBS_VERSION_TO_DIM = {"v1": 106, "v2": 160, "v3": 244}
+
+_LOCAL_PATCH_CATEGORIES = [
+    "unseen",
+    "wall",
+    "floorish",
+    "door",
+    "stairs",
+    "item",
+    "monster",
+    "other",
+]
+_LOCAL_PATCH_TO_IDX = {name: i for i, name in enumerate(_LOCAL_PATCH_CATEGORIES)}
 
 
 def _normalize_tile_name(tile_name: str) -> str:
@@ -179,6 +192,85 @@ def _v2_extra_features(timestep: dict) -> np.ndarray:
     return np.asarray(extras, dtype=np.float32)
 
 
+def _local_patch_bucket(tile_name: str) -> str:
+    tile_name = _normalize_tile_name(tile_name)
+    if tile_name == "unseen":
+        return "unseen"
+    if tile_name == "wall":
+        return "wall"
+    if tile_name in {"floor", "corridor"}:
+        return "floorish"
+    if tile_name == "door":
+        return "door"
+    if tile_name in {"stairs_down", "stairs_up"}:
+        return "stairs"
+    if tile_name in {"gold", "scroll", "potion", "wand", "ring", "gem", "amulet", "tool", "weapon", "armor", "food"}:
+        return "item"
+    if tile_name == "monster":
+        return "monster"
+    return "other"
+
+
+def _encode_local_patch(timestep: dict, radius: int = 1) -> np.ndarray:
+    obs = timestep["obs"]
+    state = timestep["state"]
+    px, py = state["position"]
+    chars = obs["chars"]
+    patch = []
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            ny, nx = py + dy, px + dx
+            tile_name = "unseen"
+            if 0 <= ny < chars.shape[0] and 0 <= nx < chars.shape[1]:
+                tile_name = _tile_name(int(chars[ny, nx]))
+            bucket = _local_patch_bucket(tile_name)
+            vec = np.zeros(len(_LOCAL_PATCH_CATEGORIES), dtype=np.float32)
+            vec[_LOCAL_PATCH_TO_IDX[bucket]] = 1.0
+            patch.append(vec)
+    return np.concatenate(patch)
+
+
+def _directional_ray_features(timestep: dict, max_len: int = 5) -> np.ndarray:
+    obs = timestep["obs"]
+    state = timestep["state"]
+    px, py = state["position"]
+    chars = obs["chars"]
+    features: list[float] = []
+    deltas = {"north": (0, -1), "south": (0, 1), "east": (1, 0), "west": (-1, 0)}
+    for dx, dy in deltas.values():
+        unseen_count = 0
+        passable_count = 0
+        wall_seen = 0.0
+        for step in range(1, max_len + 1):
+            nx, ny = px + dx * step, py + dy * step
+            if 0 <= ny < chars.shape[0] and 0 <= nx < chars.shape[1]:
+                tile_name = _normalize_tile_name(_tile_name(int(chars[ny, nx])))
+            else:
+                tile_name = "unseen"
+            if tile_name == "unseen":
+                unseen_count += 1
+            if tile_name in {"floor", "corridor", "door", "stairs_down", "stairs_up"}:
+                passable_count += 1
+            if tile_name == "wall":
+                wall_seen = 1.0
+                break
+        features.extend(
+            [
+                unseen_count / float(max_len),
+                passable_count / float(max_len),
+                wall_seen,
+            ]
+        )
+    return np.asarray(features, dtype=np.float32)
+
+
+def _v3_extra_features(timestep: dict) -> np.ndarray:
+    extras = [*_v2_extra_features(timestep)]
+    local_patch = _encode_local_patch(timestep, radius=1)
+    ray = _directional_ray_features(timestep, max_len=5)
+    return np.concatenate([np.asarray(extras, dtype=np.float32), local_patch, ray])
+
+
 def encode_observation(timestep: dict, version: str = "v1") -> np.ndarray:
     state = timestep["state"]
     active_skill = timestep["active_skill"]
@@ -192,6 +284,8 @@ def encode_observation(timestep: dict, version: str = "v1") -> np.ndarray:
     ]
     if version == "v2":
         parts.append(_v2_extra_features(timestep))
+    elif version == "v3":
+        parts.append(_v3_extra_features(timestep))
 
     encoded = np.concatenate(parts)
     expected_dim = observation_dim(version)

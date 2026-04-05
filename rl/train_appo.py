@@ -29,12 +29,16 @@ def parse_args(argv=None):
     parser.add_argument("--episodic-explore-bonus-mode", type=str, default="state_hash", choices=["state_hash", "tile"])
     parser.add_argument("--scheduler-model-path", type=str, default=None)
     parser.add_argument("--enabled-skills", type=str, default="explore,survive,combat,descend,resource")
-    parser.add_argument("--observation-version", type=str, default="v1")
+    parser.add_argument("--observation-version", type=str, default="v2")
     parser.add_argument("--bc-init-path", type=str, default=None)
     parser.add_argument("--teacher-bc-path", type=str, default=None)
-    parser.add_argument("--teacher-loss-coef", type=float, default=0.0)
+    parser.add_argument("--teacher-loss-coef", type=float, default=0.01)
     parser.add_argument("--teacher-loss-type", type=str, default="ce", choices=["ce", "kl"])
+    parser.add_argument("--trace-eval-input", type=str, default=None)
+    parser.add_argument("--trace-eval-interval-env-steps", type=int, default=0)
+    parser.add_argument("--trace-eval-top-k", type=int, default=5)
     parser.add_argument("--no-rnn", action="store_true")
+    parser.add_argument("--use-rnn", action="store_true")
     parser.add_argument("--disable-action-mask", action="store_true")
     parser.add_argument("--write-plan", type=str, default=None)
     parser.add_argument("--dry-run", action="store_true")
@@ -65,11 +69,14 @@ def build_config(args) -> RLConfig:
     config.options.enabled_skills = [s.strip() for s in args.enabled_skills.split(",") if s.strip()]
     config.env.observation_version = args.observation_version
     config.model.bc_init_path = args.bc_init_path
-    config.appo.teacher_bc_path = args.teacher_bc_path
+    config.appo.teacher_bc_path = args.teacher_bc_path or args.bc_init_path
     config.appo.teacher_loss_coef = args.teacher_loss_coef
     config.appo.teacher_loss_type = args.teacher_loss_type
-    config.model.use_lstm = not args.no_rnn
-    if args.no_rnn:
+    config.appo.trace_eval_input = args.trace_eval_input
+    config.appo.trace_eval_interval_env_steps = args.trace_eval_interval_env_steps
+    config.appo.trace_eval_top_k = args.trace_eval_top_k
+    config.model.use_lstm = bool(args.use_rnn and not args.no_rnn)
+    if not config.model.use_lstm:
         config.rollout.recurrence = 1
     config.env.enforce_action_mask = not args.disable_action_mask
     return config

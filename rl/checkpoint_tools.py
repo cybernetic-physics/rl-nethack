@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+import threading
+import time
 from pathlib import Path
 
 from rl.evaluate import list_checkpoint_paths
@@ -52,6 +55,39 @@ def rank_appo_checkpoints_by_trace(
     }
 
 
+def checkpoint_env_steps(checkpoint_path: str | Path) -> int:
+    path = Path(checkpoint_path)
+    match = re.match(r"^(?:checkpoint|best)_(\d+)_(\d+)", path.name)
+    if not match:
+        return -1
+    return int(match.group(2))
+
+
+def evaluate_checkpoint_trace_match(
+    *,
+    experiment: str,
+    train_dir: str,
+    trace_input: str,
+    checkpoint_path: str,
+) -> dict:
+    result = evaluate_trace_policy(
+        trace_path=trace_input,
+        policy="appo",
+        appo_experiment=experiment,
+        appo_train_dir=train_dir,
+        appo_checkpoint_path=checkpoint_path,
+        summary_only=True,
+    )
+    summary = result["summary"]
+    return {
+        "checkpoint_path": checkpoint_path,
+        "env_steps": checkpoint_env_steps(checkpoint_path),
+        "match_rate": summary["match_rate"],
+        "invalid_action_rate": summary["invalid_action_rate"],
+        "action_counts": summary["action_counts"],
+    }
+
+
 def write_trace_best_alias(result: dict, output_path: str) -> str:
     payload = {
         "experiment": result["experiment"],
@@ -85,3 +121,87 @@ def materialize_trace_best_checkpoint(result: dict) -> str | None:
         },
     )
     return str(alias_path)
+
+
+class TraceCheckpointMonitor:
+    def __init__(
+        self,
+        *,
+        experiment: str,
+        train_dir: str,
+        trace_input: str,
+        interval_env_steps: int,
+        poll_seconds: float = 5.0,
+    ):
+        self.experiment = experiment
+        self.train_dir = train_dir
+        self.trace_input = trace_input
+        self.interval_env_steps = max(1, interval_env_steps)
+        self.poll_seconds = poll_seconds
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._best_match_rate = float("-inf")
+        self._seen_paths: set[str] = set()
+        self._next_eval_at = self.interval_env_steps
+
+    def _evaluate_due_checkpoints(self) -> None:
+        try:
+            checkpoint_paths = list_checkpoint_paths(self.experiment, self.train_dir)
+        except FileNotFoundError:
+            return
+        for checkpoint_path in checkpoint_paths:
+            checkpoint_path_str = str(checkpoint_path)
+            if checkpoint_path_str in self._seen_paths:
+                continue
+            env_steps = checkpoint_env_steps(checkpoint_path)
+            if env_steps < self._next_eval_at:
+                continue
+            evaluation = evaluate_checkpoint_trace_match(
+                experiment=self.experiment,
+                train_dir=self.train_dir,
+                trace_input=self.trace_input,
+                checkpoint_path=checkpoint_path_str,
+            )
+            self._seen_paths.add(checkpoint_path_str)
+            if evaluation["match_rate"] > self._best_match_rate:
+                self._best_match_rate = evaluation["match_rate"]
+                metadata = {
+                    "experiment": self.experiment,
+                    "trace_input": self.trace_input,
+                    "best_checkpoint_path": checkpoint_path_str,
+                    "env_steps": evaluation["env_steps"],
+                    "match_rate": evaluation["match_rate"],
+                    "invalid_action_rate": evaluation["invalid_action_rate"],
+                    "action_counts": evaluation["action_counts"],
+                }
+                materialize_trace_best_checkpoint(
+                    {
+                        "experiment": self.experiment,
+                        "trace_input": self.trace_input,
+                        "best_checkpoint_path": checkpoint_path_str,
+                        "num_checkpoints": len(checkpoint_paths),
+                    }
+                )
+                checkpoint_dir = Path(self.train_dir) / self.experiment / "checkpoint_p0"
+                atomic_write_json(checkpoint_dir / "best_trace_match.json", metadata)
+            self._next_eval_at = max(self._next_eval_at + self.interval_env_steps, env_steps + self.interval_env_steps)
+
+    def _loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                self._evaluate_due_checkpoints()
+            except Exception:
+                pass
+            self._stop_event.wait(self.poll_seconds)
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._loop, name=f"trace-monitor-{self.experiment}", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self.poll_seconds * 2)
+        self._evaluate_due_checkpoints()

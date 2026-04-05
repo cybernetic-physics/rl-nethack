@@ -328,7 +328,9 @@ def cmd_rl_train_appo(args):
         "--episodic-explore-bonus-mode", args.episodic_explore_bonus_mode,
         "--enabled-skills", args.enabled_skills,
         "--observation-version", args.observation_version,
+        "--trace-eval-top-k", str(args.trace_eval_top_k),
         "--no-rnn" if args.no_rnn else "",
+        "--use-rnn" if getattr(args, "use_rnn", False) else "",
         "--disable-action-mask" if args.disable_action_mask else "",
     ]
     argv = [arg for arg in argv if arg != ""]
@@ -346,6 +348,10 @@ def cmd_rl_train_appo(args):
         argv.extend(["--teacher-loss-coef", str(args.teacher_loss_coef)])
     if args.teacher_loss_type:
         argv.extend(["--teacher-loss-type", args.teacher_loss_type])
+    if args.trace_eval_input:
+        argv.extend(["--trace-eval-input", args.trace_eval_input])
+    if args.trace_eval_interval_env_steps:
+        argv.extend(["--trace-eval-interval-env-steps", str(args.trace_eval_interval_env_steps)])
     if args.write_plan:
         argv.extend(["--write-plan", args.write_plan])
     if args.dry_run:
@@ -742,10 +748,97 @@ def cmd_rl_run_dagger(args):
         bc_model_path=args.bc_model_path,
         observation_version=args.observation_version,
         merge_ratio=args.merge_ratio,
+        merge_policy=args.merge_policy,
         epochs=args.epochs,
         lr=args.lr,
         hidden_size=args.hidden_size,
+        heldout_trace_input=args.heldout_input,
     )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_rl_dagger_iterate(args):
+    from rl.dagger import run_dagger_schedule
+
+    result = run_dagger_schedule(
+        base_trace_input=args.input,
+        output_dir=args.output_dir,
+        student_policy=args.student_policy,
+        task=args.task,
+        iterations=args.iterations,
+        num_episodes=args.num_episodes,
+        max_steps=args.max_steps,
+        seed_start=args.seed_start,
+        appo_experiment=args.appo_experiment,
+        appo_train_dir=args.appo_train_dir,
+        appo_checkpoint_path=args.appo_checkpoint_path,
+        bc_model_path=args.bc_model_path,
+        observation_version=args.observation_version,
+        merge_ratio=args.merge_ratio,
+        merge_policy=args.merge_policy,
+        epochs=args.epochs,
+        lr=args.lr,
+        hidden_size=args.hidden_size,
+        heldout_trace_input=args.heldout_input,
+        random_seed=args.random_seed,
+    )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_rl_train_behavior_reg(args):
+    from rl.train_behavior_reg import main as train_behavior_reg_main
+
+    argv = [
+        "--input", args.input,
+        "--output", args.output,
+        "--epochs", str(args.epochs),
+        "--lr", str(args.lr),
+        "--hidden-size", str(args.hidden_size),
+        "--observation-version", args.observation_version,
+        "--behavior-coef", str(args.behavior_coef),
+        "--temperature", str(args.temperature),
+    ]
+    if args.heldout_input:
+        argv.extend(["--heldout-input", args.heldout_input])
+    return train_behavior_reg_main(argv)
+
+
+def cmd_rl_teacher_reg_report(args):
+    from pathlib import Path
+    from rl.trace_eval import evaluate_trace_policy
+    from rl.evaluate import list_checkpoint_paths
+
+    checkpoint_dir = Path(args.train_dir) / args.experiment / "checkpoint_p0"
+    latest_checkpoint = str(list_checkpoint_paths(args.experiment, args.train_dir)[-1])
+    best_trace_alias = checkpoint_dir / "best_trace_match.pth"
+    result = {
+        "experiment": args.experiment,
+        "trace_input": args.trace_input,
+        "bc_teacher": evaluate_trace_policy(args.trace_input, "bc", bc_model_path=args.bc_model, summary_only=True)["summary"],
+        "latest_appo": evaluate_trace_policy(
+            args.trace_input,
+            "appo",
+            appo_experiment=args.experiment,
+            appo_train_dir=args.train_dir,
+            appo_checkpoint_path=latest_checkpoint,
+            summary_only=True,
+        )["summary"],
+    }
+    if best_trace_alias.exists():
+        result["best_trace_appo"] = evaluate_trace_policy(
+            args.trace_input,
+            "appo",
+            appo_experiment=args.experiment,
+            appo_train_dir=args.train_dir,
+            appo_checkpoint_path=str(best_trace_alias),
+            summary_only=True,
+        )["summary"]
+    if args.output:
+        with open(args.output, "w") as f:
+            json.dump(result, f, indent=2)
+            f.write("\n")
     print(json.dumps(result, indent=2))
     return 0
 
@@ -946,18 +1039,26 @@ def main():
                       help='Path to learned scheduler model when using --scheduler learned')
     p_rl.add_argument('--enabled-skills', type=str, default='explore,survive,combat,descend,resource',
                       help='Comma-separated skill list')
-    p_rl.add_argument('--observation-version', type=str, default='v1',
-                      help='Observation encoder version (v1 or v2)')
+    p_rl.add_argument('--observation-version', type=str, default='v2',
+                      help='Observation encoder version (v1, v2, or v3)')
     p_rl.add_argument('--bc-init-path', type=str, default=None,
                       help='Optional BC checkpoint used to warm start APPO')
     p_rl.add_argument('--teacher-bc-path', type=str, default=None,
                       help='Optional frozen BC teacher checkpoint used for auxiliary teacher regularization')
-    p_rl.add_argument('--teacher-loss-coef', type=float, default=0.0,
-                      help='Auxiliary teacher loss coefficient; 0 disables teacher regularization')
+    p_rl.add_argument('--teacher-loss-coef', type=float, default=0.01,
+                      help='Auxiliary teacher loss coefficient; teacher-reg baseline uses 0.01')
     p_rl.add_argument('--teacher-loss-type', type=str, default='ce', choices=['ce', 'kl'],
                       help='Teacher regularization loss type')
+    p_rl.add_argument('--trace-eval-input', type=str, default=None,
+                      help='Optional trusted trace JSONL used for in-training checkpoint selection')
+    p_rl.add_argument('--trace-eval-interval-env-steps', type=int, default=0,
+                      help='If >0, periodically evaluate new checkpoints on the trusted trace set during training')
+    p_rl.add_argument('--trace-eval-top-k', type=int, default=5,
+                      help='Trace ranking top-k metadata depth during training')
     p_rl.add_argument('--no-rnn', action='store_true',
-                      help='Disable the GRU core. Use this for strict BC-aligned warm-start experiments')
+                      help='Disable the GRU core. Teacher-reg baseline uses the non-RNN path')
+    p_rl.add_argument('--use-rnn', action='store_true',
+                      help='Explicitly enable the GRU core; teacher-reg baseline defaults to non-RNN')
     p_rl.add_argument('--disable-action-mask', action='store_true',
                       help='Disable env-side invalid action clamping')
     p_rl.add_argument('--write-plan', type=str, default=None,
@@ -1081,6 +1182,13 @@ def main():
     p_rl_rank.add_argument('--materialize-best-trace', action='store_true',
                            help='Copy the current best-by-trace checkpoint to checkpoint_p0/best_trace_match.pth')
 
+    p_rl_teacher = subparsers.add_parser('rl-teacher-reg-report', help='Compare BC teacher, latest APPO, and best-trace APPO on a trusted trace set')
+    p_rl_teacher.add_argument('--experiment', type=str, required=True)
+    p_rl_teacher.add_argument('--train-dir', type=str, default='train_dir/rl')
+    p_rl_teacher.add_argument('--trace-input', type=str, required=True)
+    p_rl_teacher.add_argument('--bc-model', type=str, required=True)
+    p_rl_teacher.add_argument('--output', type=str, default=None)
+
     p_rl_dagger = subparsers.add_parser('rl-run-dagger', help='Run one DAgger-lite iteration: relabel student rollouts with the teacher and retrain BC')
     p_rl_dagger.add_argument('--input', type=str, required=True,
                              help='Base trace JSONL used as the starting BC dataset')
@@ -1104,9 +1212,49 @@ def main():
     p_rl_dagger.add_argument('--observation-version', type=str, default='v1')
     p_rl_dagger.add_argument('--merge-ratio', type=float, default=0.5,
                              help='Fraction of the base trace dataset to keep when merging with new relabeled traces')
+    p_rl_dagger.add_argument('--merge-policy', type=str, default='uniform_merge',
+                             choices=['base_only', 'uniform_merge', 'weighted_recent'])
+    p_rl_dagger.add_argument('--heldout-input', type=str, default=None,
+                             help='Optional held-out trace JSONL for post-iteration evaluation')
     p_rl_dagger.add_argument('--epochs', type=int, default=20)
     p_rl_dagger.add_argument('--lr', type=float, default=1e-3)
     p_rl_dagger.add_argument('--hidden-size', type=int, default=256)
+
+    p_rl_dagger_sched = subparsers.add_parser('rl-dagger-iterate', help='Run an iterative DAgger schedule with BC retraining and trace-gated reports')
+    p_rl_dagger_sched.add_argument('--input', type=str, required=True)
+    p_rl_dagger_sched.add_argument('--output-dir', type=str, required=True)
+    p_rl_dagger_sched.add_argument('--student-policy', type=str, required=True,
+                                   choices=['bc', 'appo', 'wall_avoidance'])
+    p_rl_dagger_sched.add_argument('--task', type=str, default='explore',
+                                   choices=['explore', 'survive', 'combat', 'descend', 'resource'])
+    p_rl_dagger_sched.add_argument('--iterations', type=int, default=3)
+    p_rl_dagger_sched.add_argument('--num-episodes', type=int, default=8)
+    p_rl_dagger_sched.add_argument('--max-steps', type=int, default=20)
+    p_rl_dagger_sched.add_argument('--seed-start', type=int, default=42)
+    p_rl_dagger_sched.add_argument('--appo-experiment', type=str, default=None)
+    p_rl_dagger_sched.add_argument('--appo-train-dir', type=str, default='train_dir/rl')
+    p_rl_dagger_sched.add_argument('--appo-checkpoint-path', type=str, default=None)
+    p_rl_dagger_sched.add_argument('--bc-model-path', type=str, default=None)
+    p_rl_dagger_sched.add_argument('--observation-version', type=str, default='v1')
+    p_rl_dagger_sched.add_argument('--merge-ratio', type=float, default=0.5)
+    p_rl_dagger_sched.add_argument('--merge-policy', type=str, default='uniform_merge',
+                                   choices=['base_only', 'uniform_merge', 'weighted_recent'])
+    p_rl_dagger_sched.add_argument('--heldout-input', type=str, default=None)
+    p_rl_dagger_sched.add_argument('--epochs', type=int, default=20)
+    p_rl_dagger_sched.add_argument('--lr', type=float, default=1e-3)
+    p_rl_dagger_sched.add_argument('--hidden-size', type=int, default=256)
+    p_rl_dagger_sched.add_argument('--random-seed', type=int, default=123)
+
+    p_rl_breg = subparsers.add_parser('rl-train-behavior-reg', help='Train an experimental behavior-regularized improver on trace data')
+    p_rl_breg.add_argument('--input', type=str, required=True)
+    p_rl_breg.add_argument('--output', type=str, required=True)
+    p_rl_breg.add_argument('--heldout-input', type=str, default=None)
+    p_rl_breg.add_argument('--epochs', type=int, default=20)
+    p_rl_breg.add_argument('--lr', type=float, default=1e-3)
+    p_rl_breg.add_argument('--hidden-size', type=int, default=256)
+    p_rl_breg.add_argument('--observation-version', type=str, default='v1')
+    p_rl_breg.add_argument('--behavior-coef', type=float, default=0.1)
+    p_rl_breg.add_argument('--temperature', type=float, default=1.0)
 
     p_rl_rew = subparsers.add_parser('rl-train-reward', help='Train a learned reward model')
     p_rl_rew.add_argument('--task', type=str, default='explore',
@@ -1240,8 +1388,14 @@ def main():
             return cmd_rl_shard_traces(args)
         elif args.command == 'rl-rank-checkpoints':
             return cmd_rl_rank_checkpoints(args)
+        elif args.command == 'rl-teacher-reg-report':
+            return cmd_rl_teacher_reg_report(args)
         elif args.command == 'rl-run-dagger':
             return cmd_rl_run_dagger(args)
+        elif args.command == 'rl-dagger-iterate':
+            return cmd_rl_dagger_iterate(args)
+        elif args.command == 'rl-train-behavior-reg':
+            return cmd_rl_train_behavior_reg(args)
         elif args.command == 'rl-train-reward':
             return cmd_rl_train_reward(args)
         elif args.command == 'rl-train-scheduler':

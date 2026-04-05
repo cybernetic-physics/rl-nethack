@@ -40,6 +40,9 @@ class APPOConfig:
     teacher_loss_coef: float = 0.0
     teacher_loss_type: str = "ce"
     teacher_bc_path: str | None = None
+    trace_eval_input: str | None = None
+    trace_eval_interval_env_steps: int = 0
+    trace_eval_top_k: int = 5
 
 
 @dataclass

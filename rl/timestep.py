@@ -30,6 +30,7 @@ def build_policy_timestep(
         "standing_on_up_stairs": tile_char == "<",
         "recent_positions": list(recent_positions),
         "recent_actions": list(recent_actions),
+        "obs": obs,
         "repeated_state_count": (
             sum(1 for state_hash in recent_state_hashes if state_hash == obs_hash)
             if recent_state_hashes is not None and obs_hash is not None

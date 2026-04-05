@@ -20,8 +20,8 @@ from rl.bc_model import load_bc_model
 from rl.debug_tools import check_policy_determinism, compare_actions_on_teacher_states
 from rl.trace_eval import evaluate_trace_policy, trace_disagreement_report
 from rl.evaluate import _load_checkpoint_payload
-from rl.traces import shard_trace_file, generate_dagger_traces
-from rl.checkpoint_tools import write_trace_best_alias, rank_appo_checkpoints_by_trace
+from rl.traces import shard_trace_file, generate_dagger_traces, generate_multi_turn_traces, verify_trace_file
+from rl.checkpoint_tools import TraceCheckpointMonitor, write_trace_best_alias, rank_appo_checkpoints_by_trace
 import rl.checkpoint_tools as checkpoint_tools
 from pathlib import Path
 import torch
@@ -29,6 +29,8 @@ from rl.timestep import build_policy_timestep
 from rl.io_utils import experiment_lock
 from rl.teacher_reg import patch_sample_factory_teacher_reg
 from rl.env_adapter import SkillEnvAdapter, EpisodeContext
+from rl.dagger import build_merged_trace_rows, run_dagger_schedule
+from rl.train_behavior_reg import train_behavior_regularized_policy
 
 
 def test_skill_registry_contains_expected_skills():
@@ -85,6 +87,18 @@ def test_trainer_scaffold_includes_episodic_bonus_args():
     assert "--episodic_explore_bonus_mode=tile" in argv
 
 
+def test_trainer_scaffold_includes_trace_eval_args():
+    config = RLConfig()
+    config.appo.trace_eval_input = "data/trace.jsonl"
+    config.appo.trace_eval_interval_env_steps = 2048
+    config.appo.trace_eval_top_k = 7
+    trainer = APPOTrainerScaffold(config)
+    argv = trainer.build_sf_argv()
+    assert "--trace_eval_input=data/trace.jsonl" in argv
+    assert "--trace_eval_interval_env_steps=2048" in argv
+    assert "--trace_eval_top_k=7" in argv
+
+
 def test_teacher_patch_is_idempotent():
     patch_sample_factory_teacher_reg()
     patch_sample_factory_teacher_reg()
@@ -108,6 +122,7 @@ def test_skill_env_reset_and_step():
 def test_feature_dims_are_stable():
     assert observation_dim("v1") == 106
     assert observation_dim("v2") == 160
+    assert observation_dim("v3") == 244
     assert reward_feature_dim() == 37
     assert scheduler_feature_dim() > 0
 
@@ -143,6 +158,43 @@ def test_feature_encoder_v2_shape():
         "repeated_action_count": 2,
     }
     assert encode_observation(timestep, version="v2").shape == (160,)
+
+
+def test_feature_encoder_v3_shape():
+    obs = {"chars": np.full((10, 10), ord("."), dtype=np.int32)}
+    obs["chars"][4, 5] = ord("@")
+    obs["chars"][4, 6] = ord("#")
+    timestep = {
+        "state": {
+            "hp": 10,
+            "hp_max": 12,
+            "gold": 5,
+            "depth": 1,
+            "turn": 20,
+            "ac": 4,
+            "strength": 10,
+            "dexterity": 8,
+            "visible_monsters": [{"char": "k", "pos": (4, 4)}],
+            "visible_items": [{"type": "gold", "pos": (5, 4)}],
+            "adjacent": {"north": "wall", "south": "floor", "east": "unseen", "west": "door"},
+            "message": "You see here a gold piece.",
+            "position": (5, 4),
+        },
+        "active_skill": "explore",
+        "allowed_actions": ["north", "south", "east", "wait", "pickup"],
+        "memory_total_explored": 20,
+        "rooms_discovered": 2,
+        "steps_in_skill": 3,
+        "standing_on_down_stairs": False,
+        "standing_on_up_stairs": False,
+        "recent_positions": [(5, 4), (5, 3)],
+        "recent_actions": ["east", "east", "search"],
+        "repeated_state_count": 1,
+        "revisited_recent_tile_count": 1,
+        "repeated_action_count": 2,
+        "obs": obs,
+    }
+    assert encode_observation(timestep, version="v3").shape == (244,)
 
 
 def test_skill_env_masks_invalid_action_requests():
@@ -456,6 +508,24 @@ def test_trace_disagreement_report_includes_per_action_metrics():
         assert "east" in report["bc"]["per_action_metrics"]
 
 
+def test_generate_multi_turn_traces_task_greedy_v3():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        trace_path = os.path.join(tmpdir, "trace_v3.jsonl")
+        summary = generate_multi_turn_traces(
+            output_path=trace_path,
+            num_episodes=1,
+            max_steps=2,
+            seed_start=42,
+            policy="task_greedy",
+            task="explore",
+            observation_version="v3",
+        )
+        assert summary["observation_versions"] == ["v3"]
+        verify = verify_trace_file(trace_path)
+        assert verify["episodes"] == 1
+        assert verify["feature_dims"] == [244]
+
+
 def test_write_trace_best_alias_writes_json():
     with tempfile.TemporaryDirectory() as tmpdir:
         out = os.path.join(tmpdir, "best_trace.json")
@@ -537,3 +607,167 @@ def test_experiment_lock_serializes_access():
             ["a:enter", "a:exit", "b:enter", "b:exit"],
             ["b:enter", "b:exit", "a:enter", "a:exit"],
         )
+
+
+def test_build_merged_trace_rows_policies():
+    import random
+
+    base_rows = [
+        {"episode_id": "ep0", "step": 0},
+        {"episode_id": "ep0", "step": 1},
+        {"episode_id": "ep1", "step": 0},
+        {"episode_id": "ep1", "step": 1},
+    ]
+    relabeled_rows = [
+        {"episode_id": "ep2", "step": 0},
+        {"episode_id": "ep2", "step": 1},
+    ]
+    merged_base = build_merged_trace_rows(
+        base_rows=base_rows,
+        relabeled_rows=relabeled_rows,
+        merge_policy="base_only",
+        merge_ratio=0.5,
+        rng=random.Random(0),
+    )
+    assert len(merged_base) == 4
+    assert merged_base[-1]["episode_id"] == "ep2"
+    merged_uniform = build_merged_trace_rows(
+        base_rows=base_rows,
+        relabeled_rows=relabeled_rows,
+        merge_policy="uniform_merge",
+        merge_ratio=0.5,
+        rng=random.Random(0),
+    )
+    assert len(merged_uniform) == 4
+    merged_weighted = build_merged_trace_rows(
+        base_rows=base_rows,
+        relabeled_rows=relabeled_rows,
+        merge_policy="weighted_recent",
+        merge_ratio=0.5,
+        rng=random.Random(0),
+    )
+    assert len(merged_weighted) == 4
+
+
+def test_trace_checkpoint_monitor_writes_best_metadata(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        checkpoint_dir = Path(tmpdir) / "exp" / "checkpoint_p0"
+        checkpoint_dir.mkdir(parents=True)
+        ckpt = checkpoint_dir / "checkpoint_000000001_1024.pth"
+        torch.save({"model": {"weight": torch.tensor([1.0])}}, ckpt)
+
+        monkeypatch.setattr(
+            checkpoint_tools,
+            "evaluate_checkpoint_trace_match",
+            lambda **kwargs: {
+                "checkpoint_path": str(ckpt),
+                "env_steps": 1024,
+                "match_rate": 0.75,
+                "invalid_action_rate": 0.0,
+                "action_counts": {"east": 3},
+            },
+        )
+        monitor = TraceCheckpointMonitor(
+            experiment="exp",
+            train_dir=tmpdir,
+            trace_input="trace.jsonl",
+            interval_env_steps=512,
+            poll_seconds=0.01,
+        )
+        monitor.start()
+        monitor.stop()
+        metadata = json.loads((checkpoint_dir / "best_trace_match.json").read_text())
+        assert metadata["match_rate"] == 0.75
+        assert metadata["env_steps"] == 1024
+        assert (checkpoint_dir / "best_trace_match.pth").exists()
+
+
+def test_behavior_regularized_policy_trains():
+    rows = [
+        {
+            "episode_id": "ep0",
+            "seed": 42,
+            "step": 0,
+            "action": "east",
+            "allowed_actions": ["east", "west"],
+            "feature_vector": [0.0] * 160,
+            "observation_version": "v2",
+        },
+        {
+            "episode_id": "ep0",
+            "seed": 42,
+            "step": 1,
+            "action": "west",
+            "allowed_actions": ["east", "west"],
+            "feature_vector": [0.1] * 160,
+            "observation_version": "v2",
+        },
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = os.path.join(tmpdir, "breg.pt")
+        trace_path = os.path.join(tmpdir, "trace.jsonl")
+        with open(trace_path, "w") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+        result = train_behavior_regularized_policy(
+            rows,
+            out,
+            epochs=5,
+            lr=1e-3,
+            hidden_size=64,
+            observation_version="v2",
+            behavior_coef=0.1,
+            temperature=1.0,
+        )
+        assert result["observation_version"] == "v2"
+        assert os.path.exists(out)
+        eval_summary = evaluate_trace_policy(trace_path, "bc", bc_model_path=out, summary_only=True)["summary"]
+        assert eval_summary["rows"] == 2
+
+
+def test_run_dagger_schedule_produces_iteration_report():
+    rows = [
+        {
+            "episode_id": "ep0",
+            "seed": 42,
+            "step": 0,
+            "action": "east",
+            "allowed_actions": ["east", "west"],
+            "feature_vector": [0.0] * 160,
+            "observation_version": "v2",
+        },
+        {
+            "episode_id": "ep0",
+            "seed": 42,
+            "step": 1,
+            "action": "west",
+            "allowed_actions": ["east", "west"],
+            "feature_vector": [0.1] * 160,
+            "observation_version": "v2",
+        },
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        trace_path = os.path.join(tmpdir, "trace.jsonl")
+        bc_path = os.path.join(tmpdir, "seed_bc.pt")
+        with open(trace_path, "w") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+        train_bc_model(rows, bc_path, epochs=3, lr=1e-3, hidden_size=32, observation_version="v2")
+        result = run_dagger_schedule(
+            base_trace_input=trace_path,
+            output_dir=os.path.join(tmpdir, "dagger"),
+            student_policy="bc",
+            task="explore",
+            iterations=1,
+            num_episodes=1,
+            max_steps=2,
+            bc_model_path=bc_path,
+            observation_version="v2",
+            merge_ratio=0.5,
+            merge_policy="uniform_merge",
+            epochs=1,
+            lr=1e-3,
+            hidden_size=32,
+        )
+        assert len(result["reports"]) == 1
+        assert os.path.exists(result["final_bc_model"])
