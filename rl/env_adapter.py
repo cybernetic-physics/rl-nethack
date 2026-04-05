@@ -164,6 +164,7 @@ class SkillEnvAdapter:
         active_skill = self.maybe_switch_skill(state)
         return {
             "state": state,
+            "obs": self.obs,
             "active_skill": active_skill,
             "allowed_actions": self.allowed_actions(state),
             "steps_in_skill": self.ctx.steps_in_skill,

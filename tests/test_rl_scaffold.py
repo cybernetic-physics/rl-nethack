@@ -119,6 +119,17 @@ def test_skill_env_reset_and_step():
     env.close()
 
 
+def test_skill_env_v3_reset_and_step():
+    config = RLConfig()
+    config.env.observation_version = "v3"
+    env = NethackSkillEnv(config)
+    obs, info = env.reset(seed=42)
+    assert obs.shape == (observation_dim("v3"),)
+    obs, reward, terminated, truncated, info = env.step(0)
+    assert obs.shape == (observation_dim("v3"),)
+    env.close()
+
+
 def test_feature_dims_are_stable():
     assert observation_dim("v1") == 106
     assert observation_dim("v2") == 160
