@@ -782,6 +782,8 @@ def cmd_rl_dagger_iterate(args):
         hidden_size=args.hidden_size,
         heldout_trace_input=args.heldout_input,
         random_seed=args.random_seed,
+        stop_on_heldout_regression=args.stop_on_heldout_regression,
+        min_improvement=args.min_improvement,
     )
     print(json.dumps(result, indent=2))
     return 0
@@ -799,10 +801,59 @@ def cmd_rl_train_behavior_reg(args):
         "--observation-version", args.observation_version,
         "--behavior-coef", str(args.behavior_coef),
         "--temperature", str(args.temperature),
+        "--class-balance-power", str(args.class_balance_power),
+        "--teacher-action-boost-scale", str(args.teacher_action_boost_scale),
     ]
     if args.heldout_input:
         argv.extend(["--heldout-input", args.heldout_input])
+    if args.teacher_action_boost:
+        argv.extend(["--teacher-action-boost", args.teacher_action_boost])
     return train_behavior_reg_main(argv)
+
+
+def cmd_rl_shard_benchmark(args):
+    import tempfile
+    from rl.trace_eval import evaluate_trace_policy, trace_disagreement_report
+    from rl.train_bc import load_trace_rows, train_bc_model
+    from rl.train_behavior_reg import train_behavior_regularized_policy
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bc_path = os.path.join(tmpdir, "bc.pt")
+        behavior_path = os.path.join(tmpdir, "behavior.pt")
+        train_rows = load_trace_rows(args.input)
+        train_bc_model(
+            train_rows,
+            bc_path,
+            epochs=args.epochs,
+            lr=args.lr,
+            hidden_size=args.hidden_size,
+            observation_version=args.observation_version,
+        )
+        train_behavior_regularized_policy(
+            train_rows,
+            behavior_path,
+            heldout_trace_path=args.heldout_input,
+            epochs=args.epochs,
+            lr=args.lr,
+            hidden_size=args.hidden_size,
+            observation_version=args.observation_version,
+            behavior_coef=args.behavior_coef,
+            temperature=args.temperature,
+            class_balance_power=args.class_balance_power,
+            teacher_action_boost=[x.strip() for x in args.teacher_action_boost.split(",") if x.strip()],
+            teacher_action_boost_scale=args.teacher_action_boost_scale,
+        )
+        result = {
+            "input": args.input,
+            "heldout_input": args.heldout_input,
+            "bc": evaluate_trace_policy(args.heldout_input or args.input, "bc", bc_model_path=bc_path, summary_only=True)["summary"],
+            "behavior_reg": evaluate_trace_policy(args.heldout_input or args.input, "bc", bc_model_path=behavior_path, summary_only=True)["summary"],
+        }
+        if args.detailed:
+            result["bc_disagreements"] = trace_disagreement_report(args.heldout_input or args.input, bc_model_path=bc_path, top_k=5)["bc"]
+            result["behavior_reg_disagreements"] = trace_disagreement_report(args.heldout_input or args.input, bc_model_path=behavior_path, top_k=5)["bc"]
+        print(json.dumps(result, indent=2))
+    return 0
 
 
 def cmd_rl_teacher_reg_report(args):
@@ -1244,6 +1295,8 @@ def main():
     p_rl_dagger_sched.add_argument('--lr', type=float, default=1e-3)
     p_rl_dagger_sched.add_argument('--hidden-size', type=int, default=256)
     p_rl_dagger_sched.add_argument('--random-seed', type=int, default=123)
+    p_rl_dagger_sched.add_argument('--stop-on-heldout-regression', action='store_true')
+    p_rl_dagger_sched.add_argument('--min-improvement', type=float, default=0.0)
 
     p_rl_breg = subparsers.add_parser('rl-train-behavior-reg', help='Train an experimental behavior-regularized improver on trace data')
     p_rl_breg.add_argument('--input', type=str, required=True)
@@ -1255,6 +1308,23 @@ def main():
     p_rl_breg.add_argument('--observation-version', type=str, default='v1')
     p_rl_breg.add_argument('--behavior-coef', type=float, default=0.1)
     p_rl_breg.add_argument('--temperature', type=float, default=1.0)
+    p_rl_breg.add_argument('--class-balance-power', type=float, default=0.0)
+    p_rl_breg.add_argument('--teacher-action-boost', type=str, default='')
+    p_rl_breg.add_argument('--teacher-action-boost-scale', type=float, default=1.0)
+
+    p_rl_shard_bench = subparsers.add_parser('rl-shard-benchmark', help='Compare BC and behavior-regularized training on a focused trace shard')
+    p_rl_shard_bench.add_argument('--input', type=str, required=True)
+    p_rl_shard_bench.add_argument('--heldout-input', type=str, default=None)
+    p_rl_shard_bench.add_argument('--epochs', type=int, default=20)
+    p_rl_shard_bench.add_argument('--lr', type=float, default=1e-3)
+    p_rl_shard_bench.add_argument('--hidden-size', type=int, default=256)
+    p_rl_shard_bench.add_argument('--observation-version', type=str, default='v1')
+    p_rl_shard_bench.add_argument('--behavior-coef', type=float, default=0.1)
+    p_rl_shard_bench.add_argument('--temperature', type=float, default=1.0)
+    p_rl_shard_bench.add_argument('--class-balance-power', type=float, default=0.0)
+    p_rl_shard_bench.add_argument('--teacher-action-boost', type=str, default='')
+    p_rl_shard_bench.add_argument('--teacher-action-boost-scale', type=float, default=1.0)
+    p_rl_shard_bench.add_argument('--detailed', action='store_true')
 
     p_rl_rew = subparsers.add_parser('rl-train-reward', help='Train a learned reward model')
     p_rl_rew.add_argument('--task', type=str, default='explore',
@@ -1396,6 +1466,8 @@ def main():
             return cmd_rl_dagger_iterate(args)
         elif args.command == 'rl-train-behavior-reg':
             return cmd_rl_train_behavior_reg(args)
+        elif args.command == 'rl-shard-benchmark':
+            return cmd_rl_shard_benchmark(args)
         elif args.command == 'rl-train-reward':
             return cmd_rl_train_reward(args)
         elif args.command == 'rl-train-scheduler':

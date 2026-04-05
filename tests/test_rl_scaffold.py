@@ -486,6 +486,70 @@ def test_shard_trace_file_can_filter_by_teacher_action():
         assert summary["selected_teacher_actions"] == ["east"]
 
 
+def test_behavior_reg_can_select_by_heldout_metric():
+    train_rows = [
+        {"episode_id": "ep0", "seed": 1, "step": 0, "action": "east", "allowed_actions": ["east", "west"], "feature_vector": [0.0] * 160, "observation_version": "v2"},
+        {"episode_id": "ep0", "seed": 1, "step": 1, "action": "east", "allowed_actions": ["east", "west"], "feature_vector": [0.1] * 160, "observation_version": "v2"},
+        {"episode_id": "ep1", "seed": 2, "step": 0, "action": "west", "allowed_actions": ["east", "west"], "feature_vector": [0.2] * 160, "observation_version": "v2"},
+        {"episode_id": "ep1", "seed": 2, "step": 1, "action": "west", "allowed_actions": ["east", "west"], "feature_vector": [0.3] * 160, "observation_version": "v2"},
+    ]
+    heldout_rows = [
+        {"episode_id": "ep2", "seed": 3, "step": 0, "action": "east", "allowed_actions": ["east", "west"], "feature_vector": [0.0] * 160, "observation_version": "v2"},
+        {"episode_id": "ep2", "seed": 3, "step": 1, "action": "west", "allowed_actions": ["east", "west"], "feature_vector": [0.2] * 160, "observation_version": "v2"},
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        heldout_path = os.path.join(tmpdir, "heldout.jsonl")
+        with open(heldout_path, "w") as f:
+            for row in heldout_rows:
+                f.write(json.dumps(row) + "\n")
+        out = os.path.join(tmpdir, "breg.pt")
+        meta = train_behavior_regularized_policy(
+            train_rows,
+            out,
+            heldout_trace_path=heldout_path,
+            epochs=3,
+            hidden_size=64,
+            observation_version="v2",
+        )
+        payload = torch.load(out, map_location="cpu")
+        assert payload["metadata"]["selection_metric"] == "heldout_match_rate"
+        assert payload["metadata"]["selected_epoch"] >= 1
+        assert meta["epoch_summaries"]
+
+
+def test_dagger_schedule_can_stop_on_regression():
+    rows = [
+        {"episode_id": "ep0", "seed": 1, "step": 0, "action": "east", "allowed_actions": ["east", "west"], "feature_vector": [0.0] * 160, "observation_version": "v2"},
+        {"episode_id": "ep0", "seed": 1, "step": 1, "action": "east", "allowed_actions": ["east", "west"], "feature_vector": [0.1] * 160, "observation_version": "v2"},
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        trace_path = os.path.join(tmpdir, "trace.jsonl")
+        with open(trace_path, "w") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+        bc_path = os.path.join(tmpdir, "bc.pt")
+        train_bc_model(rows, bc_path, epochs=1, lr=1e-3, hidden_size=64, observation_version="v2")
+        summary = run_dagger_schedule(
+            base_trace_input=trace_path,
+            output_dir=os.path.join(tmpdir, "dagger"),
+            student_policy="bc",
+            task="explore",
+            iterations=2,
+            num_episodes=1,
+            max_steps=1,
+            bc_model_path=bc_path,
+            observation_version="v2",
+            merge_ratio=0.5,
+            merge_policy="uniform_merge",
+            epochs=1,
+            hidden_size=64,
+            heldout_trace_input=trace_path,
+            stop_on_heldout_regression=True,
+        )
+        assert "best_bc_model" in summary
+        assert summary["best_bc_model"] is not None
+
+
 def test_trace_disagreement_report_includes_per_action_metrics():
     rows = [
         {

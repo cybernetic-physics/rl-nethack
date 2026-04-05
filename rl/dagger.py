@@ -192,11 +192,17 @@ def run_dagger_schedule(
     hidden_size: int = 256,
     heldout_trace_input: str | None = None,
     random_seed: int = 123,
+    stop_on_heldout_regression: bool = False,
+    min_improvement: float = 0.0,
 ) -> dict:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     current_base = base_trace_input
     current_bc_model = bc_model_path
     reports = []
+    best_heldout = float("-inf")
+    best_iteration = None
+    best_bc_model = None
+    best_trace_input = None
 
     for iteration in range(iterations):
         iteration_seed = seed_start + (iteration * max(1, num_episodes))
@@ -228,7 +234,23 @@ def run_dagger_schedule(
         )
         report["iteration"] = iteration
         report["seed_start"] = iteration_seed
+        heldout_match = None
+        if report.get("heldout_trace_eval") is not None:
+            heldout_match = report["heldout_trace_eval"]["match_rate"]
+            report["heldout_match_delta"] = None if best_heldout == float("-inf") else round(heldout_match - best_heldout, 4)
+            if heldout_match > best_heldout + min_improvement:
+                best_heldout = heldout_match
+                best_iteration = iteration
+                best_bc_model = bc_output
+                best_trace_input = merged_trace_output
+        elif best_iteration is None:
+            best_iteration = iteration
+            best_bc_model = bc_output
+            best_trace_input = merged_trace_output
         reports.append(report)
+        if stop_on_heldout_regression and heldout_match is not None and best_heldout != float("-inf") and heldout_match + min_improvement < best_heldout:
+            report["early_stop_triggered"] = True
+            break
         current_base = merged_trace_output
         current_bc_model = bc_output
 
@@ -244,6 +266,12 @@ def run_dagger_schedule(
         "observation_version": observation_version,
         "final_bc_model": current_bc_model,
         "final_trace_input": current_base,
+        "best_iteration": best_iteration,
+        "best_bc_model": best_bc_model or current_bc_model,
+        "best_trace_input": best_trace_input or current_base,
+        "best_heldout_match_rate": None if best_heldout == float("-inf") else round(best_heldout, 4),
+        "stop_on_heldout_regression": stop_on_heldout_regression,
+        "min_improvement": min_improvement,
         "reports": reports,
     }
     atomic_write_json(Path(output_dir) / "dagger_schedule_report.json", summary)
