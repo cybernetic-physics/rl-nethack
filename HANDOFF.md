@@ -83,6 +83,15 @@ Train a small model to predict what happens next given accumulated exploration m
   - eval actions: `west 552`, `east 534`, `north 449`, `south 407`, `search 43`
   - conclusion: the balanced movement mix survived at scale, so this path is good enough to keep scaling
 
+### Dataset v5 in-process batching experiment (Apr 5)
+- Added experimental `vllm-batch` backend to [scripts/generate_training_data.py](/home/luc/rl-nethack/scripts/generate_training_data.py)
+- This backend removes HTTP serving entirely and does one in-process `LLM.chat(...)` call per rollout step over all active games
+- Result on current settings (`tp=2`, `workers=64`):
+  - `1,000` samples in `43.30s` end-to-end
+  - `10,000` samples in `111.20s` end-to-end to [data/training_pairs_10k_3b_vllmbatch.jsonl](/home/luc/rl-nethack/data/training_pairs_10k_3b_vllmbatch.jsonl) and [data/eval_pairs_10k_3b_vllmbatch.jsonl](/home/luc/rl-nethack/data/eval_pairs_10k_3b_vllmbatch.jsonl)
+  - 1k action mix was healthy: `west 612`, `east 590`, `north 419`, `south 346`
+- Conclusion: batching works functionally, but the current in-process implementation is slower than the 2-replica HTTP path once engine startup is included. Keep it as an experiment, not the default.
+
 ### Key Insight: Memory-Dependent Forward Model
 
 Nobody trains forward model for NetHack. Others do:
@@ -114,8 +123,8 @@ Applied here:
 ## Next Steps
 
 ### 1. Remove remaining inference-side bottlenecks
-- Keep the two-replica topology on GPUs `0,1`; it beat the TP=2 server on the same workload
-- Use the OpenAI batch endpoint or an offline batching path instead of one HTTP request per env step
+- Keep the two-replica topology on GPUs `0,1`; it still beats both TP=2 serving and the current in-process `vllm-batch` path
+- If batching is revisited, it should probably be with two 1-GPU in-process workers or a different scheduling topology, not the current single TP=2 engine
 - Keep automatic prefix caching enabled
 
 ### 2. Generate a larger local corpus

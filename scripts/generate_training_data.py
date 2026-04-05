@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import time
+from dataclasses import dataclass, field
 import urllib.request
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -36,7 +37,6 @@ from src.state_encoder import StateEncoder
 from nle_agent.agent_http import (
     _build_action_map,
     parse_action,
-    render_state,
 )
 
 SYSTEM_PROMPT_FORWARD = (
@@ -115,12 +115,7 @@ def extract_action(text, reasoning=""):
 def query_zai(state_text, history, model="glm-4.5-flash", api_key="", base_url=""):
     """Query ZAI / Zhipu GLM API via subprocess curl (avoids urllib timeout issues)."""
     import subprocess
-    messages = [{"role": "system", "content": POLICY_SYSTEM_PROMPT}]
-    window = history[-4:]
-    for h in window:
-        messages.append({"role": "user", "content": h["state"]})
-        messages.append({"role": "assistant", "content": h["action"]})
-    messages.append({"role": "user", "content": state_text})
+    messages = build_policy_messages(state_text, history)
 
     url = (base_url or ZAI_BASE_URL).rstrip("/") + "/chat/completions"
     payload = json.dumps({
@@ -173,12 +168,7 @@ def query_zai(state_text, history, model="glm-4.5-flash", api_key="", base_url="
 
 def query_openai_compatible(state_text, history, model, base_url, api_key="local-token"):
     """Query a local or remote OpenAI-compatible chat completions endpoint."""
-    messages = [{"role": "system", "content": POLICY_SYSTEM_PROMPT}]
-    window = history[-4:]
-    for h in window:
-        messages.append({"role": "user", "content": h["state"]})
-        messages.append({"role": "assistant", "content": h["action"]})
-    messages.append({"role": "user", "content": state_text})
+    messages = build_policy_messages(state_text, history)
 
     payload = json.dumps({
         "model": model,
@@ -207,6 +197,17 @@ def query_openai_compatible(state_text, history, model, base_url, api_key="local
     except Exception as e:
         print(f"  [LOCAL SERVER ERROR] {e}", file=sys.stderr)
     return "wait"
+
+
+def build_policy_messages(state_text, history):
+    """Build chat messages for the policy model."""
+    messages = [{"role": "system", "content": POLICY_SYSTEM_PROMPT}]
+    window = history[-4:]
+    for h in window:
+        messages.append({"role": "user", "content": h["state"]})
+        messages.append({"role": "assistant", "content": h["action"]})
+    messages.append({"role": "user", "content": state_text})
+    return messages
 
 
 def parse_server_urls(server_url_value):
@@ -265,6 +266,27 @@ def build_policy_state_text(obs, memory, history, encoder):
         "Only use open if a door is adjacent."
     )
     return "\n".join(parts)
+
+
+def query_vllm_batched(llm, state_history_pairs):
+    """Run one in-process vLLM batch over multiple policy states."""
+    from vllm import SamplingParams
+
+    messages_batch = [
+        build_policy_messages(state_text, history)
+        for state_text, history in state_history_pairs
+    ]
+    sampling_params = SamplingParams(
+        temperature=0.0,
+        max_tokens=8,
+    )
+    outputs = llm.chat(messages_batch, sampling_params=sampling_params, use_tqdm=False)
+
+    actions = []
+    for output in outputs:
+        text = output.outputs[0].text.strip() if output.outputs else ""
+        actions.append(extract_action(text))
+    return actions
 
 
 def _count_unseen_neighbors(memory, y, x):
@@ -331,6 +353,140 @@ def sanitize_action(action_name, obs, history, encoder, memory):
     if action_name == "kick" and "door" not in adjacent_tiles and "wall" not in adjacent_tiles and fallback_move != "wait":
         return fallback_move
     return action_name
+
+
+@dataclass
+class GameRollout:
+    seed: int
+    env: object
+    encoder: StateEncoder
+    memory: MemoryTracker
+    obs: dict
+    history: list = field(default_factory=list)
+    pairs: list = field(default_factory=list)
+    total_reward: float = 0.0
+    terminated: bool = False
+    truncated: bool = False
+    step_count: int = 0
+
+
+def initialize_rollout(seed):
+    env = nle.env.NLE()
+    obs, _ = env.reset(seed=seed)
+    memory = MemoryTracker()
+    memory.update(obs)
+    return GameRollout(
+        seed=seed,
+        env=env,
+        encoder=StateEncoder(),
+        memory=memory,
+        obs=obs,
+    )
+
+
+def close_rollouts(rollouts):
+    for rollout in rollouts:
+        try:
+            rollout.env.close()
+        except Exception:
+            pass
+
+
+def append_pair(rollout, step, action_name, raw_action, obs_before, obs_after, reward, model):
+    prompt_text = format_enriched_prompt(obs_before, rollout.memory, action_name)
+    delta = rollout.encoder.encode_delta(obs_before, obs_after, action_name)
+    new_count = sum(
+        1 for y in range(rollout.memory.map_h) for x in range(rollout.memory.map_w)
+        if rollout.memory.explored[y][x] != 0
+    )
+    delta["new_tiles"] = [{"tile": "explored", "count": new_count}]
+    target_text = format_enriched_target(delta, obs_after, rollout.memory)
+
+    bl = obs_before["blstats"]
+    rollout.pairs.append({
+        "prompt": prompt_text,
+        "target": target_text,
+        "metadata": {
+            "seed": rollout.seed,
+            "step": step,
+            "model": model or "local",
+            "action": action_name,
+            "raw_action": raw_action,
+            "reward": float(reward),
+            "total_reward": float(rollout.total_reward),
+            "hp_before": int(bl[10]),
+            "hp_after": int(obs_after["blstats"][10]),
+            "turn": int(bl[20]),
+            "explored_tiles": rollout.memory.total_explored,
+            "rooms_found": len(rollout.memory.rooms),
+            "monsters_seen": len(rollout.memory.monster_memory),
+            "items_found": len(rollout.memory.items_on_floor),
+        },
+    })
+
+
+def step_rollout(rollout, raw_action, model, action_map):
+    obs_before = rollout.obs
+    state_text = build_policy_state_text(obs_before, rollout.memory, rollout.history, rollout.encoder)
+    action_int, action_name = parse_action(raw_action)
+    action_name = sanitize_action(
+        action_name, rollout.obs, rollout.history, rollout.encoder, rollout.memory
+    )
+    action_int = action_map.get(action_name, action_map.get("wait", action_int))
+    obs_after, reward, terminated, truncated, _ = rollout.env.step(action_int)
+    rollout.total_reward += reward
+    rollout.memory.update(obs_after)
+    append_pair(
+        rollout,
+        rollout.step_count,
+        action_name,
+        raw_action,
+        obs_before,
+        obs_after,
+        reward,
+        model,
+    )
+    rollout.history.append({"state": state_text, "action": action_name})
+    if len(rollout.history) > 8:
+        rollout.history = rollout.history[-8:]
+    rollout.obs = obs_after
+    rollout.step_count += 1
+    rollout.terminated = terminated
+    rollout.truncated = truncated
+
+
+def run_batched_vllm_games(llm, seeds, max_steps, model, verbose=True):
+    """Play many NetHack games with one in-process vLLM batch per turn."""
+    action_map = _build_action_map()
+    rollouts = [initialize_rollout(seed) for seed in seeds]
+
+    try:
+        for step in range(max_steps):
+            active = [r for r in rollouts if not (r.terminated or r.truncated)]
+            if not active:
+                break
+
+            state_history_pairs = [
+                (build_policy_state_text(r.obs, r.memory, r.history, r.encoder), r.history)
+                for r in active
+            ]
+            raw_actions = query_vllm_batched(llm, state_history_pairs)
+
+            for rollout, _state_history, raw_action in zip(active, state_history_pairs, raw_actions):
+                step_rollout(rollout, raw_action, model, action_map)
+
+                if verbose and step % 5 == 0:
+                    hp = int(rollout.obs["blstats"][10])
+                    hp_max = int(rollout.obs["blstats"][11])
+                    print(
+                        f"  Seed {rollout.seed:4d} | step {step:3d} | action={rollout.history[-1]['action']:10s} | "
+                        f"HP={hp}/{hp_max} | explored={rollout.memory.total_explored} | "
+                        f"reward={rollout.total_reward:.0f}"
+                    )
+    finally:
+        close_rollouts(rollouts)
+
+    return {rollout.seed: rollout.pairs for rollout in rollouts}
 
 
 def run_game_with_memory(seed, max_steps, model=None, verbose=True, query_fn=None):
@@ -435,6 +591,20 @@ def load_checkpoint(path):
     return data.get('completed_seeds', []), data.get('stats', {})
 
 
+def write_pairs(output_path, pairs):
+    with open(output_path, 'a') as outf:
+        for pair in pairs:
+            conversation = {
+                "conversations": [
+                    {"role": "system", "content": SYSTEM_PROMPT_FORWARD},
+                    {"role": "user", "content": pair["prompt"]},
+                    {"role": "assistant", "content": pair["target"]},
+                ],
+                "metadata": pair["metadata"],
+            }
+            outf.write(json.dumps(conversation) + '\n')
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate enriched training data for NetHack forward model")
     parser.add_argument("--num-games", type=int, default=100)
@@ -442,9 +612,9 @@ def main():
     parser.add_argument("--seed-start", type=int, default=0)
     parser.add_argument(
         "--backend",
-        choices=["auto", "zai", "openrouter", "vllm", "local"],
+        choices=["auto", "zai", "openrouter", "vllm", "local", "vllm-batch"],
         default="auto",
-        help="Inference backend. 'vllm' and 'local' both use an OpenAI-compatible local server",
+        help="Inference backend. 'vllm' and 'local' use an OpenAI-compatible local server; 'vllm-batch' uses in-process vLLM batching",
     )
     parser.add_argument("--model", type=str, default="glm-4.5-flash")
     parser.add_argument("--api-key", type=str, default=None)
@@ -462,6 +632,11 @@ def main():
     parser.add_argument("--checkpoint-every", type=int, default=5)
     parser.add_argument("--workers", type=int, default=1, help="Concurrent games (default: 1)")
     parser.add_argument("--cooldown", type=float, default=None, help="Seconds between games (default: auto)")
+    parser.add_argument("--vllm-tensor-parallel-size", type=int, default=1)
+    parser.add_argument("--vllm-gpu-memory-utilization", type=float, default=0.92)
+    parser.add_argument("--vllm-max-model-len", type=int, default=2048)
+    parser.add_argument("--vllm-max-num-seqs", type=int, default=128)
+    parser.add_argument("--vllm-enforce-eager", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -484,7 +659,7 @@ def main():
         elif api_key and "/" in args.model:
             backend = "openrouter"
         else:
-            backend = "vllm"
+            backend = "vllm-batch"
 
     if backend == "zai":
         print(f"Using ZAI endpoint: model={args.model} workers={args.workers}")
@@ -493,6 +668,11 @@ def main():
     elif backend == "openrouter":
         os.environ["OPENROUTER_API_KEY"] = api_key
         print(f"Using OpenRouter: model={args.model}")
+    elif backend == "vllm-batch":
+        print(
+            f"Using in-process vLLM batching: model={args.model} "
+            f"workers={args.workers} tp={args.vllm_tensor_parallel_size}"
+        )
     else:
         server_label = ", ".join(server_urls)
         print(f"Using local OpenAI-compatible server: model={args.model} server={server_label} workers={args.workers}")
@@ -542,6 +722,7 @@ def main():
     total_train = stats.get('total_train', 0)
     total_eval = stats.get('total_eval', 0)
     total_tokens_est = stats.get('total_tokens_est', 0)
+    games_done = len(completed_seeds)
 
     def run_one(seed):
         return seed, run_game_with_memory(
@@ -549,10 +730,88 @@ def main():
             verbose=True, query_fn=query_fn
         )
 
+    if backend == "vllm-batch":
+        seed_batches = [
+            remaining_seeds[i:i + args.workers]
+            for i in range(0, len(remaining_seeds), args.workers)
+        ]
+        try:
+            from vllm import LLM
+
+            llm = LLM(
+                model=args.model,
+                tensor_parallel_size=args.vllm_tensor_parallel_size,
+                gpu_memory_utilization=args.vllm_gpu_memory_utilization,
+                max_model_len=args.vllm_max_model_len,
+                max_num_seqs=args.vllm_max_num_seqs,
+                enforce_eager=args.vllm_enforce_eager,
+                disable_log_stats=True,
+            )
+            for seed_batch in seed_batches:
+                batch_pairs = run_batched_vllm_games(
+                    llm,
+                    seed_batch,
+                    max_steps=args.max_steps,
+                    model=args.model,
+                    verbose=False,
+                )
+
+                for seed in seed_batch:
+                    pairs = batch_pairs[seed]
+                    is_eval = seed in eval_seeds
+                    outf_path = args.eval_output if is_eval else args.output
+                    write_pairs(outf_path, pairs)
+
+                    total_pairs += len(pairs)
+                    if is_eval:
+                        total_eval += len(pairs)
+                    else:
+                        total_train += len(pairs)
+                    total_tokens_est += len(pairs) * 450
+                    completed_seeds.append(seed)
+                    games_done += 1
+
+                elapsed = time.time() - start_time
+                games_left = len(all_seeds) - games_done
+                eta = (elapsed / games_done * games_left) if games_done > 0 else 0
+                cost_est = total_tokens_est * 0.0000005
+                print(
+                    f"\n  Progress: {games_done}/{len(all_seeds)} games | "
+                    f"{total_pairs} pairs (train={total_train}, eval={total_eval}) | "
+                    f"~{total_tokens_est:,} tokens | ~${cost_est:.2f} | ETA: {eta/60:.0f}min"
+                )
+
+                if games_done % args.checkpoint_every == 0:
+                    save_checkpoint(checkpoint_path, completed_seeds, {
+                        'total_pairs': total_pairs, 'total_train': total_train,
+                        'total_eval': total_eval, 'total_tokens_est': total_tokens_est,
+                    })
+                    print("  Checkpoint saved")
+
+        except KeyboardInterrupt:
+            print("\nInterrupted. Saving checkpoint...")
+            save_checkpoint(checkpoint_path, completed_seeds, {
+                'total_pairs': total_pairs, 'total_train': total_train,
+                'total_eval': total_eval, 'total_tokens_est': total_tokens_est,
+            })
+            raise
+
+        elapsed = time.time() - start_time
+        cost_est = total_tokens_est * 0.0000005
+        print(f"\n{'='*60}")
+        print("  DONE")
+        print(f"  Games:    {games_done}")
+        print(f"  Pairs:    {total_pairs} (train={total_train}, eval={total_eval})")
+        print(f"  Tokens:   ~{total_tokens_est:,}")
+        print(f"  Cost:     ~${cost_est:.2f}")
+        print(f"  Time:     {elapsed/60:.1f}min")
+        print(f"  Train:    {args.output}")
+        print(f"  Eval:     {args.eval_output}")
+        print(f"{'='*60}")
+        return
+
     # Run games concurrently
     pending = list(remaining_seeds)
-    games_done = len(completed_seeds)
-
     try:
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
             futures = {}
@@ -568,17 +827,7 @@ def main():
 
                 is_eval = seed in eval_seeds
                 outf_path = args.eval_output if is_eval else args.output
-                with open(outf_path, 'a') as outf:
-                    for pair in pairs:
-                        conversation = {
-                            "conversations": [
-                                {"role": "system", "content": SYSTEM_PROMPT_FORWARD},
-                                {"role": "user", "content": pair["prompt"]},
-                                {"role": "assistant", "content": pair["target"]},
-                            ],
-                            "metadata": pair["metadata"],
-                        }
-                        outf.write(json.dumps(conversation) + '\n')
+                write_pairs(outf_path, pairs)
 
                 total_pairs += len(pairs)
                 if is_eval:

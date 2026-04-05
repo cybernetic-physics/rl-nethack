@@ -68,6 +68,10 @@ The pipeline can generate training data, fine-tune a LoRA adapter, evaluate a mo
   - `1,000` samples in `9.04s` on one TP=2 vLLM server
   - `1,000` samples in `8.09s` on two 1-GPU vLLM replicas
   - `10,000` samples in `78.76s` on two replicas
+- Experimental in-process `vllm-batch` backend:
+  - `1,000` samples in `43.30s` end-to-end on 2 GPUs
+  - `10,000` samples in `111.20s` end-to-end on 2 GPUs
+  - Quality is acceptable, but on current settings it is slower than the replica-server path once startup is included
 - The earlier 5k `0.5B` dataset is still only a throughput baseline; the newer `3B` replica path is the first one with a reasonably balanced action mix.
 
 ## Project Structure
@@ -193,7 +197,7 @@ The repo is no longer blocked on local compute. The bottleneck has moved to poli
 
 Recommended next moves:
 - Keep `Qwen/Qwen2.5-3B-Instruct` as the local policy baseline and use the replica topology on GPUs `0,1`
-- Move from thread-per-request generation to a true batched/offline vLLM path
+- Keep the new `vllm-batch` backend as an experiment, but do not switch default generation to it yet
 - Generate a filtered local corpus at 50k-200k examples now that the action distribution looks materially better
 - Use all 4 H200s for forward-model LoRA runs on at least Qwen 2.5 3B, and likely 7B once the dataset is no longer tiny
 
