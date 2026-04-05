@@ -47,8 +47,14 @@ SYSTEM_PROMPT_FORWARD = (
 
 # Tighter system prompt for the policy -- reduces verbose responses
 POLICY_SYSTEM_PROMPT = (
-    "Reply with exactly one action word: north, south, east, west, northeast, northwest, "
-    "southeast, southwest, wait, pickup, open, search, eat, drink, kick, or drop."
+    "You are choosing the next NetHack action. "
+    "Reply with exactly one action word and nothing else. "
+    "Priorities: survive, fight adjacent threats, pick up useful items when standing on them, "
+    "open doors that block progress, and keep exploring. "
+    "Avoid repeating wait, search, pickup, or open if the previous attempt did not help. "
+    "Do not choose inventory actions unless the state explicitly suggests them. "
+    "Valid actions: north, south, east, west, northeast, northwest, southeast, southwest, "
+    "wait, pickup, open, search, eat, drink, kick, or drop."
 )
 
 ZAI_BASE_URL = "https://api.z.ai/api/paas/v4"
@@ -76,6 +82,11 @@ VALID_ACTIONS = [
 ]
 
 DEFAULT_LOCAL_SERVER_URL = "http://127.0.0.1:8000/v1"
+WALKABLE_TILES = {
+    "floor", "corridor", "stairs_down", "stairs_up", "gold", "scroll",
+    "potion", "wand", "ring", "gem", "amulet", "tool", "weapon",
+    "armor", "food", "fountain", "altar", "throne", "water",
+}
 
 
 def extract_action(text, reasoning=""):
@@ -195,6 +206,81 @@ def query_openai_compatible(state_text, history, model, base_url, api_key="local
     return "wait"
 
 
+def build_policy_state_text(obs, memory, history, encoder):
+    """Build a tighter policy prompt from structured state instead of raw map only."""
+    state = encoder.encode_full(obs)
+    bl = obs["blstats"]
+    parts = [
+        f"HP:{state['hp']}/{state['hp_max']} Gold:{state['gold']} Depth:{state['depth']} Turn:{state['turn']}",
+        f"Position:{state['position']}",
+        "Adjacent: " + " ".join(f"{d}={state['adjacent'].get(d, 'unknown')}" for d in ("north", "south", "east", "west")),
+    ]
+    msg = state.get("message", "")
+    if msg:
+        parts.append(f"Message: {msg}")
+
+    if state["visible_monsters"]:
+        mons = ", ".join(f"{m['char']}@{m['pos']}" for m in state["visible_monsters"][:6])
+        parts.append(f"Visible monsters: {mons}")
+    else:
+        parts.append("Visible monsters: none")
+
+    if state["visible_items"]:
+        items = ", ".join(f"{it['type']}@{it['pos']}" for it in state["visible_items"][:6])
+        parts.append(f"Visible items: {items}")
+    else:
+        parts.append("Visible items: none")
+
+    parts.append(f"Explored tiles: {memory.total_explored} Rooms: {len(memory.rooms)}")
+    if history:
+        recent = ", ".join(h["action"] for h in history[-4:])
+        parts.append(f"Recent actions: {recent}")
+    else:
+        parts.append("Recent actions: none")
+
+    parts.append(
+        "Choose one action. Prefer movement over wait when open tiles exist. "
+        "Only use pickup if the message says there is something here. "
+        "Only use open if a door is adjacent."
+    )
+    return "\n".join(parts)
+
+
+def choose_fallback_move(state):
+    """Choose a simple exploration-biased movement fallback."""
+    preferred_order = ["north", "east", "west", "south"]
+    open_dirs = [
+        d for d in preferred_order
+        if state["adjacent"].get(d) in WALKABLE_TILES
+    ]
+    if open_dirs:
+        return open_dirs[0]
+    return "wait"
+
+
+def sanitize_action(action_name, obs, history, encoder):
+    """Clamp obviously bad repeated no-op behavior into simpler exploration behavior."""
+    state = encoder.encode_full(obs)
+    msg = state.get("message", "").lower()
+    repeated = len(history) >= 2 and history[-1]["action"] == action_name and history[-2]["action"] == action_name
+    fallback_move = choose_fallback_move(state)
+    adjacent_tiles = set(state["adjacent"].values())
+
+    if action_name == "wait" and fallback_move != "wait":
+        return fallback_move
+    if repeated and action_name in {"wait", "search", "pickup", "open"} and fallback_move != "wait":
+        return fallback_move
+    if action_name == "pickup" and "see here" not in msg and "you feel here" not in msg and fallback_move != "wait":
+        return fallback_move
+    if action_name == "open" and "door" not in adjacent_tiles and fallback_move != "wait":
+        return fallback_move
+    if action_name in {"eat", "drink", "drop"} and fallback_move != "wait":
+        return fallback_move
+    if action_name == "kick" and "door" not in adjacent_tiles and "wall" not in adjacent_tiles and fallback_move != "wait":
+        return fallback_move
+    return action_name
+
+
 def run_game_with_memory(seed, max_steps, model=None, verbose=True, query_fn=None):
     """Play one NetHack game with an LLM policy, collecting enriched training pairs."""
     action_map = _build_action_map()
@@ -215,13 +301,15 @@ def run_game_with_memory(seed, max_steps, model=None, verbose=True, query_fn=Non
         print(f"{'='*60}")
 
     for step in range(max_steps):
-        state_text = render_state(obs)
+        state_text = build_policy_state_text(obs, memory, history, encoder)
 
         if query_fn:
             raw_action = query_fn(state_text, history)
         else:
             raw_action = query_model(state_text, history, model=model)
         action_int, action_name = parse_action(raw_action)
+        action_name = sanitize_action(action_name, obs, history, encoder)
+        action_int = action_map.get(action_name, action_map.get("wait", action_int))
 
         prompt_text = format_enriched_prompt(obs, memory, action_name)
 
