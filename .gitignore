@@ -6,6 +6,7 @@ wandb/
 __pycache__/
 *.pyc
 .pytest_cache/
+unsloth_compiled_cache/
 output/
 data/
 *.egg-info/

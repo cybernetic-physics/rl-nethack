@@ -1,6 +1,6 @@
 # rl-nethack
 
-NetHack RL research: LLM agents, expert trace capture, and LoRA fine-tuning with attested virgin benchmarks inside Phala TEE CVMs.
+NetHack RL research: LLM agents, expert trace capture, and LoRA fine-tuning for local GPU machines.
 
 ## What's Here
 
@@ -54,9 +54,9 @@ pos:(-1,0) | hp:-2 | gold:same | depth:same | alive:yes | msg:The newt bites!
 
 This produces denser training signal, shorter sequences, and cleaner gradients.
 
-### Virgin Benchmark
+### Evaluation + Manifest
 
-The entire pipeline runs inside a Phala TEE CVM with GPU access, producing an attested manifest that cryptographically links training data, code, adapter weights, and evaluation scores. Evaluation uses "virgin" dungeon seeds generated inside the TEE that were never seen during training -- proving no test contamination.
+The pipeline can generate training data, fine-tune a LoRA adapter, evaluate a model on held-out seeds, and build a manifest that records the model, dataset, adapter, and scores used for a run.
 
 ## Project Structure
 
@@ -80,13 +80,15 @@ src/
   data_generator.py       Random play -> training pairs
   evaluator.py            Prediction accuracy scoring
   reporter.py             HTML + text gameplay replays
-  manifest.py             Attested manifest builder (SHA256 hashes)
+  manifest.py             Manifest builder (SHA256 hashes)
   memory_tracker.py       Memory-augmented forward model training pairs
 
 tests/                     295 tests across 7 test files
 cli.py                     CLI: generate, report, evaluate, manifest, smoke-test
 train.py                   Unsloth LoRA training (GPU required)
-docker-compose.yml         Phala CVM definition with GPU
+pyproject.toml             uv project definition and dependency groups
+uv.lock                    Locked dependency resolution for reproducible setup
+docker-compose.yml         Local Docker Compose training job with GPU access
 PLAN.md                    Full architecture document
 ```
 
@@ -95,6 +97,7 @@ PLAN.md                    Full architecture document
 ### Requirements
 
 - Python 3.10+
+- `uv`
 - [NLE](https://github.com/heuritech/nle) (NetHack Learning Environment)
 - Docker (for AutoAscend traces)
 - For training: CUDA GPU, [Unsloth](https://github.com/unslothai/unsloth), TRL, PEFT
@@ -102,27 +105,28 @@ PLAN.md                    Full architecture document
 ### Install
 
 ```bash
-pip install nle pytest
-# For GPU training:
-pip install unsloth trl peft transformers datasets
+uv sync --extra test
+
+# For local GPU training:
+uv sync --extra train --extra test
 ```
 
 ### Smoke Test (no GPU needed)
 
 ```bash
-python3 cli.py smoke-test
+uv run python cli.py smoke-test
 ```
 
 ### Generate Training Data
 
 ```bash
-python3 cli.py generate --num-games 200 --max-steps 50 --output data/train.jsonl
+uv run python cli.py generate --num-games 200 --max-steps 50 --output data/train.jsonl
 ```
 
-### Train (GPU required)
+### Train Fast on 4x H100 (GPU required)
 
 ```bash
-python3 train.py \
+uv run torchrun --standalone --nproc_per_node=4 train.py \
   --model Qwen/Qwen2.5-3B-Instruct \
   --data data/train.jsonl \
   --eval-data data/eval.jsonl \
@@ -131,15 +135,20 @@ python3 train.py \
   --lora-alpha 32 \
   --lr 2e-4 \
   --epochs 1 \
-  --batch-size 4
+  --batch-size 4 \
+  --gradient-accumulation-steps 2 \
+  --dataset-num-proc 8 \
+  --dataloader-num-workers 8
 ```
+
+For this host, the training script is set up for distributed `torchrun` and defaults to bf16 LoRA instead of 4-bit loading, because H100s have enough memory and bf16 is the faster path.
 
 ### Evaluate & Build Manifest
 
 ```bash
-python3 cli.py evaluate --seeds 500,501,502,503,504 --max-steps 20
+uv run python cli.py evaluate --seeds 500,501,502,503,504 --max-steps 20
 
-python3 cli.py manifest \
+uv run python cli.py manifest \
   --base-model Qwen/Qwen2.5-3B-Instruct \
   --training-data data/train.jsonl \
   --adapter output/adapter \
@@ -148,15 +157,13 @@ python3 cli.py manifest \
   --output output/manifest.json
 ```
 
-### Deploy to Phala CVM
+### Run with Docker Compose on This Machine
 
 ```bash
-cp .env.example .env
-# Edit .env with HF_TOKEN and WANDB_API_KEY
 docker compose up
 ```
 
-Runs: generate -> train -> evaluate -> manifest, all inside the TEE.
+The compose job installs `uv`, syncs the `train` extra from [pyproject.toml](/home/luc/rl-nethack/pyproject.toml), mounts the repo into the container, and launches distributed training with `torchrun --nproc_per_node=4`. On this 4x H100 host it exposes `CUDA_VISIBLE_DEVICES=0,1,2,3` by default.
 
 ## How the Forward Model Works
 
@@ -164,7 +171,7 @@ Runs: generate -> train -> evaluate -> manifest, all inside the TEE.
 2. **Extract features**: Convert raw NLE observations into structured text.
 3. **Compute deltas**: What changed between observations.
 4. **Train**: LoRA fine-tune to predict deltas from (state, action).
-5. **Evaluate**: On unseen virgin seeds, measure per-field accuracy.
+5. **Evaluate**: On unseen held-out seeds, measure per-field accuracy.
 
 ## License
 

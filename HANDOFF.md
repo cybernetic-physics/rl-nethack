@@ -1,4 +1,4 @@
-# dstack-lora Handoff Notes (Apr 4, 2026)
+# rl-nethack Handoff Notes (Apr 4, 2026)
 
 ## Current State
 
@@ -54,7 +54,7 @@ Predictions requiring MEMORY are non-trivial and teach game dynamics.
 - Compare predictions vs actual on held-out seeds
 - Metrics: exact match on survival, MSE on hp_delta, accuracy on pos_delta
 - Qualitative: does model predict goblin attacks from memory?
-- Virgin benchmark: TEE-sealed seeds prove no test contamination
+- Held-out benchmark seeds provide a clean evaluation split
 
 ### 3. Use forward model for planning
 - If model predicts outcomes, use look-ahead search

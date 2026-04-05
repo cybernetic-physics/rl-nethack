@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Unsloth LoRA Training Script for GPU CVM Deployment.
+Unsloth LoRA training script for local GPU execution.
 
 Trains a LoRA adapter on ShareGPT-formatted JSONL data using Unsloth + TRL.
 
@@ -24,6 +24,55 @@ import json
 import os
 import sys
 import time
+
+LORA_TARGET_MODULES = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+]
+
+
+def _env_int(name, default):
+    """Parse an integer env var with a fallback."""
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def get_distributed_context():
+    """Return rank/local_rank/world_size from torchrun-style env vars."""
+    return {
+        "rank": _env_int("RANK", 0),
+        "local_rank": _env_int("LOCAL_RANK", 0),
+        "world_size": _env_int("WORLD_SIZE", 1),
+    }
+
+
+def is_main_process():
+    """Whether this process is global rank 0."""
+    return get_distributed_context()["rank"] == 0
+
+
+def log(message):
+    """Print from the main process only."""
+    if is_main_process():
+        print(message)
+
+
+def cleanup_distributed():
+    """Tear down torch.distributed cleanly when launched with torchrun."""
+    try:
+        import torch
+    except Exception:
+        return
+
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
 
 # ---------------------------------------------------------------------------
 # Utility functions (importable without GPU)
@@ -75,8 +124,52 @@ def parse_args(argv=None):
         help="Per-device batch size (default: 4)",
     )
     parser.add_argument(
+        "--gradient-accumulation-steps", type=int, default=4,
+        help="Gradient accumulation steps per process (default: 4)",
+    )
+    parser.add_argument(
         "--max-steps", type=int, default=-1,
         help="Max training steps (-1 = use epochs, default: -1)",
+    )
+    parser.add_argument(
+        "--dataset-num-proc", type=int, default=max(1, min(8, os.cpu_count() or 1)),
+        help="Worker processes for dataset preprocessing (default: min(8, cpu_count))",
+    )
+    parser.add_argument(
+        "--dataloader-num-workers", type=int, default=4,
+        help="DataLoader workers per process (default: 4)",
+    )
+    parser.add_argument(
+        "--logging-steps", type=int, default=10,
+        help="Training log frequency in optimizer steps (default: 10)",
+    )
+    parser.add_argument(
+        "--save-steps", type=int, default=100,
+        help="Checkpoint save frequency in optimizer steps (default: 100)",
+    )
+    parser.add_argument(
+        "--save-total-limit", type=int, default=2,
+        help="How many checkpoints to keep (default: 2)",
+    )
+    parser.add_argument(
+        "--warmup-steps", type=int, default=10,
+        help="Warmup steps (default: 10)",
+    )
+    parser.add_argument(
+        "--ddp-find-unused-parameters", action="store_true", default=False,
+        help="Enable DDP unused-parameter discovery (default: disabled for speed)",
+    )
+    parser.add_argument(
+        "--gradient-checkpointing", action="store_true", default=False,
+        help="Enable gradient checkpointing to save memory at some speed cost",
+    )
+    parser.add_argument(
+        "--packing", action="store_true", default=False,
+        help="Enable sequence packing in SFTTrainer if supported",
+    )
+    parser.add_argument(
+        "--load-in-4bit", action="store_true", default=False,
+        help="Use 4-bit QLoRA loading. Disabled by default because bf16 LoRA is faster on H100s",
     )
     parser.add_argument(
         "--eval-after-train", action="store_true", default=False,
@@ -162,6 +255,18 @@ def load_training_data(data_path):
     return dataset
 
 
+def prepare_dataset(dataset, num_proc):
+    """Pre-format ShareGPT conversations into text to reduce trainer overhead."""
+    if "text" in dataset.column_names or "conversations" not in dataset.column_names:
+        return dataset
+
+    return dataset.map(
+        format_dataset_conversations,
+        batched=True,
+        num_proc=max(1, num_proc),
+    )
+
+
 def save_training_metadata(
     output_dir,
     base_model,
@@ -196,13 +301,17 @@ def save_training_metadata(
         "config": {
             "lora_rank": args.lora_rank,
             "lora_alpha": args.lora_alpha,
-            "lora_target_modules": "all-linear",
+            "lora_target_modules": LORA_TARGET_MODULES,
             "lora_use_rslora": True,
             "learning_rate": args.lr,
             "epochs": args.epochs,
             "batch_size": args.batch_size,
+            "gradient_accumulation_steps": getattr(args, "gradient_accumulation_steps", 4),
             "max_seq_length": args.max_seq_length,
             "max_steps": args.max_steps,
+            "world_size": get_distributed_context()["world_size"],
+            "load_in_4bit": getattr(args, "load_in_4bit", False),
+            "gradient_checkpointing": getattr(args, "gradient_checkpointing", False),
         },
         "adapter_hash": adapter_hash,
         "timestamp": time.time(),
@@ -224,150 +333,162 @@ def save_training_metadata(
 def main():
     """Main training entry point. Requires GPU, unsloth, trl, peft."""
     args = parse_args()
+    dist = get_distributed_context()
 
-    # -- Late imports: these require GPU --
-    from unsloth import FastLanguageModel
-    from trl import SFTTrainer
-    from transformers import TrainingArguments
-    from src.manifest import hash_file
+    try:
+        # -- Late imports: these require GPU --
+        import torch
+        from unsloth import FastLanguageModel
+        from trl import SFTTrainer
+        from transformers import TrainingArguments
+        from src.manifest import hash_file
 
-    print(f"=== Unsloth LoRA Training ===")
-    print(f"Base model : {args.model}")
-    print(f"Train data : {args.data}")
-    print(f"Eval data  : {args.eval_data}")
-    print(f"Output dir : {args.output}")
-    print(f"LoRA rank  : {args.lora_rank}")
-    print(f"LoRA alpha : {args.lora_alpha}")
-    print(f"LR         : {args.lr}")
-    print(f"Epochs     : {args.epochs}")
-    print(f"Batch size : {args.batch_size}")
-    print(f"Max steps  : {args.max_steps}")
-    print(f"Max seq len: {args.max_seq_length}")
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA is required for training")
 
-    # 1. Compute data hash before training
-    data_hash = hash_file(args.data)
-    print(f"Data hash  : {data_hash}")
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
 
-    # 2. Load base model with Unsloth
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=args.model,
-        max_seq_length=args.max_seq_length,
-        load_in_4bit=True,
-        dtype=None,  # auto-detect
-    )
+        bf16_supported = torch.cuda.is_bf16_supported()
+        use_bf16 = bf16_supported
+        use_fp16 = not use_bf16
 
-    # 3. Apply LoRA adapters
-    model = FastLanguageModel.get_peft_model(
-        model,
-        r=args.lora_rank,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=0,
-        target_modules="all-linear",
-        use_rslora=True,
-        bias="none",
-    )
+        global_batch = args.batch_size * args.gradient_accumulation_steps * dist["world_size"]
 
-    # 4. Load training data
-    train_dataset = load_training_data(args.data)
-    print(f"Training examples: {len(train_dataset)}")
+        log("=== Unsloth LoRA Training ===")
+        log(f"Base model : {args.model}")
+        log(f"Train data : {args.data}")
+        log(f"Eval data  : {args.eval_data}")
+        log(f"Output dir : {args.output}")
+        log(f"LoRA rank  : {args.lora_rank}")
+        log(f"LoRA alpha : {args.lora_alpha}")
+        log(f"LR         : {args.lr}")
+        log(f"Epochs     : {args.epochs}")
+        log(f"Batch size : {args.batch_size} per GPU")
+        log(f"Grad accum : {args.gradient_accumulation_steps}")
+        log(f"World size : {dist['world_size']}")
+        log(f"Global batch: {global_batch}")
+        log(f"Max steps  : {args.max_steps}")
+        log(f"Max seq len: {args.max_seq_length}")
+        log(f"Precision  : {'bf16' if use_bf16 else 'fp16'}")
+        log(f"4-bit load : {args.load_in_4bit}")
 
-    # 5. Load eval data if provided
-    eval_dataset = None
-    if args.eval_data and os.path.isfile(args.eval_data):
-        eval_dataset = load_training_data(args.eval_data)
-        print(f"Eval examples: {len(eval_dataset)}")
+        data_hash = hash_file(args.data)
+        log(f"Data hash  : {data_hash}")
 
-    # 6. Set up training arguments
-    training_args = TrainingArguments(
-        output_dir=args.output,
-        per_device_train_batch_size=args.batch_size,
-        gradient_accumulation_steps=4,
-        warmup_steps=10,
-        num_train_epochs=args.epochs,
-        max_steps=args.max_steps if args.max_steps > 0 else -1,
-        learning_rate=args.lr,
-        fp16=not hasattr(model, "is_bf16_supported"),
-        bf16=False,
-        logging_steps=10,
-        save_strategy="steps",
-        save_steps=100,
-        save_total_limit=2,
-        seed=42,
-        report_to="none",
-    )
-
-    # 7. Create SFTTrainer
-    trainer = SFTTrainer(
-        model=model,
-        tokenizer=tokenizer,
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
-        dataset_text_field="text",
-        formatting_func=format_conversation_text if "conversations" in train_dataset.column_names else None,
-        max_seq_length=args.max_seq_length,
-        args=training_args,
-    )
-
-    # If the dataset has a 'conversations' column but no 'text', map it
-    if "conversations" in train_dataset.column_names and "text" not in train_dataset.column_names:
-        train_dataset = train_dataset.map(
-            format_dataset_conversations,
-            batched=True,
-            remove_columns=["conversations"],
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=args.model,
+            max_seq_length=args.max_seq_length,
+            load_in_4bit=args.load_in_4bit,
+            dtype=None,
         )
-        trainer.train_dataset = train_dataset
 
-    # 8. Train
-    print("Starting training...")
-    train_result = trainer.train()
-
-    final_loss = train_result.training_loss
-    global_steps = train_result.global_step
-    print(f"Training complete. Final loss: {final_loss:.4f}, Steps: {global_steps}")
-
-    # 9. Save LoRA adapter
-    os.makedirs(args.output, exist_ok=True)
-    model.save_pretrained(args.output)
-    tokenizer.save_pretrained(args.output)
-    print(f"Adapter saved to: {args.output}")
-
-    # 10. Compute adapter hash
-    adapter_weights_path = os.path.join(args.output, "adapter_model.safetensors")
-    adapter_hash = None
-    if os.path.isfile(adapter_weights_path):
-        adapter_hash = hash_file(adapter_weights_path)
-        print(f"Adapter hash: {adapter_hash}")
-
-    # 11. Save training metadata
-    meta = save_training_metadata(
-        output_dir=args.output,
-        base_model=args.model,
-        data_path=args.data,
-        data_hash=data_hash,
-        final_loss=final_loss,
-        global_steps=global_steps,
-        args=args,
-        adapter_hash=adapter_hash,
-    )
-    print(f"Training metadata saved to: {os.path.join(args.output, 'training_meta.json')}")
-
-    # 12. Optional post-training evaluation
-    if args.eval_after_train:
-        print("Running post-training evaluation...")
-        from src.evaluator import run_evaluation
-        from src.state_encoder import StateEncoder
-
-        seeds = [int(s.strip()) for s in args.eval_seeds.split(",")]
-        encoder = StateEncoder()
-        eval_result = run_evaluation(
-            seeds=seeds,
-            max_steps=10,
-            encoder=encoder,
-            server_url=args.eval_server,
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r=args.lora_rank,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=0,
+            target_modules=LORA_TARGET_MODULES,
+            use_rslora=True,
+            bias="none",
+            use_gradient_checkpointing="unsloth" if args.gradient_checkpointing else False,
         )
-        print(f"Evaluation results: {json.dumps(eval_result['accuracy'], indent=2)}")
 
-    print("=== Done ===")
+        train_dataset = prepare_dataset(load_training_data(args.data), args.dataset_num_proc)
+        log(f"Training examples: {len(train_dataset)}")
+
+        eval_dataset = None
+        if args.eval_data and os.path.isfile(args.eval_data):
+            eval_dataset = prepare_dataset(load_training_data(args.eval_data), args.dataset_num_proc)
+            log(f"Eval examples: {len(eval_dataset)}")
+
+        training_args = TrainingArguments(
+            output_dir=args.output,
+            per_device_train_batch_size=args.batch_size,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            warmup_steps=args.warmup_steps,
+            num_train_epochs=args.epochs,
+            max_steps=args.max_steps if args.max_steps > 0 else -1,
+            learning_rate=args.lr,
+            fp16=use_fp16,
+            bf16=use_bf16,
+            logging_steps=args.logging_steps,
+            save_strategy="steps",
+            save_steps=args.save_steps,
+            save_total_limit=args.save_total_limit,
+            seed=42,
+            report_to="none",
+            ddp_find_unused_parameters=args.ddp_find_unused_parameters,
+            dataloader_num_workers=args.dataloader_num_workers,
+            dataloader_pin_memory=True,
+            gradient_checkpointing=args.gradient_checkpointing,
+            save_on_each_node=False,
+        )
+
+        trainer = SFTTrainer(
+            model=model,
+            tokenizer=tokenizer,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            dataset_text_field="text",
+            max_seq_length=args.max_seq_length,
+            args=training_args,
+            packing=args.packing,
+        )
+
+        log("Starting training...")
+        train_result = trainer.train()
+
+        final_loss = train_result.training_loss
+        global_steps = train_result.global_step
+        log(f"Training complete. Final loss: {final_loss:.4f}, Steps: {global_steps}")
+
+        os.makedirs(args.output, exist_ok=True)
+        trainer.save_model(args.output)
+        tokenizer.save_pretrained(args.output)
+
+        if dist["world_size"] > 1 and torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
+
+        log(f"Adapter saved to: {args.output}")
+
+        adapter_weights_path = os.path.join(args.output, "adapter_model.safetensors")
+        adapter_hash = None
+        if os.path.isfile(adapter_weights_path):
+            adapter_hash = hash_file(adapter_weights_path)
+            log(f"Adapter hash: {adapter_hash}")
+
+        if is_main_process():
+            save_training_metadata(
+                output_dir=args.output,
+                base_model=args.model,
+                data_path=args.data,
+                data_hash=data_hash,
+                final_loss=final_loss,
+                global_steps=global_steps,
+                args=args,
+                adapter_hash=adapter_hash,
+            )
+            print(f"Training metadata saved to: {os.path.join(args.output, 'training_meta.json')}")
+
+        if args.eval_after_train and is_main_process():
+            print("Running post-training evaluation...")
+            from src.evaluator import run_evaluation
+            from src.state_encoder import StateEncoder
+
+            seeds = [int(s.strip()) for s in args.eval_seeds.split(",")]
+            encoder = StateEncoder()
+            eval_result = run_evaluation(
+                seeds=seeds,
+                max_steps=10,
+                encoder=encoder,
+                server_url=args.eval_server,
+            )
+            print(f"Evaluation results: {json.dumps(eval_result['accuracy'], indent=2)}")
+
+        log("=== Done ===")
+    finally:
+        cleanup_distributed()
 
 
 if __name__ == "__main__":

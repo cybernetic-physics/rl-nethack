@@ -110,7 +110,7 @@ def build_html(all_games: list) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>dstack-lora: NetHack Forward Model Training Data</title>
+<title>rl-nethack: NetHack Forward Model Training Data</title>
 <style>
 /* === RESET & BASE === */
 *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
@@ -531,7 +531,7 @@ body {{
 
 <!-- HEADER -->
 <div class="header">
-  <h1>&#x1F3AE; dstack-lora: NetHack Forward Model Training Data</h1>
+  <h1>&#x1F3AE; rl-nethack: NetHack Forward Model Training Data</h1>
   <div class="subtitle">Interactive replay viewer with step-by-step animation and training pair visualization</div>
   <div class="stats-bar">
     <div class="stat-item">

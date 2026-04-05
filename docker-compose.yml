@@ -1,17 +1,17 @@
 services:
   trainer:
     image: unsloth/unsloth:latest
-    command: bash -le -c "pip install nle && python3 cli.py generate --num-games $${NUM_GAMES:-200} --max-steps $${MAX_STEPS:-50} --seed-start 0 --output /data/train.jsonl --eval-output /data/eval.jsonl --eval-fraction 0.2 && python3 train.py --model $${BASE_MODEL:-Qwen/Qwen2.5-3B-Instruct} --data /data/train.jsonl --eval-data /data/eval.jsonl --output /data/output/adapter --lora-rank $${LORA_RANK:-16} --lora-alpha $${LORA_ALPHA:-32} --lr $${LR:-2e-4} --epochs $${EPOCHS:-1} --batch-size $${BATCH_SIZE:-4} && python3 cli.py evaluate --seeds 500,501,502,503,504 --max-steps 20 && python3 cli.py manifest --base-model $${BASE_MODEL:-Qwen/Qwen2.5-3B-Instruct} --training-data /data/train.jsonl --adapter /data/output/adapter --baseline-scores-file /data/output/baseline_scores.json --post-scores-file /data/output/post_scores.json --output /data/output/manifest.json"
+    command: bash -le -c "python3 -m pip install -U uv && uv sync --extra train && uv run python cli.py generate --num-games $${NUM_GAMES:-200} --max-steps $${MAX_STEPS:-50} --seed-start 0 --output /data/train.jsonl --eval-output /data/eval.jsonl --eval-fraction 0.2 && uv run torchrun --standalone --nproc_per_node=$${NPROC_PER_NODE:-4} train.py --model $${BASE_MODEL:-Qwen/Qwen2.5-3B-Instruct} --data /data/train.jsonl --eval-data /data/eval.jsonl --output /data/output/adapter --lora-rank $${LORA_RANK:-16} --lora-alpha $${LORA_ALPHA:-32} --lr $${LR:-2e-4} --epochs $${EPOCHS:-1} --batch-size $${BATCH_SIZE:-4} --gradient-accumulation-steps $${GRAD_ACCUM:-2} --dataset-num-proc $${DATASET_NUM_PROC:-8} --dataloader-num-workers $${DATALOADER_WORKERS:-8} --save-steps $${SAVE_STEPS:-200} && uv run python cli.py manifest --base-model $${BASE_MODEL:-Qwen/Qwen2.5-3B-Instruct} --training-data /data/train.jsonl --adapter /data/output/adapter --baseline-scores \"$${BASELINE_SCORES:-{\\\"field_accuracy\\\": 0.0}}\" --post-scores \"$${POST_SCORES:-{\\\"field_accuracy\\\": 0.0}}\" --output /data/output/manifest.json"
     volumes:
-      - /var/run/dstack.sock:/var/run/dstack.sock
       - training-data:/data
       - model-cache:/root/.cache/huggingface
       - .:/app
     working_dir: /app
+    gpus: all
     environment:
       - HF_TOKEN=${HF_TOKEN}
       - WANDB_API_KEY=${WANDB_API_KEY}
-      - CUDA_VISIBLE_DEVICES=0
+      - CUDA_VISIBLE_DEVICES=0,1,2,3
       - NUM_GAMES=200
       - MAX_STEPS=50
       - BASE_MODEL=Qwen/Qwen2.5-3B-Instruct
@@ -20,12 +20,13 @@ services:
       - LR=2e-4
       - EPOCHS=1
       - BATCH_SIZE=4
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              capabilities: [gpu]
+      - NPROC_PER_NODE=4
+      - GRAD_ACCUM=2
+      - DATASET_NUM_PROC=8
+      - DATALOADER_WORKERS=8
+      - SAVE_STEPS=200
+      - BASELINE_SCORES={"field_accuracy": 0.0}
+      - POST_SCORES={"field_accuracy": 0.0}
 
 volumes:
   training-data:

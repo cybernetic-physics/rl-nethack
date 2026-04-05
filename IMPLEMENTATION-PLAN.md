@@ -1,4 +1,4 @@
-# dstack-lora World-Model Training Pipeline — Implementation Plan
+# rl-nethack World-Model Training Pipeline — Implementation Plan
 
 > **For Hermes:** Use subagent-driven-development skill to implement this plan task-by-task.
 
@@ -30,7 +30,7 @@ nle_env (NLE)
 [4. evaluate.py]        -- measure prediction accuracy on virgin seeds
     |                        tested: known model + known state -> known accuracy range
     v
-[5. build_manifest.py]  -- compile hashes, metrics, TEE quote into manifest
+[5. build_manifest.py]  -- compile hashes and metrics into a manifest
                              tested: given artifacts -> valid manifest with correct hashes
 ```
 
@@ -256,7 +256,7 @@ class TestStateEncoderFormat:
 **Step 3: Run tests (expect failures)**
 
 ```bash
-cd /home/amiller/projects/dstack/dstack-lora
+cd /home/amiller/projects/rl-nethack
 python -m pytest tests/test_state_encoder.py -v
 ```
 
@@ -433,7 +433,7 @@ class StateEncoder:
 **Step 5: Run tests (expect pass)**
 
 ```bash
-cd /home/amiller/projects/dstack/dstack-lora
+cd /home/amiller/projects/rl-nethack
 python -m pytest tests/test_state_encoder.py -v
 ```
 
@@ -536,7 +536,7 @@ class TestStateEncoderIntegration:
 **Step 2: Run all tests**
 
 ```bash
-cd /home/amiller/projects/dstack/dstack-lora
+cd /home/amiller/projects/rl-nethack
 python -m pytest tests/test_state_encoder.py -v
 ```
 
@@ -879,7 +879,7 @@ def generate_dataset(
 #### Task 2.3: Run data generator tests
 
 ```bash
-cd /home/amiller/projects/dstack/dstack-lora
+cd /home/amiller/projects/rl-nethack
 python -m pytest tests/test_data_generator.py -v
 ```
 
@@ -1159,7 +1159,7 @@ if __name__ == "__main__":
 
 ### Key Design
 
-- Virgin seeds are generated INSIDE the TEE, never seen during training
+- Held-out seeds are generated separately and never used during training
 - Evaluation measures: exact match accuracy for key prediction fields
 - Before/after comparison proves the LoRA learned something
 
@@ -1316,7 +1316,7 @@ def compute_accuracy(
 def generate_virgin_seeds(
     num: int,
     train_seeds: Set[int],
-    salt: str = "dstack-lora-virgin",
+    salt: str = "rl-nethack-heldout",
 ) -> List[int]:
     """Generate N seeds that don't overlap with training seeds.
 
@@ -1337,7 +1337,7 @@ def generate_virgin_seeds(
 
 ## Component 5: Attested Manifest (`build_manifest.py`)
 
-**What it does:** Compiles all hashes, training config, evaluation results, and TEE attestation into a signed JSON manifest.
+**What it does:** Compiles all hashes, training config, and evaluation results into a JSON manifest.
 
 ### Tasks
 
@@ -1500,4 +1500,4 @@ Each component can be built and tested independently by a subagent.
 | Evaluator | 4 tests | Accuracy computation | Deterministic virgin seeds, correct accuracy |
 | Manifest | 3 tests | Tamper detection | Hash changes if any field changes |
 
-**Golden rule:** Every test uses fixed seeds. No test depends on GPU. GPU-dependent tests (training) are marked with `pytest.skip` if unsloth is not available, so they run in the GPU CVM but not locally.
+**Golden rule:** Every test uses fixed seeds. No test depends on GPU. GPU-dependent tests (training) are marked with `pytest.skip` if unsloth is not available.

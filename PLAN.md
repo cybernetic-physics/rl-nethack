@@ -1,33 +1,29 @@
-# dstack-lora: Attested LoRA Training in TEE
+# rl-nethack Training Plan
 
 ## Concept
 
-Train a LoRA adapter inside a Phala TEE CVM with a GPU, and produce a **cryptographically attested manifest** that proves:
+Train a LoRA adapter on a local GPU machine and produce a manifest that records:
 
-1. Which base model was used (pinned by hash from HuggingFace)
-2. What training data was used (hash-verified)
-3. What training code ran (hash of the training script)
-4. What the result was (LoRA adapter hash + loss metrics)
-5. **Virgin benchmark**: test problems generated entirely inside the TEE, never seen by any human, used to evaluate the model before and after training
-
-The virgin benchmark is the key innovation. In standard ML, you can never fully prove your test set wasn't contaminated (leaked into training data). By generating test instances inside the sealed TEE environment, we get a provably uncontaminated evaluation. The TEE's remote attestation proves the code that generated the questions is what we claim it is.
+1. Which base model was used
+2. What training data was used
+3. What training code ran
+4. What the result was
+5. Which held-out benchmarks were used before and after training
 
 ## Architecture
 
 ```
-Phase 1: SETUP (inside TEE)
+Phase 1: SETUP
   - Pull base model from HuggingFace (verify SHA256 matches expected)
   - Load training data from volume (verify SHA256)
   - Hash all inputs -> record in manifest
 
-Phase 2: VIRGIN BENCHMARK GENERATION (inside TEE, sealed)
-  - Use a deterministic procedure to generate N test questions
-  - The questions are written ONLY to a sealed file inside the TEE
-  - NEVER logged externally, NEVER sent to any API
-  - Hash the virgin benchmark -> record in manifest
+Phase 2: BENCHMARK PREPARATION
+  - Define a deterministic held-out evaluation set
+  - Hash the benchmark inputs -> record in manifest
 
 Phase 3: BASELINE EVALUATION
-  - Run base model (no LoRA) against virgin benchmark
+  - Run base model (no LoRA) against held-out benchmark
   - Record baseline scores -> sealed in manifest
 
 Phase 4: TRAINING
@@ -36,28 +32,16 @@ Phase 4: TRAINING
   - Hash the LoRA adapter -> record in manifest
 
 Phase 5: POST-TRAINING EVALUATION
-  - Merge LoRA adapter into base model
-  - Run trained model against SAME virgin benchmark
+  - Run trained model against the same held-out benchmark
   - Record post-training scores -> sealed in manifest
 
 Phase 6: MANIFEST OUTPUT
-  - Compile all hashes, metrics, configs into a signed JSON manifest
-  - Include TEE attestation quote (proves which code ran)
+  - Compile all hashes, metrics, configs into a JSON manifest
   - Output manifest + virgin benchmark + results
 ```
-
 ## Model Selection
 
-For a compelling demo that runs on a single GPU:
-
-| Model | Params | VRAM needed (LoRA) | Why |
-|-------|--------|---------------------|-----|
-| Qwen3-4B | 4B | ~10GB | Sweet spot: capable enough to show real learning, fits on T4/4090 |
-| Qwen3-1.7B | 1.7B | ~6GB | Fast iteration, good for testing |
-| Llama-3.2-3B | 3B | ~8GB | Original choice, well-known |
-| Qwen3-0.6B | 0.6B | ~3GB | Tiny, almost instant training |
-
-**Recommendation**: Qwen3-4B -- big enough to actually learn something interesting, small enough for a single GPU. Falls back to Qwen3-1.7B if VRAM is tight.
+This host has 4x H100s, so VRAM is not the immediate constraint. Start with Qwen 2.5 3B or Qwen3-4B for fast iteration, then scale sequence length, batch size, or model size as needed.
 
 ## Training Task: What's Interesting?
 
@@ -90,41 +74,12 @@ Generate arithmetic problems or simple logic puzzles at varying difficulty. Trai
 **Pros**: Objectively evaluable, clear before/after signal
 **Cons**: Might be too easy for larger models (ceiling effect)
 
-**Recommendation**: Start with **Option A (Synthetic World)** for the MVP demo -- it's the clearest proof of concept. The fictional facts create an uncontaminatable test set by definition (the facts don't exist outside the TEE). Then we can extend to Option B for a more serious demo.
-
-## Virgin Benchmark Generation
-
-The virgin benchmark generator runs inside the TEE and produces test instances that NO human has ever seen. Strategy:
-
-```
-1. Define a seed + procedure (e.g., template + RNG)
-2. Generate N question-answer pairs
-3. Write to sealed file (never leaves TEE during generation)
-4. Hash the file -> part of the attested manifest
-5. Only revealed AFTER training is complete (in final manifest output)
-```
-
-For the synthetic world approach:
-- The TEE generates a fictional world (names, relationships, events) using templates + seeded RNG
-- Training data = a subset of facts about this world
-- Virgin benchmark = questions about facts NOT in training data but derivable from the world structure
-- This tests generalization, not memorization
-
-For a simpler approach:
-- Training data = 80% of the generated facts
-- Virgin benchmark = the other 20%, sealed during training
-- After training, reveal the virgin set and show model performance on it
-
-## Attested Manifest Structure
+**Recommendation**: Start with **Option A (Synthetic World)** for the MVP demo because it gives the clearest before/after training signal.
+## Manifest Structure
 
 ```json
 {
   "version": "1.0",
-  "tee_attestation": {
-    "quote": "<hex-encoded TEE quote>",
-    "measurement": "<hash of CVM image>",
-    "timestamp": "2026-04-02T14:30:00Z"
-  },
   "base_model": {
     "name": "Qwen/Qwen3-4B",
     "revision": "abc123def",
@@ -139,9 +94,7 @@ For a simpler approach:
   },
   "training_code": {
     "file": "train.py",
-    "sha256": "<hash>",
-    "virgin_benchmark_generator": "generate_benchmark.py",
-    "generator_sha256": "<hash>"
+    "sha256": "<hash>"
   },
   "training_config": {
     "lora_rank": 16,
@@ -158,9 +111,9 @@ For a simpler approach:
     "adapter_sha256": "<hash of LoRA weights>",
     "adapter_size_bytes": 45678901
   },
-  "virgin_benchmark": {
+  "benchmark": {
     "num_questions": 50,
-    "benchmark_sha256": "<hash of sealed benchmark>",
+    "benchmark_sha256": "<hash>",
     "baseline_scores": {
       "exact_match": 0.12,
       "contains_answer": 0.20
@@ -182,22 +135,18 @@ For a simpler approach:
 }
 ```
 
-## Instance Type
+## Local Machine Target
 
-Need a Phala GPU instance. The compose requests `nvidia` GPU devices. Expected to need:
-- Minimum: T4 (16GB VRAM) for Qwen3-4B with LoRA
-- Ideal: A100 (40GB) for headroom and faster training
-- Disk: 50GB+ for model weights + data
+Target machine: 4x H100 GPUs with enough headroom for larger models, longer sequence lengths, and faster iteration.
 
 ## Project Structure
 
 ```
-dstack-lora/
-  docker-compose.yml      # CVM definition with GPU
+rl-nethack/
+  docker-compose.yml      # Local Docker Compose job with GPU access
   train.py                # Main training + eval pipeline
-  generate_benchmark.py   # Virgin benchmark generator (runs in TEE)
-  build_manifest.py       # Compile attested manifest
-  dataset.jsonl           # Training data (or generated in-TEE)
+  build_manifest.py       # Compile manifest
+  dataset.jsonl           # Training data
   .env                    # HF_TOKEN, WANDB_API_KEY (secrets)
   .env.example            # Template
   deploy/
@@ -207,36 +156,19 @@ dstack-lora/
   README.md               # How to deploy and run
 ```
 
-## Deployment Steps
+## Local Run Steps
 
 ```bash
 # 1. Create .env with your tokens
 cp .env.example .env
 # edit .env with real tokens
 
-# 2. Generate a deploy key
-mkdir -p deploy
-ssh-keygen -t ed25519 -f deploy/key.pem -N "" -C "dstack-lora-deploy"
-
-# 3. Deploy to Phala
-phala deploy --cvm-id dstack-lora \
-  -c docker-compose.yml \
-  -e .env \
-  -t <gpu-instance-type> \
-  --disk-size 80G \
-  --wait
-
-# 4. Monitor training
-phala ssh dstack-lora -- -i deploy/key.pem "docker logs -f dstack-lora-trainer-1"
-
-# 5. Fetch results
-phala cp dstack-lora:output/manifest.json ./output/
+# 2. Run locally
+docker compose up
 ```
 
 ## Open Questions
 
-1. **Phala GPU availability**: Need to confirm which GPU instance types are available and their pricing
-2. **Virgin benchmark seal timing**: Should the benchmark be generated before training starts, or should it be pre-generated and injected as a sealed volume?
-3. **TEE attestation access**: Can we read the TEE quote from inside the CVM? (via /var/run/dstack.sock or dstack SDK)
-4. **Self-hashing manifest**: The manifest can't include its own hash -- need to decide if we hash it after compilation or use a merkle-style approach
-5. **Model download verification**: HuggingFace doesn't always provide file-level SHA256 in a standard way -- may need to compute on download
+1. Should training stay single-process or be upgraded to real multi-GPU execution on the 4x H100 host?
+2. Should evaluation metrics be expanded beyond per-field accuracy?
+3. How should the manifest represent benchmark provenance and model revisions?

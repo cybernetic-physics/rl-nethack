@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CLI entry point for dstack-lora NLE training pipeline.
+CLI entry point for the rl-nethack training pipeline.
 
 Subcommands:
   generate    -- Generate training data from NLE gameplay
@@ -277,7 +277,7 @@ def cmd_smoke_test(args):
 def main():
     parser = argparse.ArgumentParser(
         prog='cli.py',
-        description='dstack-lora NLE training pipeline CLI',
+        description='rl-nethack training pipeline CLI',
     )
     subparsers = parser.add_subparsers(dest='command', help='Available subcommands')
 

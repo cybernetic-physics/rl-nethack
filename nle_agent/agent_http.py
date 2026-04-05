@@ -132,8 +132,8 @@ def query_model(state_text, history, model=None):
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {OPENROUTER_KEY}",
-            "HTTP-Referer": "https://github.com/dstack-lora",
-            "X-Title": "dstack-lora NetHack Agent",
+            "HTTP-Referer": "https://github.com/luc/rl-nethack",
+            "X-Title": "rl-nethack NetHack Agent",
         }
     else:
         url = f"{SERVER_URL}/v1/chat/completions"

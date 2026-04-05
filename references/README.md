@@ -1,4 +1,4 @@
-# dstack-lora References
+# rl-nethack References
 
 Collected papers and repos for NetHack LLM agent research.
 
