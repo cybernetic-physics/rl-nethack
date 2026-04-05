@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+from math import sqrt
 
 import nle.env
 
@@ -21,6 +22,8 @@ class EpisodeContext:
     recent_positions: deque = field(default_factory=lambda: deque(maxlen=8))
     recent_actions: deque = field(default_factory=lambda: deque(maxlen=8))
     prev_action: str | None = None
+    state_visit_counts: dict[str, int] = field(default_factory=dict)
+    tile_visit_counts: dict[tuple[int, int], int] = field(default_factory=dict)
 
 
 class SkillEnvAdapter:
@@ -57,9 +60,26 @@ class SkillEnvAdapter:
         self.memory.detect_rooms()
         state = self._encode_state(self.obs)
         self.ctx = EpisodeContext(active_skill=self.config.env.active_skill_bootstrap)
-        self.ctx.recent_state_hashes.append(observation_hash(self.obs))
+        initial_hash = observation_hash(self.obs)
+        self.ctx.recent_state_hashes.append(initial_hash)
         self.ctx.recent_positions.append(state["position"])
+        self.ctx.state_visit_counts[initial_hash] = 1
+        self.ctx.tile_visit_counts[tuple(state["position"])] = 1
         return self._build_timestep(state)
+
+    def _compute_episodic_explore_bonus(self, active_skill_before: str, next_hash: str, next_position: tuple[int, int]) -> float:
+        if active_skill_before != "explore":
+            return 0.0
+        if not self.config.reward.episodic_explore_bonus_enabled:
+            return 0.0
+        mode = self.config.reward.episodic_explore_bonus_mode
+        if mode == "state_hash":
+            count = self.ctx.state_visit_counts.get(next_hash, 0)
+            return 1.0 / sqrt(count + 1.0)
+        if mode == "tile":
+            count = self.ctx.tile_visit_counts.get(tuple(next_position), 0)
+            return 1.0 / sqrt(count + 1.0)
+        raise ValueError(f"Unknown episodic explore bonus mode: {mode}")
 
     def _available_skills(self, state: dict) -> list[str]:
         return [
@@ -105,11 +125,19 @@ class SkillEnvAdapter:
         repeated_state = next_hash in recent_state_hashes_before
         revisited_recent_tile = state_after["position"] in recent_positions_before
         repeated_action = action_name == prev_action_before
+        episodic_explore_bonus_raw = self._compute_episodic_explore_bonus(
+            active_skill_before=active_skill_before,
+            next_hash=next_hash,
+            next_position=tuple(state_after["position"]),
+        )
         self.ctx.steps_in_skill += 1
         self.ctx.prev_action = action_name
         self.ctx.recent_state_hashes.append(next_hash)
         self.ctx.recent_positions.append(state_after["position"])
         self.ctx.recent_actions.append(action_name)
+        self.ctx.state_visit_counts[next_hash] = self.ctx.state_visit_counts.get(next_hash, 0) + 1
+        next_position = tuple(state_after["position"])
+        self.ctx.tile_visit_counts[next_position] = self.ctx.tile_visit_counts.get(next_position, 0) + 1
         self.obs = obs_after
         self.info = info
         timestep = self._build_timestep(state_after)
@@ -128,6 +156,7 @@ class SkillEnvAdapter:
             "repeated_state": repeated_state,
             "revisited_recent_tile": revisited_recent_tile,
             "repeated_action": repeated_action,
+            "episodic_explore_bonus_raw": episodic_explore_bonus_raw,
         }
         return timestep, float(reward), bool(terminated), bool(truncated), info
 

@@ -324,6 +324,8 @@ def cmd_rl_train_appo(args):
         "--train-for-env-steps", str(args.train_for_env_steps),
         "--scheduler", args.scheduler,
         "--reward-source", args.reward_source,
+        "--episodic-explore-bonus-scale", str(args.episodic_explore_bonus_scale),
+        "--episodic-explore-bonus-mode", args.episodic_explore_bonus_mode,
         "--enabled-skills", args.enabled_skills,
         "--observation-version", args.observation_version,
         "--no-rnn" if args.no_rnn else "",
@@ -332,10 +334,18 @@ def cmd_rl_train_appo(args):
     argv = [arg for arg in argv if arg != ""]
     if args.learned_reward_path:
         argv.extend(["--learned-reward-path", args.learned_reward_path])
+    if args.episodic_explore_bonus_enabled:
+        argv.append("--episodic-explore-bonus-enabled")
     if args.scheduler_model_path:
         argv.extend(["--scheduler-model-path", args.scheduler_model_path])
     if args.bc_init_path:
         argv.extend(["--bc-init-path", args.bc_init_path])
+    if args.teacher_bc_path:
+        argv.extend(["--teacher-bc-path", args.teacher_bc_path])
+    if args.teacher_loss_coef:
+        argv.extend(["--teacher-loss-coef", str(args.teacher_loss_coef)])
+    if args.teacher_loss_type:
+        argv.extend(["--teacher-loss-type", args.teacher_loss_type])
     if args.write_plan:
         argv.extend(["--write-plan", args.write_plan])
     if args.dry_run:
@@ -925,6 +935,13 @@ def main():
                       help='Reward source')
     p_rl.add_argument('--learned-reward-path', type=str, default=None,
                       help='Path to learned reward model when using --reward-source learned')
+    p_rl.add_argument('--episodic-explore-bonus-enabled', action='store_true',
+                      help='Enable an explore-only episodic novelty bonus')
+    p_rl.add_argument('--episodic-explore-bonus-scale', type=float, default=0.0,
+                      help='Scale for the explore-only episodic novelty bonus')
+    p_rl.add_argument('--episodic-explore-bonus-mode', type=str, default='state_hash',
+                      choices=['state_hash', 'tile'],
+                      help='Counting mode for the explore-only episodic novelty bonus')
     p_rl.add_argument('--scheduler-model-path', type=str, default=None,
                       help='Path to learned scheduler model when using --scheduler learned')
     p_rl.add_argument('--enabled-skills', type=str, default='explore,survive,combat,descend,resource',
@@ -933,6 +950,12 @@ def main():
                       help='Observation encoder version (v1 or v2)')
     p_rl.add_argument('--bc-init-path', type=str, default=None,
                       help='Optional BC checkpoint used to warm start APPO')
+    p_rl.add_argument('--teacher-bc-path', type=str, default=None,
+                      help='Optional frozen BC teacher checkpoint used for auxiliary teacher regularization')
+    p_rl.add_argument('--teacher-loss-coef', type=float, default=0.0,
+                      help='Auxiliary teacher loss coefficient; 0 disables teacher regularization')
+    p_rl.add_argument('--teacher-loss-type', type=str, default='ce', choices=['ce', 'kl'],
+                      help='Teacher regularization loss type')
     p_rl.add_argument('--no-rnn', action='store_true',
                       help='Disable the GRU core. Use this for strict BC-aligned warm-start experiments')
     p_rl.add_argument('--disable-action-mask', action='store_true',

@@ -45,6 +45,12 @@ class APPOTrainerScaffold:
             "scheduler_model_path": self.config.options.scheduler_model_path,
             "reward_source": self.config.reward.source,
             "learned_reward_path": self.config.reward.learned_reward_path,
+            "teacher_bc_path": self.config.appo.teacher_bc_path,
+            "teacher_loss_coef": self.config.appo.teacher_loss_coef,
+            "teacher_loss_type": self.config.appo.teacher_loss_type,
+            "episodic_explore_bonus_enabled": self.config.reward.episodic_explore_bonus_enabled,
+            "episodic_explore_bonus_scale": self.config.reward.episodic_explore_bonus_scale,
+            "episodic_explore_bonus_mode": self.config.reward.episodic_explore_bonus_mode,
             "observation_version": self.config.env.observation_version,
             "model": asdict(self.model_spec),
             "dependency_status": self.dependency_status(),
@@ -84,12 +90,18 @@ class APPOTrainerScaffold:
             f"--max_grad_norm={cfg.appo.max_grad_norm}",
             f"--reward_scale={cfg.appo.reward_scale}",
             f"--train_for_env_steps={cfg.appo.train_for_env_steps}",
+            f"--teacher_loss_coef={cfg.appo.teacher_loss_coef}",
+            f"--teacher_loss_type={cfg.appo.teacher_loss_type}",
+            f"--teacher_bc_path={cfg.appo.teacher_bc_path or ''}",
             f"--use_rnn={str(cfg.model.use_lstm)}",
             f"--env_max_episode_steps={cfg.env.max_episode_steps}",
             f"--observation_version={cfg.env.observation_version}",
             f"--reward_source={cfg.reward.source}",
             f"--intrinsic_reward_weight={cfg.reward.intrinsic_weight}",
             f"--extrinsic_reward_weight={cfg.reward.extrinsic_weight}",
+            f"--episodic_explore_bonus_enabled={str(cfg.reward.episodic_explore_bonus_enabled)}",
+            f"--episodic_explore_bonus_scale={cfg.reward.episodic_explore_bonus_scale}",
+            f"--episodic_explore_bonus_mode={cfg.reward.episodic_explore_bonus_mode}",
             f"--skill_scheduler={cfg.options.scheduler}",
             f"--scheduler_model_path={cfg.options.scheduler_model_path or ''}",
             f"--enabled_skills={','.join(cfg.options.enabled_skills)}",
@@ -166,8 +178,10 @@ class APPOTrainerScaffold:
         from sample_factory.model.actor_critic import create_actor_critic
         from sample_factory.train import run_rl
         from gymnasium import spaces
+        from rl.teacher_reg import patch_sample_factory_teacher_reg
 
         argv = self.build_sf_argv()
+        patch_sample_factory_teacher_reg()
         register_env(self.config.env.env_id, make_nethack_skill_env)
         parser, _ = parse_sf_args(argv)
         parser.add_argument("--env_max_episode_steps", type=int, default=self.config.env.max_episode_steps)
@@ -175,12 +189,18 @@ class APPOTrainerScaffold:
         parser.add_argument("--reward_source", type=str, default=self.config.reward.source)
         parser.add_argument("--intrinsic_reward_weight", type=float, default=self.config.reward.intrinsic_weight)
         parser.add_argument("--extrinsic_reward_weight", type=float, default=self.config.reward.extrinsic_weight)
+        parser.add_argument("--episodic_explore_bonus_enabled", type=str, default=str(self.config.reward.episodic_explore_bonus_enabled))
+        parser.add_argument("--episodic_explore_bonus_scale", type=float, default=self.config.reward.episodic_explore_bonus_scale)
+        parser.add_argument("--episodic_explore_bonus_mode", type=str, default=self.config.reward.episodic_explore_bonus_mode)
         parser.add_argument("--skill_scheduler", type=str, default=self.config.options.scheduler)
         parser.add_argument("--scheduler_model_path", type=str, default=self.config.options.scheduler_model_path)
         parser.add_argument("--enabled_skills", type=str, default=",".join(self.config.options.enabled_skills))
         parser.add_argument("--active_skill_bootstrap", type=str, default=self.config.env.active_skill_bootstrap)
         parser.add_argument("--learned_reward_path", type=str, default=self.config.reward.learned_reward_path)
         parser.add_argument("--bc_init_path", type=str, default=self.config.model.bc_init_path)
+        parser.add_argument("--teacher_bc_path", type=str, default=self.config.appo.teacher_bc_path)
+        parser.add_argument("--teacher_loss_coef", type=float, default=self.config.appo.teacher_loss_coef)
+        parser.add_argument("--teacher_loss_type", type=str, default=self.config.appo.teacher_loss_type)
         parser.add_argument("--enforce_action_mask", type=str, default=str(self.config.env.enforce_action_mask))
         parser.add_argument("--invalid_action_penalty", type=float, default=self.config.reward.invalid_action_penalty)
         parser.add_argument("--invalid_action_fallback", type=str, default=self.config.env.invalid_action_fallback)

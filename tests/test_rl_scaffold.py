@@ -27,6 +27,8 @@ from pathlib import Path
 import torch
 from rl.timestep import build_policy_timestep
 from rl.io_utils import experiment_lock
+from rl.teacher_reg import patch_sample_factory_teacher_reg
+from rl.env_adapter import SkillEnvAdapter, EpisodeContext
 
 
 def test_skill_registry_contains_expected_skills():
@@ -57,6 +59,35 @@ def test_trainer_scaffold_renders_plan():
     assert plan["experiment"] == config.experiment
     assert plan["total_parallel_envs"] == config.rollout.num_workers * config.rollout.num_envs_per_worker
     assert "dependency_status" in plan
+
+
+def test_trainer_scaffold_includes_teacher_reg_args():
+    config = RLConfig()
+    config.appo.teacher_bc_path = "/tmp/teacher.pt"
+    config.appo.teacher_loss_coef = 0.25
+    config.appo.teacher_loss_type = "ce"
+    trainer = APPOTrainerScaffold(config)
+    argv = trainer.build_sf_argv()
+    assert "--teacher_loss_coef=0.25" in argv
+    assert "--teacher_loss_type=ce" in argv
+    assert "--teacher_bc_path=/tmp/teacher.pt" in argv
+
+
+def test_trainer_scaffold_includes_episodic_bonus_args():
+    config = RLConfig()
+    config.reward.episodic_explore_bonus_enabled = True
+    config.reward.episodic_explore_bonus_scale = 0.2
+    config.reward.episodic_explore_bonus_mode = "tile"
+    trainer = APPOTrainerScaffold(config)
+    argv = trainer.build_sf_argv()
+    assert "--episodic_explore_bonus_enabled=True" in argv
+    assert "--episodic_explore_bonus_scale=0.2" in argv
+    assert "--episodic_explore_bonus_mode=tile" in argv
+
+
+def test_teacher_patch_is_idempotent():
+    patch_sample_factory_teacher_reg()
+    patch_sample_factory_teacher_reg()
 
 
 def test_skill_env_reset_and_step():
@@ -125,6 +156,34 @@ def test_skill_env_masks_invalid_action_requests():
     assert info["debug"]["invalid_action_requested"] is True
     assert info["debug"]["requested_action_name"] == "drink"
     assert info["debug"]["action_name"] != "drink"
+    env.close()
+
+
+def test_explore_bonus_helper_uses_visit_counts():
+    config = RLConfig()
+    config.reward.episodic_explore_bonus_enabled = True
+    config.reward.episodic_explore_bonus_mode = "tile"
+    adapter = SkillEnvAdapter(config)
+    adapter.ctx = EpisodeContext(active_skill="explore")
+    adapter.ctx.tile_visit_counts[(3, 4)] = 0
+    first = adapter._compute_episodic_explore_bonus("explore", "hash-a", (3, 4))
+    adapter.ctx.tile_visit_counts[(3, 4)] = 3
+    later = adapter._compute_episodic_explore_bonus("explore", "hash-a", (3, 4))
+    assert first > later
+    assert adapter._compute_episodic_explore_bonus("survive", "hash-a", (3, 4)) == 0.0
+    adapter.close()
+
+
+def test_skill_env_reports_episodic_bonus_debug():
+    config = RLConfig()
+    config.options.enabled_skills = ["explore"]
+    config.reward.episodic_explore_bonus_enabled = True
+    config.reward.episodic_explore_bonus_scale = 0.1
+    env = NethackSkillEnv(config)
+    obs, info = env.reset(seed=42)
+    obs, reward, terminated, truncated, info = env.step(0)
+    assert "episodic_explore_bonus" in info["debug"]
+    assert info["debug"]["episodic_explore_bonus"] >= 0.0
     env.close()
 
 

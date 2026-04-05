@@ -37,6 +37,9 @@ class APPOConfig:
     learning_rate: float = 3e-4
     max_grad_norm: float = 4.0
     reward_scale: float = 0.1
+    teacher_loss_coef: float = 0.0
+    teacher_loss_type: str = "ce"
+    teacher_bc_path: str | None = None
 
 
 @dataclass
@@ -59,6 +62,9 @@ class RewardConfig:
     repeated_state_penalty: float = 0.25
     repeated_action_penalty: float = 0.25
     invalid_action_penalty: float = 2.0
+    episodic_explore_bonus_enabled: bool = False
+    episodic_explore_bonus_scale: float = 0.0
+    episodic_explore_bonus_mode: str = "state_hash"
 
 
 @dataclass

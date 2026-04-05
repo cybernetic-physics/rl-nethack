@@ -78,11 +78,17 @@ def _load_actor_critic(experiment: str, train_dir: str, device: str, checkpoint_
     parser.add_argument("--reward_source", type=str, default="hand_shaped")
     parser.add_argument("--intrinsic_reward_weight", type=float, default=1.0)
     parser.add_argument("--extrinsic_reward_weight", type=float, default=0.0)
+    parser.add_argument("--episodic_explore_bonus_enabled", type=str, default="False")
+    parser.add_argument("--episodic_explore_bonus_scale", type=float, default=0.0)
+    parser.add_argument("--episodic_explore_bonus_mode", type=str, default="state_hash")
     parser.add_argument("--skill_scheduler", type=str, default="rule_based")
     parser.add_argument("--scheduler_model_path", type=str, default=None)
     parser.add_argument("--enabled_skills", type=str, default="explore")
     parser.add_argument("--active_skill_bootstrap", type=str, default="explore")
     parser.add_argument("--learned_reward_path", type=str, default=None)
+    parser.add_argument("--teacher_loss_coef", type=float, default=0.0)
+    parser.add_argument("--teacher_loss_type", type=str, default="ce")
+    parser.add_argument("--teacher_bc_path", type=str, default=None)
     parser.add_argument("--enforce_action_mask", type=str, default="True")
     parser.add_argument("--invalid_action_penalty", type=float, default=2.0)
     parser.add_argument("--invalid_action_fallback", type=str, default="wait")
@@ -102,6 +108,9 @@ def _load_actor_critic(experiment: str, train_dir: str, device: str, checkpoint_
     env_cfg.reward.extrinsic_weight = cfg.extrinsic_reward_weight
     env_cfg.reward.intrinsic_weight = cfg.intrinsic_reward_weight
     env_cfg.reward.invalid_action_penalty = cfg.invalid_action_penalty
+    env_cfg.reward.episodic_explore_bonus_enabled = str(getattr(cfg, "episodic_explore_bonus_enabled", "False")).lower() == "true"
+    env_cfg.reward.episodic_explore_bonus_scale = getattr(cfg, "episodic_explore_bonus_scale", 0.0)
+    env_cfg.reward.episodic_explore_bonus_mode = getattr(cfg, "episodic_explore_bonus_mode", "state_hash")
     env_cfg.env.enforce_action_mask = str(cfg.enforce_action_mask).lower() == "true"
     env_cfg.env.invalid_action_fallback = cfg.invalid_action_fallback
     env = NethackSkillEnv(env_cfg)

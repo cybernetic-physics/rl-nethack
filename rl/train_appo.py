@@ -24,10 +24,16 @@ def parse_args(argv=None):
     parser.add_argument("--scheduler", type=str, default="rule_based")
     parser.add_argument("--reward-source", type=str, default="hand_shaped")
     parser.add_argument("--learned-reward-path", type=str, default=None)
+    parser.add_argument("--episodic-explore-bonus-enabled", action="store_true")
+    parser.add_argument("--episodic-explore-bonus-scale", type=float, default=0.0)
+    parser.add_argument("--episodic-explore-bonus-mode", type=str, default="state_hash", choices=["state_hash", "tile"])
     parser.add_argument("--scheduler-model-path", type=str, default=None)
     parser.add_argument("--enabled-skills", type=str, default="explore,survive,combat,descend,resource")
     parser.add_argument("--observation-version", type=str, default="v1")
     parser.add_argument("--bc-init-path", type=str, default=None)
+    parser.add_argument("--teacher-bc-path", type=str, default=None)
+    parser.add_argument("--teacher-loss-coef", type=float, default=0.0)
+    parser.add_argument("--teacher-loss-type", type=str, default="ce", choices=["ce", "kl"])
     parser.add_argument("--no-rnn", action="store_true")
     parser.add_argument("--disable-action-mask", action="store_true")
     parser.add_argument("--write-plan", type=str, default=None)
@@ -53,9 +59,15 @@ def build_config(args) -> RLConfig:
     config.options.scheduler_model_path = args.scheduler_model_path
     config.reward.source = args.reward_source
     config.reward.learned_reward_path = args.learned_reward_path
+    config.reward.episodic_explore_bonus_enabled = args.episodic_explore_bonus_enabled
+    config.reward.episodic_explore_bonus_scale = args.episodic_explore_bonus_scale
+    config.reward.episodic_explore_bonus_mode = args.episodic_explore_bonus_mode
     config.options.enabled_skills = [s.strip() for s in args.enabled_skills.split(",") if s.strip()]
     config.env.observation_version = args.observation_version
     config.model.bc_init_path = args.bc_init_path
+    config.appo.teacher_bc_path = args.teacher_bc_path
+    config.appo.teacher_loss_coef = args.teacher_loss_coef
+    config.appo.teacher_loss_type = args.teacher_loss_type
     config.model.use_lstm = not args.no_rnn
     if args.no_rnn:
         config.rollout.recurrence = 1
