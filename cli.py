@@ -7,6 +7,7 @@ Subcommands:
   report      -- Run a game and produce HTML + text reports
   evaluate    -- Evaluate model prediction accuracy
   task-evaluate -- Evaluate task-directed control policies
+  rl-train-appo -- Run the modular APPO + options scaffold
   golden-generate -- Build a tiny golden debug episode
   golden-evaluate -- Evaluate a model against a saved golden episode
   manifest    -- Build and save a training manifest
@@ -286,6 +287,29 @@ def cmd_task_evaluate(args):
     return 0
 
 
+def cmd_rl_train_appo(args):
+    """Run the APPO + options scaffold entrypoint."""
+    from rl.train_appo import main as train_appo_main
+
+    argv = [
+        "--experiment", args.experiment,
+        "--train-dir", args.train_dir,
+        "--num-workers", str(args.num_workers),
+        "--num-envs-per-worker", str(args.num_envs_per_worker),
+        "--rollout-length", str(args.rollout_length),
+        "--recurrence", str(args.recurrence),
+        "--train-for-env-steps", str(args.train_for_env_steps),
+        "--scheduler", args.scheduler,
+        "--reward-source", args.reward_source,
+        "--enabled-skills", args.enabled_skills,
+    ]
+    if args.write_plan:
+        argv.extend(["--write-plan", args.write_plan])
+    if args.dry_run:
+        argv.append("--dry-run")
+    return train_appo_main(argv)
+
+
 def cmd_smoke_test(args):
     """Quick end-to-end test: generate 2 games, verify JSONL, build manifest, verify."""
     from src.state_encoder import StateEncoder
@@ -439,6 +463,33 @@ def main():
     p_task.add_argument('--output', type=str, default=None,
                         help='Optional JSON output path')
 
+    # --- rl-train-appo ---
+    p_rl = subparsers.add_parser('rl-train-appo', help='Run the modular APPO + options scaffold')
+    p_rl.add_argument('--experiment', type=str, default='appo_options_scaffold',
+                      help='Experiment name')
+    p_rl.add_argument('--train-dir', type=str, default='train_dir/rl',
+                      help='Output directory for RL artifacts')
+    p_rl.add_argument('--num-workers', type=int, default=8,
+                      help='Rollout workers')
+    p_rl.add_argument('--num-envs-per-worker', type=int, default=16,
+                      help='Parallel envs per worker')
+    p_rl.add_argument('--rollout-length', type=int, default=64,
+                      help='Rollout fragment length')
+    p_rl.add_argument('--recurrence', type=int, default=32,
+                      help='Recurrent unroll length')
+    p_rl.add_argument('--train-for-env-steps', type=int, default=50000000,
+                      help='Target environment steps')
+    p_rl.add_argument('--scheduler', type=str, default='rule_based',
+                      help='Skill scheduler')
+    p_rl.add_argument('--reward-source', type=str, default='hand_shaped',
+                      help='Reward source')
+    p_rl.add_argument('--enabled-skills', type=str, default='explore,survive,combat,descend,resource',
+                      help='Comma-separated skill list')
+    p_rl.add_argument('--write-plan', type=str, default=None,
+                      help='Optional JSON output path for the resolved training plan')
+    p_rl.add_argument('--dry-run', action='store_true',
+                      help='Print scaffold plan without launching training')
+
     # --- manifest ---
     p_man = subparsers.add_parser('manifest', help='Build and save a training manifest')
     p_man.add_argument('--base-model', type=str, required=True,
@@ -492,6 +543,8 @@ def main():
             return cmd_evaluate(args)
         elif args.command == 'task-evaluate':
             return cmd_task_evaluate(args)
+        elif args.command == 'rl-train-appo':
+            return cmd_rl_train_appo(args)
         elif args.command == 'manifest':
             return cmd_manifest(args)
         elif args.command == 'golden-generate':
