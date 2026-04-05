@@ -11,6 +11,10 @@ Subcommands:
   rl-evaluate-appo -- Evaluate a trained APPO checkpoint
   rl-train-reward -- Train a learned reward model from task-harness preferences
   rl-train-scheduler -- Train a learned scheduler from rule-based labels
+  rl-generate-traces -- Generate explicit multi-turn traces
+  rl-verify-traces -- Verify trace files and report if they are multi-turn
+  rl-train-bc -- Train a behavior cloning policy from traces
+  rl-evaluate-bc -- Evaluate a behavior cloning policy
   golden-generate -- Build a tiny golden debug episode
   golden-evaluate -- Evaluate a model against a saved golden episode
   manifest    -- Build and save a training manifest
@@ -379,6 +383,61 @@ def cmd_rl_train_scheduler(args):
     return train_scheduler_main(argv)
 
 
+def cmd_rl_generate_traces(args):
+    from rl.traces import generate_multi_turn_traces
+
+    result = generate_multi_turn_traces(
+        output_path=args.output,
+        num_episodes=args.num_episodes,
+        max_steps=args.max_steps,
+        seed_start=args.seed_start,
+        policy=args.policy,
+        task=args.task,
+        appo_experiment=args.appo_experiment,
+        appo_train_dir=args.appo_train_dir,
+        bc_model_path=args.bc_model_path,
+        forward_model_server_url=args.server_url,
+        forward_model_name=args.model_name,
+    )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_rl_verify_traces(args):
+    from rl.traces import verify_trace_file
+
+    result = verify_trace_file(args.input)
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_rl_train_bc(args):
+    from rl.train_bc import main as train_bc_main
+
+    argv = [
+        "--input", args.input,
+        "--output", args.output,
+        "--epochs", str(args.epochs),
+        "--lr", str(args.lr),
+    ]
+    return train_bc_main(argv)
+
+
+def cmd_rl_evaluate_bc(args):
+    from rl.evaluate_bc import evaluate_bc_policy
+
+    seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
+    result = evaluate_bc_policy(
+        model_path=args.model,
+        task=args.task,
+        seeds=seeds,
+        max_steps=args.max_steps,
+        compare_baseline=args.compare_baseline,
+    )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
 def cmd_smoke_test(args):
     """Quick end-to-end test: generate 2 games, verify JSONL, build manifest, verify."""
     from src.state_encoder import StateEncoder
@@ -610,6 +669,40 @@ def main():
     p_rl_sched.add_argument('--epochs', type=int, default=20)
     p_rl_sched.add_argument('--lr', type=float, default=1e-3)
 
+    p_trace = subparsers.add_parser('rl-generate-traces', help='Generate explicit multi-turn traces')
+    p_trace.add_argument('--output', type=str, required=True)
+    p_trace.add_argument('--num-episodes', type=int, default=10)
+    p_trace.add_argument('--max-steps', type=int, default=30)
+    p_trace.add_argument('--seed-start', type=int, default=42)
+    p_trace.add_argument('--task', type=str, default='explore',
+                         choices=['explore', 'survive', 'combat', 'descend', 'resource'])
+    p_trace.add_argument('--policy', type=str, default='task_greedy',
+                         choices=['task_greedy', 'wall_avoidance', 'forward_model', 'bc', 'appo'])
+    p_trace.add_argument('--appo-experiment', type=str, default=None)
+    p_trace.add_argument('--appo-train-dir', type=str, default='train_dir/rl')
+    p_trace.add_argument('--bc-model-path', type=str, default=None)
+    p_trace.add_argument('--server-url', type=str, default='http://127.0.0.1:8765',
+                         help='Forward-model server URL for policy=forward_model')
+    p_trace.add_argument('--model-name', type=str, default='llama-server',
+                         help='Served forward model name for policy=forward_model')
+
+    p_trace_verify = subparsers.add_parser('rl-verify-traces', help='Verify a trace file is multi-turn')
+    p_trace_verify.add_argument('--input', type=str, required=True)
+
+    p_bc = subparsers.add_parser('rl-train-bc', help='Train a behavior cloning policy from traces')
+    p_bc.add_argument('--input', type=str, required=True)
+    p_bc.add_argument('--output', type=str, required=True)
+    p_bc.add_argument('--epochs', type=int, default=20)
+    p_bc.add_argument('--lr', type=float, default=1e-3)
+
+    p_bc_eval = subparsers.add_parser('rl-evaluate-bc', help='Evaluate a behavior cloning policy')
+    p_bc_eval.add_argument('--model', type=str, required=True)
+    p_bc_eval.add_argument('--task', type=str, default='explore',
+                           choices=['explore', 'survive', 'combat', 'descend', 'resource'])
+    p_bc_eval.add_argument('--seeds', type=str, default='42,43,44')
+    p_bc_eval.add_argument('--max-steps', type=int, default=50)
+    p_bc_eval.add_argument('--compare-baseline', action='store_true')
+
     # --- manifest ---
     p_man = subparsers.add_parser('manifest', help='Build and save a training manifest')
     p_man.add_argument('--base-model', type=str, required=True,
@@ -671,6 +764,14 @@ def main():
             return cmd_rl_train_reward(args)
         elif args.command == 'rl-train-scheduler':
             return cmd_rl_train_scheduler(args)
+        elif args.command == 'rl-generate-traces':
+            return cmd_rl_generate_traces(args)
+        elif args.command == 'rl-verify-traces':
+            return cmd_rl_verify_traces(args)
+        elif args.command == 'rl-train-bc':
+            return cmd_rl_train_bc(args)
+        elif args.command == 'rl-evaluate-bc':
+            return cmd_rl_evaluate_bc(args)
         elif args.command == 'manifest':
             return cmd_manifest(args)
         elif args.command == 'golden-generate':
