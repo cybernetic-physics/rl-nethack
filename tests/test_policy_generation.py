@@ -74,3 +74,23 @@ def test_sanitize_action_redirects_invalid_wait_to_frontier_move():
     action = MODULE.sanitize_action("wait", obs, history=[], encoder=encoder, memory=memory)
 
     assert action == "east"
+
+
+def test_parse_server_urls_supports_replicas():
+    urls = MODULE.parse_server_urls("http://127.0.0.1:8000/v1, http://127.0.0.1:8001/v1")
+
+    assert urls == ["http://127.0.0.1:8000/v1", "http://127.0.0.1:8001/v1"]
+
+
+def test_choose_server_url_round_robins():
+    urls = ["http://127.0.0.1:8000/v1", "http://127.0.0.1:8001/v1"]
+    MODULE._server_rr_index = 0
+
+    picks = [MODULE.choose_server_url(urls) for _ in range(4)]
+
+    assert picks == [
+        "http://127.0.0.1:8000/v1",
+        "http://127.0.0.1:8001/v1",
+        "http://127.0.0.1:8000/v1",
+        "http://127.0.0.1:8001/v1",
+    ]

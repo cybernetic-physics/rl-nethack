@@ -64,7 +64,11 @@ The pipeline can generate training data, fine-tune a LoRA adapter, evaluate a mo
 - Machine: 4x NVIDIA H200
 - Random data generation via `cli.py generate`: 1,000 examples in about 1.35s
 - LLM-policy data generation via vLLM on GPUs `0,1`: 5,000 examples in about 30s with `Qwen/Qwen2.5-0.5B-Instruct`
-- Caveat: the 5k vLLM policy dataset is high-throughput but low-quality. It is dominated by `wait` and other weak actions, so it should be treated as a throughput baseline, not a final training corpus.
+- Improved local policy generation with `Qwen/Qwen2.5-3B-Instruct` and frontier-biased fallback:
+  - `1,000` samples in `9.04s` on one TP=2 vLLM server
+  - `1,000` samples in `8.09s` on two 1-GPU vLLM replicas
+  - `10,000` samples in `78.76s` on two replicas
+- The earlier 5k `0.5B` dataset is still only a throughput baseline; the newer `3B` replica path is the first one with a reasonably balanced action mix.
 
 ## Project Structure
 
@@ -83,6 +87,7 @@ scripts/
   generate_counterfactual_data.py   What-if analysis at combat moments
   generate_training_data.py         LLM policy data generation -> ShareGPT JSONL
   start_vllm_policy_server.sh       Start local vLLM policy server on GPUs 0,1
+  start_vllm_policy_replicas.sh     Start two 1-GPU vLLM replicas on GPUs 0 and 1
 
 src/
   state_encoder.py        NLE obs -> structured features + delta encoding
@@ -142,18 +147,37 @@ uv run python cli.py generate --num-games 200 --max-steps 50 --output data/train
 
 ### Generate LLM-Policy Data at High Throughput
 
-Serve the policy model with vLLM on GPUs `0,1`:
+Preferred path: serve two 1-GPU replicas on GPUs `0,1`:
+
+```bash
+./scripts/start_vllm_policy_replicas.sh Qwen/Qwen2.5-3B-Instruct
+```
+
+Then run concurrent local policy generation against both replicas:
+
+```bash
+uv run python scripts/generate_training_data.py \
+  --backend vllm \
+  --model Qwen/Qwen2.5-3B-Instruct \
+  --server-url http://127.0.0.1:8000/v1,http://127.0.0.1:8001/v1 \
+  --num-games 200 \
+  --max-steps 50 \
+  --workers 64 \
+  --cooldown 0
+```
+
+If you want the older single-server path instead, serve one TP=2 instance on GPUs `0,1`:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 ./scripts/start_vllm_policy_server.sh Qwen/Qwen2.5-1.5B-Instruct
 ```
 
-Then run concurrent local policy generation against that server:
+Then point generation at one server URL:
 
 ```bash
 uv run python scripts/generate_training_data.py \
   --backend vllm \
-  --model Qwen/Qwen2.5-1.5B-Instruct \
+  --model Qwen/Qwen2.5-3B-Instruct \
   --server-url http://127.0.0.1:8000/v1 \
   --num-games 200 \
   --max-steps 50 \
@@ -168,9 +192,9 @@ This setup keeps GPUs `2,3` available for other work, including training.
 The repo is no longer blocked on local compute. The bottleneck has moved to policy-data quality and how efficiently requests are fed to the inference server.
 
 Recommended next moves:
-- Upgrade local policy generation from `Qwen/Qwen2.5-0.5B-Instruct` to `Qwen/Qwen2.5-1.5B-Instruct` or `Qwen/Qwen2.5-3B-Instruct`
+- Keep `Qwen/Qwen2.5-3B-Instruct` as the local policy baseline and use the replica topology on GPUs `0,1`
 - Move from thread-per-request generation to a true batched/offline vLLM path
-- Generate a filtered local corpus at 50k-200k examples once action quality looks sane
+- Generate a filtered local corpus at 50k-200k examples now that the action distribution looks materially better
 - Use all 4 H200s for forward-model LoRA runs on at least Qwen 2.5 3B, and likely 7B once the dataset is no longer tiny
 
 ### Train Fast on 4x H200 (GPU required)

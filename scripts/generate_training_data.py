@@ -63,6 +63,8 @@ ZAI_BASE_URL = "https://api.z.ai/api/paas/v4"
 import threading
 _rate_lock = threading.Lock()
 _rate_last_call = 0.0
+_server_rr_lock = threading.Lock()
+_server_rr_index = 0
 
 def _rate_limit(min_interval=2.5):
     """Ensure minimum interval between API calls across all threads."""
@@ -205,6 +207,24 @@ def query_openai_compatible(state_text, history, model, base_url, api_key="local
     except Exception as e:
         print(f"  [LOCAL SERVER ERROR] {e}", file=sys.stderr)
     return "wait"
+
+
+def parse_server_urls(server_url_value):
+    """Parse one or more comma-separated OpenAI-compatible server URLs."""
+    urls = [u.strip().rstrip("/") for u in server_url_value.split(",") if u.strip()]
+    return urls or [DEFAULT_LOCAL_SERVER_URL.rstrip("/")]
+
+
+def choose_server_url(server_urls):
+    """Round-robin across multiple local inference replicas."""
+    if len(server_urls) == 1:
+        return server_urls[0]
+
+    global _server_rr_index
+    with _server_rr_lock:
+        url = server_urls[_server_rr_index % len(server_urls)]
+        _server_rr_index += 1
+    return url
 
 
 def build_policy_state_text(obs, memory, history, encoder):
@@ -433,7 +453,7 @@ def main():
         "--server-url",
         type=str,
         default=None,
-        help="OpenAI-compatible local server base URL, e.g. http://127.0.0.1:8000/v1",
+        help="OpenAI-compatible local server base URL, or comma-separated URLs for replicas",
     )
     parser.add_argument("--output", type=str, default="data/training_pairs.jsonl")
     parser.add_argument("--eval-output", type=str, default="data/eval_pairs.jsonl")
@@ -455,6 +475,7 @@ def main():
     backend = args.backend
     base_url = args.base_url or ""
     server_url = args.server_url or os.environ.get("LLM_SERVER_URL") or DEFAULT_LOCAL_SERVER_URL
+    server_urls = parse_server_urls(server_url)
     query_fn = None
 
     if backend == "auto":
@@ -473,9 +494,12 @@ def main():
         os.environ["OPENROUTER_API_KEY"] = api_key
         print(f"Using OpenRouter: model={args.model}")
     else:
-        print(f"Using local OpenAI-compatible server: model={args.model} server={server_url} workers={args.workers}")
-        _m, _u = args.model, server_url
-        query_fn = lambda st, h: query_openai_compatible(st, h, model=_m, base_url=_u)
+        server_label = ", ".join(server_urls)
+        print(f"Using local OpenAI-compatible server: model={args.model} server={server_label} workers={args.workers}")
+        _m, _us = args.model, server_urls
+        query_fn = lambda st, h: query_openai_compatible(
+            st, h, model=_m, base_url=choose_server_url(_us)
+        )
 
     if args.cooldown is None:
         args.cooldown = 45.0 if backend == "zai" else 0.0

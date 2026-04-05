@@ -62,6 +62,27 @@ Train a small model to predict what happens next given accumulated exploration m
 - Average reward improved to `1.451` from the earlier `3B` sample's `1.131`
 - Conclusion: frontier-biased sanitization is worth keeping; this is the first local policy run that looks directionally sane
 
+### Dataset v4 serving-topology experiments (Apr 5)
+- Added [scripts/start_vllm_policy_replicas.sh](/home/luc/rl-nethack/scripts/start_vllm_policy_replicas.sh) to run two 1-GPU `vLLM` replicas on GPUs `0` and `1`
+- Added multi-server fanout support to [scripts/generate_training_data.py](/home/luc/rl-nethack/scripts/generate_training_data.py) via comma-separated `--server-url`
+
+- TP=2 baseline, same improved `3B` generator:
+  - `1,000` samples in `9.04s`
+  - action mix: `west 280`, `east 263`, `north 225`, `south 204`
+  - average reward: `0.675`
+
+- Two 1-GPU replicas, same improved `3B` generator:
+  - `1,000` samples in `8.09s`
+  - action mix: `west 272`, `east 270`, `north 226`, `south 202`
+  - average reward: `0.702`
+
+- Full 10k improved corpus on replicas:
+  - files: [data/training_pairs_10k_3b_replicas.jsonl](/home/luc/rl-nethack/data/training_pairs_10k_3b_replicas.jsonl), [data/eval_pairs_10k_3b_replicas.jsonl](/home/luc/rl-nethack/data/eval_pairs_10k_3b_replicas.jsonl)
+  - runtime: `78.76s`
+  - train actions: `west 2222`, `east 2135`, `north 1795`, `south 1606`, `search 162`
+  - eval actions: `west 552`, `east 534`, `north 449`, `south 407`, `search 43`
+  - conclusion: the balanced movement mix survived at scale, so this path is good enough to keep scaling
+
 ### Key Insight: Memory-Dependent Forward Model
 
 Nobody trains forward model for NetHack. Others do:
@@ -92,43 +113,38 @@ Applied here:
 
 ## Next Steps
 
-### 1. Validate the improved local policy path on a larger run
-- Re-run `Qwen2.5-3B-Instruct` with the frontier fallback at `10k-50k` scale
-- Confirm the action histogram stays balanced and the average reward stays above the previous `3B` baseline
-- If the action mix collapses again at scale, stop and debug before generating more data
-
-### 2. Remove remaining inference-side bottlenecks
-- Replace the current TP=2 single `vLLM` server on GPUs 0,1 with two 1-GPU replicas and load balance across them
+### 1. Remove remaining inference-side bottlenecks
+- Keep the two-replica topology on GPUs `0,1`; it beat the TP=2 server on the same workload
 - Use the OpenAI batch endpoint or an offline batching path instead of one HTTP request per env step
 - Keep automatic prefix caching enabled
 
-### 3. Generate a larger local corpus
-- Once the balanced `3B` path holds up, target `50k-200k` examples on GPUs 0,1
+### 2. Generate a larger local corpus
+- The balanced `3B` path now holds up at 10k scale, so target `50k-200k` examples on GPUs 0,1
 - Keep train/eval split by seed
 - Combine policy data with counterfactual and AutoAscend-derived data where possible
 
-### 4. Scale training to the full machine
+### 3. Scale training to the full machine
 - Use all 4 H200s for LoRA training via `torchrun`
 - Start with Qwen 2.5 3B or 7B for the forward model
 - Increase sequence length and effective batch once the dataset is no longer tiny
 
-### 5. Evaluate and plan
+### 4. Evaluate and plan
 - Compare predictions vs actual on held-out seeds
 - Add metrics for action-conditioned deltas, combat outcomes, and exploration gains
 - Once the forward model is competent, use it for look-ahead planning
 
-### 6. Build a real debug harness before more training work
+### 5. Build a real debug harness before more training work
 - Create a golden single-episode dataset, around 10-20 steps, with saved prompt, action, target delta, and next-state hash for every step
 - Train on only that episode until training loss is near zero
 - Add a closed-loop replay script that runs the model on that exact start state and compares prompt hash, predicted delta, and next-state hash step-by-step
 - Do not trust larger runs until the golden replay stays aligned for the full episode
 
-### 7. Fix distribution mismatches in the current loop
+### 6. Fix distribution mismatches in the current loop
 - Make evaluation use the same message structure as training, including the system prompt
 - Keep separate eval suites for random-policy data, LLM-policy data, and golden closed-loop replay
 - Log raw observation hashes, formatted prompt hashes, parsed predictions, and next-state hashes so mismatches are obvious
 
-### 8. Improve the future RL / planning loop in the right order
+### 7. Improve the future RL / planning loop in the right order
 - First make the forward model accurate on short deterministic trajectories
 - Then test one-step planning against counterfactual rollouts from the same saved state
 - Only after that should we build deeper look-ahead or policy-improvement loops
