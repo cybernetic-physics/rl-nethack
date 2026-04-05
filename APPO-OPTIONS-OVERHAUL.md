@@ -399,7 +399,7 @@ The backend has been smoke-tested with a tiny serial run that:
 Example command:
 
 ```bash
-uv run --no-sync python cli.py rl-train-appo \
+uv run python cli.py rl-train-appo \
   --serial-mode \
   --num-workers 1 \
   --num-envs-per-worker 1 \
@@ -412,15 +412,23 @@ uv run --no-sync python cli.py rl-train-appo \
   --experiment appo_smoke2
 ```
 
-Why `--no-sync` is currently needed:
+Backend bootstrapping:
+
+- `rl-train-appo` now auto-installs the Sample Factory backend into the project
+  `.venv` if it is missing
+- installation uses `python -m pip install --no-deps ...` intentionally, to
+  avoid the upstream metadata conflict while preserving the working runtime
+  stack
+
+Why this bootstrap path exists:
 
 - upstream `sample-factory` depends on `gymnasium<1.0`
 - current `nle==1.2.0` depends on `gymnasium==1.0.0`
 - the runtime stack works in the project `.venv`, but the dependency metadata
   is inconsistent
 
-So the code backend is real, but packaging is currently constrained by upstream
-dependency metadata rather than the repo architecture.
+So the code backend is real, and the repo now handles the packaging issue
+operationally instead of requiring a manual no-sync workflow.
 
 
 ## 12. Bottom Line

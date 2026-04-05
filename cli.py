@@ -289,7 +289,12 @@ def cmd_task_evaluate(args):
 
 def cmd_rl_train_appo(args):
     """Run the APPO + options scaffold entrypoint."""
+    from rl.bootstrap import ensure_sample_factory_backend
     from rl.train_appo import main as train_appo_main
+
+    installed = ensure_sample_factory_backend()
+    if installed:
+        print("Installed Sample Factory APPO backend into the project venv.")
 
     argv = [
         "--experiment", args.experiment,
