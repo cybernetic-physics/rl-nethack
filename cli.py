@@ -294,15 +294,21 @@ def cmd_rl_train_appo(args):
     argv = [
         "--experiment", args.experiment,
         "--train-dir", args.train_dir,
+        "--serial-mode" if args.serial_mode else "",
+        "--async-rl" if args.async_rl else "",
         "--num-workers", str(args.num_workers),
         "--num-envs-per-worker", str(args.num_envs_per_worker),
         "--rollout-length", str(args.rollout_length),
         "--recurrence", str(args.recurrence),
+        "--batch-size", str(args.batch_size),
+        "--num-batches-per-epoch", str(args.num_batches_per_epoch),
+        "--ppo-epochs", str(args.ppo_epochs),
         "--train-for-env-steps", str(args.train_for_env_steps),
         "--scheduler", args.scheduler,
         "--reward-source", args.reward_source,
         "--enabled-skills", args.enabled_skills,
     ]
+    argv = [arg for arg in argv if arg != ""]
     if args.write_plan:
         argv.extend(["--write-plan", args.write_plan])
     if args.dry_run:
@@ -469,6 +475,10 @@ def main():
                       help='Experiment name')
     p_rl.add_argument('--train-dir', type=str, default='train_dir/rl',
                       help='Output directory for RL artifacts')
+    p_rl.add_argument('--serial-mode', action='store_true',
+                      help='Run in serial mode for debugging/smoke tests')
+    p_rl.add_argument('--async-rl', action='store_true',
+                      help='Enable async RL collection explicitly')
     p_rl.add_argument('--num-workers', type=int, default=8,
                       help='Rollout workers')
     p_rl.add_argument('--num-envs-per-worker', type=int, default=16,
@@ -477,6 +487,12 @@ def main():
                       help='Rollout fragment length')
     p_rl.add_argument('--recurrence', type=int, default=32,
                       help='Recurrent unroll length')
+    p_rl.add_argument('--batch-size', type=int, default=4096,
+                      help='APPO minibatch size')
+    p_rl.add_argument('--num-batches-per-epoch', type=int, default=1,
+                      help='APPO batches per epoch')
+    p_rl.add_argument('--ppo-epochs', type=int, default=1,
+                      help='APPO epochs per update')
     p_rl.add_argument('--train-for-env-steps', type=int, default=50000000,
                       help='Target environment steps')
     p_rl.add_argument('--scheduler', type=str, default='rule_based',

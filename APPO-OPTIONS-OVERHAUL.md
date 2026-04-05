@@ -380,7 +380,50 @@ Reward models will change.
 6. Validate the interfaces with dry-run config and smoke tests.
 
 
-## 11. Bottom Line
+## 11. Current Backend Status
+
+This repo now contains a real Sample Factory APPO backend integration in:
+
+- [rl/sf_env.py](/home/luc/rl-nethack/rl/sf_env.py)
+- [rl/trainer.py](/home/luc/rl-nethack/rl/trainer.py)
+- [rl/train_appo.py](/home/luc/rl-nethack/rl/train_appo.py)
+
+The backend has been smoke-tested with a tiny serial run that:
+
+- registered the custom NetHack skill env,
+- created the actor-critic,
+- collected rollouts,
+- trained,
+- and wrote a checkpoint.
+
+Example command:
+
+```bash
+uv run --no-sync python cli.py rl-train-appo \
+  --serial-mode \
+  --num-workers 1 \
+  --num-envs-per-worker 1 \
+  --rollout-length 8 \
+  --recurrence 8 \
+  --batch-size 8 \
+  --num-batches-per-epoch 1 \
+  --ppo-epochs 1 \
+  --train-for-env-steps 32 \
+  --experiment appo_smoke2
+```
+
+Why `--no-sync` is currently needed:
+
+- upstream `sample-factory` depends on `gymnasium<1.0`
+- current `nle==1.2.0` depends on `gymnasium==1.0.0`
+- the runtime stack works in the project `.venv`, but the dependency metadata
+  is inconsistent
+
+So the code backend is real, but packaging is currently constrained by upstream
+dependency metadata rather than the repo architecture.
+
+
+## 12. Bottom Line
 
 The right overhaul is:
 
@@ -394,4 +437,3 @@ The right overhaul is:
 
 That is the most defensible path from the codebase we have now to a real
 long-horizon RL system.
-

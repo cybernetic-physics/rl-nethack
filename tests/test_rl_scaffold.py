@@ -4,6 +4,8 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from rl.config import RLConfig
+from rl.feature_encoder import observation_dim
+from rl.sf_env import NethackSkillEnv
 from rl.options import build_skill_registry
 from rl.scheduler import SchedulerContext, build_scheduler
 from rl.trainer import APPOTrainerScaffold
@@ -37,3 +39,18 @@ def test_trainer_scaffold_renders_plan():
     assert plan["experiment"] == config.experiment
     assert plan["total_parallel_envs"] == config.rollout.num_workers * config.rollout.num_envs_per_worker
     assert "dependency_status" in plan
+
+
+def test_skill_env_reset_and_step():
+    config = RLConfig()
+    env = NethackSkillEnv(config)
+    obs, info = env.reset(seed=42)
+    assert obs.shape == (observation_dim(),)
+    assert info["active_skill"] in config.options.enabled_skills
+    obs, reward, terminated, truncated, info = env.step(0)
+    assert obs.shape == (observation_dim(),)
+    assert isinstance(reward, float)
+    assert isinstance(terminated, bool)
+    assert isinstance(truncated, bool)
+    assert "debug" in info
+    env.close()

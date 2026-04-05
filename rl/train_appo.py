@@ -11,10 +11,15 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="APPO + options RL scaffold")
     parser.add_argument("--experiment", type=str, default="appo_options_scaffold")
     parser.add_argument("--train-dir", type=str, default="train_dir/rl")
+    parser.add_argument("--serial-mode", action="store_true")
+    parser.add_argument("--async-rl", action="store_true")
     parser.add_argument("--num-workers", type=int, default=8)
     parser.add_argument("--num-envs-per-worker", type=int, default=16)
     parser.add_argument("--rollout-length", type=int, default=64)
     parser.add_argument("--recurrence", type=int, default=32)
+    parser.add_argument("--batch-size", type=int, default=4096)
+    parser.add_argument("--num-batches-per-epoch", type=int, default=1)
+    parser.add_argument("--ppo-epochs", type=int, default=1)
     parser.add_argument("--train-for-env-steps", type=int, default=50_000_000)
     parser.add_argument("--scheduler", type=str, default="rule_based")
     parser.add_argument("--reward-source", type=str, default="hand_shaped")
@@ -28,10 +33,15 @@ def build_config(args) -> RLConfig:
     config = RLConfig()
     config.experiment = args.experiment
     config.train_dir = args.train_dir
+    config.serial_mode = args.serial_mode
+    config.async_rl = args.async_rl or not args.serial_mode
     config.rollout.num_workers = args.num_workers
     config.rollout.num_envs_per_worker = args.num_envs_per_worker
     config.rollout.rollout_length = args.rollout_length
     config.rollout.recurrence = args.recurrence
+    config.appo.batch_size = args.batch_size
+    config.appo.num_batches_per_epoch = args.num_batches_per_epoch
+    config.appo.ppo_epochs = args.ppo_epochs
     config.appo.train_for_env_steps = args.train_for_env_steps
     config.options.scheduler = args.scheduler
     config.reward.source = args.reward_source

@@ -47,7 +47,7 @@ def _resource_actions(state: State, memory: Memory) -> list[str]:
 def _descend_actions(state: State, memory: Memory) -> list[str]:
     del memory
     actions = _movement_actions(state, memory)
-    if "stairs_down" in set(state.get("adjacent", {}).values()):
+    if "stairs_down" in set(state.get("adjacent", {}).values()) or state.get("standing_on_down_stairs"):
         actions.append("down")
     return list(dict.fromkeys(actions))
 
@@ -71,7 +71,7 @@ def _descend_start(state: State, memory: Memory) -> bool:
     del memory
     return (
         "stairs_down" in set(state.get("adjacent", {}).values())
-        or any("stairs_down" == item.get("type") for item in state.get("visible_items", []))
+        or state.get("standing_on_down_stairs", False)
     )
 
 
@@ -134,4 +134,3 @@ def build_skill_registry() -> dict[str, SkillOption]:
             allowed_actions=_resource_actions,
         ),
     }
-

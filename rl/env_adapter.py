@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 
 import nle.env
 
+from nle_agent.agent_http import _build_action_map
 from rl.options import build_skill_registry
 from rl.scheduler import SchedulerContext, build_scheduler
 from src.memory_tracker import MemoryTracker
@@ -31,6 +32,7 @@ class SkillEnvAdapter:
     def __init__(self, config):
         self.config = config
         self.encoder = StateEncoder()
+        self.action_map = _build_action_map()
         self.registry = build_skill_registry()
         self.scheduler = build_scheduler(config.options.scheduler)
         self.env = nle.env.NLE()
@@ -39,12 +41,20 @@ class SkillEnvAdapter:
         self.info = None
         self.ctx = None
 
+    def _encode_state(self, obs: dict) -> dict:
+        state = self.encoder.encode_full(obs)
+        px, py = state["position"]
+        tile_char = chr(int(obs["chars"][py, px])) if px >= 0 and py >= 0 else " "
+        state["standing_on_down_stairs"] = tile_char == ">"
+        state["standing_on_up_stairs"] = tile_char == "<"
+        return state
+
     def reset(self, seed: int | None = None) -> dict:
         self.obs, self.info = self.env.reset(seed=seed if seed is not None else self.config.env.seed)
         self.memory = MemoryTracker()
         self.memory.update(self.obs)
         self.memory.detect_rooms()
-        state = self.encoder.encode_full(self.obs)
+        state = self._encode_state(self.obs)
         self.ctx = EpisodeContext(active_skill=self.config.env.active_skill_bootstrap)
         self.ctx.recent_state_hashes.append(observation_hash(self.obs))
         self.ctx.recent_positions.append(state["position"])
@@ -78,16 +88,25 @@ class SkillEnvAdapter:
         return skill.allowed_actions(state, self.memory)
 
     def step(self, action_idx: int, action_name: str) -> tuple[dict, float, bool, bool, dict]:
-        state_before = self.encoder.encode_full(self.obs)
+        active_skill_before = self.ctx.active_skill
+        raw_obs_before = self.obs
+        state_before = self._encode_state(self.obs)
         mem_before = snapshot_memory(self.memory)
+        recent_state_hashes_before = list(self.ctx.recent_state_hashes)
+        recent_positions_before = list(self.ctx.recent_positions)
+        prev_action_before = self.ctx.prev_action
         obs_after, reward, terminated, truncated, info = self.env.step(action_idx)
-        state_after = self.encoder.encode_full(obs_after)
+        state_after = self._encode_state(obs_after)
         self.memory.update(obs_after)
         self.memory.detect_rooms()
         mem_after = snapshot_memory(self.memory)
+        next_hash = observation_hash(obs_after)
+        repeated_state = next_hash in recent_state_hashes_before
+        revisited_recent_tile = state_after["position"] in recent_positions_before
+        repeated_action = action_name == prev_action_before
         self.ctx.steps_in_skill += 1
         self.ctx.prev_action = action_name
-        self.ctx.recent_state_hashes.append(observation_hash(obs_after))
+        self.ctx.recent_state_hashes.append(next_hash)
         self.ctx.recent_positions.append(state_after["position"])
         self.obs = obs_after
         self.info = info
@@ -95,12 +114,18 @@ class SkillEnvAdapter:
         timestep["transition"] = {
             "state_before": state_before,
             "state_after": state_after,
+            "obs_before": raw_obs_before,
+            "obs_after": obs_after,
             "memory_before": mem_before,
             "memory_after": mem_after,
             "env_reward": float(reward),
             "terminated": bool(terminated),
             "truncated": bool(truncated),
             "action_name": action_name,
+            "active_skill_before": active_skill_before,
+            "repeated_state": repeated_state,
+            "revisited_recent_tile": revisited_recent_tile,
+            "repeated_action": repeated_action,
         }
         return timestep, float(reward), bool(terminated), bool(truncated), info
 
@@ -117,4 +142,3 @@ class SkillEnvAdapter:
 
     def close(self):
         self.env.close()
-

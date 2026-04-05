@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, field
 
 @dataclass
 class EnvConfig:
-    env_id: str = "nle"
+    env_id: str = "rl_nethack_skill"
     seed: int = 42
     max_episode_steps: int = 200
     use_memory_tracker: bool = True
@@ -24,6 +24,7 @@ class RolloutConfig:
 class APPOConfig:
     train_for_env_steps: int = 50_000_000
     batch_size: int = 4096
+    num_batches_per_epoch: int = 1
     ppo_clip_ratio: float = 0.1
     ppo_epochs: int = 1
     value_loss_coeff: float = 0.5
@@ -69,6 +70,8 @@ class OptionConfig:
 class RLConfig:
     experiment: str = "appo_options_scaffold"
     train_dir: str = "train_dir/rl"
+    serial_mode: bool = False
+    async_rl: bool = True
     env: EnvConfig = field(default_factory=EnvConfig)
     rollout: RolloutConfig = field(default_factory=RolloutConfig)
     appo: APPOConfig = field(default_factory=APPOConfig)
@@ -78,4 +81,3 @@ class RLConfig:
 
     def to_dict(self) -> dict:
         return asdict(self)
-
