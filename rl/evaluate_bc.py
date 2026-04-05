@@ -7,11 +7,14 @@ import torch
 
 from nle_agent.agent_http import _build_action_map
 from rl.bc_model import load_bc_model
+from rl.evaluate import LIVE_ENV_WARNING
 from rl.feature_encoder import encode_observation
 from rl.options import build_skill_registry
+from rl.timestep import build_policy_timestep
 from src.memory_tracker import MemoryTracker
 from src.state_encoder import StateEncoder
 from src.task_harness import evaluate_task_policy
+from src.task_rewards import observation_hash
 
 
 def evaluate_bc_policy(model_path: str, task: str, seeds: list[int], max_steps: int, compare_baseline: bool = False) -> dict:
@@ -30,24 +33,35 @@ def evaluate_bc_policy(model_path: str, task: str, seeds: list[int], max_steps: 
         memory = MemoryTracker()
         memory.update(obs)
         memory.detect_rooms()
+        recent_positions = [tuple(encoder.encode_full(obs)["position"])]
+        recent_actions: list[str] = []
+        recent_state_hashes = [observation_hash(obs)]
         action_counts = Counter()
         total_env_reward = 0.0
 
         for step in range(max_steps):
             state = encoder.encode_full(obs)
             allowed_actions = registry[task].allowed_actions(state, memory)
-            timestep = {
-                "state": state,
-                "active_skill": task,
-                "allowed_actions": allowed_actions,
-                "memory_total_explored": memory.total_explored,
-                "rooms_discovered": len(memory.rooms),
-            }
+            timestep = build_policy_timestep(
+                state=state,
+                task=task,
+                allowed_actions=allowed_actions,
+                memory=memory,
+                step=step,
+                recent_positions=recent_positions,
+                recent_actions=recent_actions,
+                recent_state_hashes=recent_state_hashes,
+                obs_hash=observation_hash(obs),
+                obs=obs,
+            )
             features = encode_observation(timestep, version=observation_version)
             action_name = policy.act(features, allowed_actions=allowed_actions)
             obs, reward, terminated, truncated, _ = env.step(action_map.get(action_name, action_map["wait"]))
             memory.update(obs)
             memory.detect_rooms()
+            recent_actions.append(action_name)
+            recent_positions.append(tuple(encoder.encode_full(obs)["position"]))
+            recent_state_hashes.append(observation_hash(obs))
             total_env_reward += float(reward)
             action_counts[action_name] += 1
             if terminated or truncated:
@@ -67,6 +81,8 @@ def evaluate_bc_policy(model_path: str, task: str, seeds: list[int], max_steps: 
 
     summary = {
         "episodes": len(episodes),
+        "evaluation_mode": "live_env_seeded",
+        "warning": LIVE_ENV_WARNING,
         "avg_unique_tiles": round(sum(row["unique_tiles"] for row in episodes) / len(episodes), 2),
         "avg_rooms_discovered": round(sum(row["rooms_discovered"] for row in episodes) / len(episodes), 2),
         "avg_env_reward": round(sum(row["total_env_reward"] for row in episodes) / len(episodes), 4),

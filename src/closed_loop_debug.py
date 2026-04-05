@@ -15,6 +15,7 @@ from typing import Callable, Optional
 import nle.env
 
 from nle_agent.agent_http import _build_action_map
+from rl.io_utils import atomic_write_text
 from src.data_generator import build_messages, wall_avoidance_policy
 from src.evaluator import compute_accuracy, evaluate_model, hash_messages, parse_prediction
 from src.state_encoder import StateEncoder
@@ -50,8 +51,8 @@ def build_golden_episode(
     output.parent.mkdir(parents=True, exist_ok=True)
 
     count = 0
-    with output.open("w") as f:
-        for step in range(max_steps):
+    records: list[dict] = []
+    for step in range(max_steps):
             state = encoder.encode_full(obs)
             action_name = policy(state["adjacent"], rng)
             action_idx = action_map.get(action_name, action_map.get("wait", 18))
@@ -76,7 +77,7 @@ def build_golden_episode(
                 "next_obs_hash": _hash_obs(obs_after),
                 "message_hash": hash_messages(messages),
             }
-            f.write(json.dumps(record) + "\n")
+            records.append(record)
             count += 1
             obs = obs_after
 
@@ -84,6 +85,7 @@ def build_golden_episode(
                 break
 
     env.close()
+    atomic_write_text(output, "".join(json.dumps(record) + "\n" for record in records))
     return {"path": str(output), "examples": count, "seed": seed}
 
 

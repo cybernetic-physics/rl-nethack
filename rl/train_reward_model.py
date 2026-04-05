@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from statistics import mean
 
 import torch
 import torch.nn.functional as F
 
+from rl.io_utils import atomic_write_text
 from rl.reward_model import RewardMLP, load_preference_rows, save_reward_model
 from src.task_harness import run_task_episode
 
@@ -42,10 +42,7 @@ def generate_preference_rows(task: str, seeds: list[int], max_steps: int) -> lis
 
 
 def write_preference_rows(rows: list[dict], path: str) -> None:
-    os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
-    with open(path, "w") as f:
-        for row in rows:
-            f.write(json.dumps(row) + "\n")
+    atomic_write_text(path, "".join(json.dumps(row) + "\n" for row in rows))
 
 
 def train_reward_model(rows: list[dict], output_path: str, epochs: int = 20, lr: float = 1e-3) -> dict:
@@ -70,7 +67,6 @@ def train_reward_model(rows: list[dict], output_path: str, epochs: int = 20, lr:
         optimizer.step()
         losses.append(float(loss.item()))
 
-    os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
     metadata = {
         "epochs": epochs,
         "learning_rate": lr,

@@ -15,6 +15,9 @@ Subcommands:
   rl-verify-traces -- Verify trace files and report if they are multi-turn
   rl-train-bc -- Train a behavior cloning policy from traces
   rl-evaluate-bc -- Evaluate a behavior cloning policy
+  rl-check-determinism -- Repeat the same evaluation and diff action traces
+  rl-compare-actions -- Compare teacher, BC, and APPO on teacher-induced states
+  rl-short-benchmark -- Train BC on a trace shard and run the fast debug checks
   golden-generate -- Build a tiny golden debug episode
   golden-evaluate -- Evaluate a model against a saved golden episode
   manifest    -- Build and save a training manifest
@@ -127,6 +130,9 @@ def cmd_evaluate(args):
         encoder=encoder,
         server_url=args.server_url,
     )
+
+    if result.get("warning"):
+        print(f"  Note: {result['warning']}")
 
     if not result['server_available']:
         print()
@@ -320,6 +326,7 @@ def cmd_rl_train_appo(args):
         "--reward-source", args.reward_source,
         "--enabled-skills", args.enabled_skills,
         "--observation-version", args.observation_version,
+        "--no-rnn" if args.no_rnn else "",
         "--disable-action-mask" if args.disable_action_mask else "",
     ]
     argv = [arg for arg in argv if arg != ""]
@@ -338,17 +345,29 @@ def cmd_rl_train_appo(args):
 
 def cmd_rl_evaluate_appo(args):
     from rl.evaluate import evaluate_appo_policy
+    from rl.trace_eval import evaluate_trace_policy
 
-    seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
-    result = evaluate_appo_policy(
-        experiment=args.experiment,
-        train_dir=args.train_dir,
-        seeds=seeds,
-        max_steps=args.max_steps,
-        deterministic=not args.stochastic,
-        mask_actions=not args.disable_eval_mask,
-        compare_baseline=args.compare_baseline,
-    )
+    if args.trace_input:
+        result = evaluate_trace_policy(
+            trace_path=args.trace_input,
+            policy="appo",
+            appo_experiment=args.experiment,
+            appo_train_dir=args.train_dir,
+            appo_checkpoint_path=args.checkpoint_path,
+            deterministic=not args.stochastic,
+        )
+    else:
+        seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
+        result = evaluate_appo_policy(
+            experiment=args.experiment,
+            train_dir=args.train_dir,
+            seeds=seeds,
+            max_steps=args.max_steps,
+            deterministic=not args.stochastic,
+            mask_actions=not args.disable_eval_mask,
+            compare_baseline=args.compare_baseline,
+            checkpoint_path=args.checkpoint_path,
+        )
     print(json.dumps(result, indent=2))
     return 0
 
@@ -401,6 +420,7 @@ def cmd_rl_generate_traces(args):
         bc_model_path=args.bc_model_path,
         forward_model_server_url=args.server_url,
         forward_model_name=args.model_name,
+        observation_version=args.observation_version,
     )
     print(json.dumps(result, indent=2))
     return 0
@@ -430,15 +450,23 @@ def cmd_rl_train_bc(args):
 
 def cmd_rl_evaluate_bc(args):
     from rl.evaluate_bc import evaluate_bc_policy
+    from rl.trace_eval import evaluate_trace_policy
 
-    seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
-    result = evaluate_bc_policy(
-        model_path=args.model,
-        task=args.task,
-        seeds=seeds,
-        max_steps=args.max_steps,
-        compare_baseline=args.compare_baseline,
-    )
+    if args.trace_input:
+        result = evaluate_trace_policy(
+            trace_path=args.trace_input,
+            policy="bc",
+            bc_model_path=args.model,
+        )
+    else:
+        seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
+        result = evaluate_bc_policy(
+            model_path=args.model,
+            task=args.task,
+            seeds=seeds,
+            max_steps=args.max_steps,
+            compare_baseline=args.compare_baseline,
+        )
     print(json.dumps(result, indent=2))
     return 0
 
@@ -483,6 +511,231 @@ def cmd_rl_compare_policies(args):
         with open(args.output, "w") as f:
             json.dump(result, f, indent=2)
             f.write("\n")
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_rl_check_determinism(args):
+    from rl.debug_tools import check_policy_determinism
+
+    seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
+    result = check_policy_determinism(
+        policy=args.policy,
+        task=args.task,
+        seeds=seeds,
+        max_steps=args.max_steps,
+        repeats=args.repeats,
+        bc_model_path=args.bc_model,
+        appo_experiment=args.appo_experiment,
+        appo_train_dir=args.appo_train_dir,
+        observation_version=args.observation_version,
+    )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_rl_compare_actions(args):
+    from rl.debug_tools import compare_actions_on_teacher_states
+    from rl.trace_eval import compare_trace_policies
+
+    if args.input:
+        result = compare_trace_policies(
+            trace_path=args.input,
+            bc_model_path=args.bc_model,
+            appo_experiment=args.appo_experiment,
+            appo_train_dir=args.appo_train_dir,
+            appo_checkpoint_path=args.appo_checkpoint_path,
+            summary_only=args.summary_only,
+        )
+    else:
+        seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
+        result = compare_actions_on_teacher_states(
+            task=args.task,
+            seeds=seeds,
+            max_steps=args.max_steps,
+            bc_model_path=args.bc_model,
+            appo_experiment=args.appo_experiment,
+            appo_train_dir=args.appo_train_dir,
+            observation_version=args.observation_version,
+        )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_rl_short_benchmark(args):
+    from rl.train_bc import load_trace_rows, train_bc_model
+    from rl.evaluate_bc import evaluate_bc_policy
+    from rl.debug_tools import check_policy_determinism
+    from rl.trace_eval import evaluate_trace_policy
+
+    seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
+    rows = load_trace_rows(args.input)
+    train_result = train_bc_model(
+        rows,
+        args.output,
+        epochs=args.epochs,
+        lr=args.lr,
+        hidden_size=args.hidden_size,
+        observation_version=args.observation_version,
+    )
+    eval_result = evaluate_bc_policy(
+        model_path=args.output,
+        task=args.task,
+        seeds=seeds,
+        max_steps=args.max_steps,
+        compare_baseline=args.compare_baseline,
+    )
+    determinism_result = check_policy_determinism(
+        policy="bc",
+        task=args.task,
+        seeds=seeds,
+        max_steps=args.max_steps,
+        repeats=args.repeats,
+        bc_model_path=args.output,
+        observation_version=args.observation_version,
+    )
+    trace_eval_result = evaluate_trace_policy(
+        trace_path=args.input,
+        policy="bc",
+        bc_model_path=args.output,
+    )
+    result = {
+        "train": train_result,
+        "eval": eval_result,
+        "determinism": {
+            "stable": determinism_result["stable"],
+            "mismatches": determinism_result["mismatches"],
+        },
+        "trace_eval": trace_eval_result["summary"],
+    }
+    if args.report:
+        with open(args.report, "w") as f:
+            json.dump(result, f, indent=2)
+            f.write("\n")
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_rl_trace_report(args):
+    from rl.trace_eval import compare_trace_policies, trace_disagreement_report
+    from rl.traces import verify_trace_file
+
+    result = {
+        "trace_verify": verify_trace_file(args.input),
+        "policy_compare": compare_trace_policies(
+            trace_path=args.input,
+            bc_model_path=args.bc_model,
+            appo_experiment=args.appo_experiment,
+            appo_train_dir=args.appo_train_dir,
+            appo_checkpoint_path=args.appo_checkpoint_path,
+            summary_only=True,
+        ),
+    }
+    if args.detailed:
+        result["disagreements"] = trace_disagreement_report(
+            trace_path=args.input,
+            bc_model_path=args.bc_model,
+            appo_experiment=args.appo_experiment,
+            appo_train_dir=args.appo_train_dir,
+            appo_checkpoint_path=args.appo_checkpoint_path,
+            top_k=args.top_k,
+        )
+    if args.output:
+        with open(args.output, "w") as f:
+            json.dump(result, f, indent=2)
+            f.write("\n")
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_rl_trace_disagreements(args):
+    from rl.trace_eval import trace_disagreement_report
+
+    result = trace_disagreement_report(
+        trace_path=args.input,
+        bc_model_path=args.bc_model,
+        appo_experiment=args.appo_experiment,
+        appo_train_dir=args.appo_train_dir,
+        appo_checkpoint_path=args.appo_checkpoint_path,
+        top_k=args.top_k,
+    )
+    if args.output:
+        with open(args.output, "w") as f:
+            json.dump(result, f, indent=2)
+            f.write("\n")
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_rl_shard_traces(args):
+    from rl.traces import shard_trace_file
+
+    seeds = None
+    if args.seeds:
+        seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
+    teacher_actions = None
+    if args.teacher_actions:
+        teacher_actions = [s.strip() for s in args.teacher_actions.split(",") if s.strip()]
+    result = shard_trace_file(
+        input_path=args.input,
+        output_path=args.output,
+        max_episodes=args.max_episodes,
+        max_rows=args.max_rows,
+        seeds=seeds,
+        teacher_actions=teacher_actions,
+    )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_rl_rank_checkpoints(args):
+    from rl.checkpoint_tools import (
+        materialize_trace_best_checkpoint,
+        rank_appo_checkpoints_by_trace,
+        write_trace_best_alias,
+    )
+
+    result = rank_appo_checkpoints_by_trace(
+        experiment=args.experiment,
+        train_dir=args.train_dir,
+        trace_input=args.trace_input,
+        top_k=args.top_k,
+    )
+    if args.output:
+        with open(args.output, "w") as f:
+            json.dump(result, f, indent=2)
+            f.write("\n")
+    if args.best_alias_output:
+        result["best_alias_output"] = write_trace_best_alias(result, args.best_alias_output)
+    if args.materialize_best_trace:
+        result["best_trace_checkpoint_alias"] = materialize_trace_best_checkpoint(result)
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_rl_run_dagger(args):
+    from rl.dagger import run_dagger_iteration
+
+    result = run_dagger_iteration(
+        base_trace_input=args.input,
+        dagger_trace_output=args.dagger_output,
+        merged_trace_output=args.merged_output,
+        bc_output=args.bc_output,
+        student_policy=args.student_policy,
+        task=args.task,
+        num_episodes=args.num_episodes,
+        max_steps=args.max_steps,
+        seed_start=args.seed_start,
+        appo_experiment=args.appo_experiment,
+        appo_train_dir=args.appo_train_dir,
+        appo_checkpoint_path=args.appo_checkpoint_path,
+        bc_model_path=args.bc_model_path,
+        observation_version=args.observation_version,
+        merge_ratio=args.merge_ratio,
+        epochs=args.epochs,
+        lr=args.lr,
+        hidden_size=args.hidden_size,
+    )
     print(json.dumps(result, indent=2))
     return 0
 
@@ -680,6 +933,8 @@ def main():
                       help='Observation encoder version (v1 or v2)')
     p_rl.add_argument('--bc-init-path', type=str, default=None,
                       help='Optional BC checkpoint used to warm start APPO')
+    p_rl.add_argument('--no-rnn', action='store_true',
+                      help='Disable the GRU core. Use this for strict BC-aligned warm-start experiments')
     p_rl.add_argument('--disable-action-mask', action='store_true',
                       help='Disable env-side invalid action clamping')
     p_rl.add_argument('--write-plan', type=str, default=None,
@@ -702,6 +957,10 @@ def main():
                            help='Disable action masking during checkpoint evaluation')
     p_rl_eval.add_argument('--compare-baseline', action='store_true',
                            help='Also evaluate task_greedy if the checkpoint is single-skill')
+    p_rl_eval.add_argument('--trace-input', type=str, default=None,
+                           help='Optional trace JSONL for deterministic policy evaluation')
+    p_rl_eval.add_argument('--checkpoint-path', type=str, default=None,
+                           help='Optional explicit APPO checkpoint path')
 
     p_rl_cmp = subparsers.add_parser('rl-compare-policies', help='Compare task_greedy, BC, and APPO on a fixed seed suite')
     p_rl_cmp.add_argument('--task', type=str, default='explore',
@@ -712,6 +971,119 @@ def main():
     p_rl_cmp.add_argument('--appo-experiment', type=str, default=None)
     p_rl_cmp.add_argument('--appo-train-dir', type=str, default='train_dir/rl')
     p_rl_cmp.add_argument('--output', type=str, default=None)
+
+    p_rl_det = subparsers.add_parser('rl-check-determinism', help='Repeat the same evaluation and diff action traces')
+    p_rl_det.add_argument('--policy', type=str, required=True,
+                          choices=['task_greedy', 'wall_avoidance', 'bc', 'appo'])
+    p_rl_det.add_argument('--task', type=str, default='explore',
+                          choices=['explore', 'survive', 'combat', 'descend', 'resource'])
+    p_rl_det.add_argument('--seeds', type=str, default='42,43,44')
+    p_rl_det.add_argument('--max-steps', type=int, default=20)
+    p_rl_det.add_argument('--repeats', type=int, default=3)
+    p_rl_det.add_argument('--bc-model', type=str, default=None)
+    p_rl_det.add_argument('--appo-experiment', type=str, default=None)
+    p_rl_det.add_argument('--appo-train-dir', type=str, default='train_dir/rl')
+    p_rl_det.add_argument('--observation-version', type=str, default='v1')
+
+    p_rl_actions = subparsers.add_parser('rl-compare-actions', help='Compare teacher, BC, and APPO on teacher-induced states')
+    p_rl_actions.add_argument('--task', type=str, default='explore',
+                              choices=['explore', 'survive', 'combat', 'descend', 'resource'])
+    p_rl_actions.add_argument('--input', type=str, default=None,
+                              help='Optional trace JSONL for deterministic teacher-state comparison')
+    p_rl_actions.add_argument('--seeds', type=str, default='42,43,44')
+    p_rl_actions.add_argument('--max-steps', type=int, default=20)
+    p_rl_actions.add_argument('--bc-model', type=str, default=None)
+    p_rl_actions.add_argument('--appo-experiment', type=str, default=None)
+    p_rl_actions.add_argument('--appo-train-dir', type=str, default='train_dir/rl')
+    p_rl_actions.add_argument('--appo-checkpoint-path', type=str, default=None,
+                              help='Optional explicit APPO checkpoint path')
+    p_rl_actions.add_argument('--observation-version', type=str, default='v1')
+    p_rl_actions.add_argument('--summary-only', action='store_true',
+                              help='Only print summaries for trace-based comparisons')
+
+    p_rl_short = subparsers.add_parser('rl-short-benchmark', help='Train BC on a trace shard and run the fast debug checks')
+    p_rl_short.add_argument('--input', type=str, required=True)
+    p_rl_short.add_argument('--output', type=str, required=True)
+    p_rl_short.add_argument('--task', type=str, default='explore',
+                            choices=['explore', 'survive', 'combat', 'descend', 'resource'])
+    p_rl_short.add_argument('--epochs', type=int, default=10)
+    p_rl_short.add_argument('--lr', type=float, default=1e-3)
+    p_rl_short.add_argument('--hidden-size', type=int, default=256)
+    p_rl_short.add_argument('--observation-version', type=str, default='v1')
+    p_rl_short.add_argument('--seeds', type=str, default='42,43,44')
+    p_rl_short.add_argument('--max-steps', type=int, default=20)
+    p_rl_short.add_argument('--repeats', type=int, default=2)
+    p_rl_short.add_argument('--compare-baseline', action='store_true')
+    p_rl_short.add_argument('--report', type=str, default=None)
+
+    p_rl_trace = subparsers.add_parser('rl-trace-report', help='Compact deterministic regression report for a trace dataset')
+    p_rl_trace.add_argument('--input', type=str, required=True)
+    p_rl_trace.add_argument('--bc-model', type=str, default=None)
+    p_rl_trace.add_argument('--appo-experiment', type=str, default=None)
+    p_rl_trace.add_argument('--appo-train-dir', type=str, default='train_dir/rl')
+    p_rl_trace.add_argument('--appo-checkpoint-path', type=str, default=None)
+    p_rl_trace.add_argument('--detailed', action='store_true',
+                            help='Include per-action disagreement analysis')
+    p_rl_trace.add_argument('--top-k', type=int, default=10,
+                            help='Number of mismatch/prediction entries to include in detailed output')
+    p_rl_trace.add_argument('--output', type=str, default=None)
+
+    p_rl_trace_dis = subparsers.add_parser('rl-trace-disagreements', help='Detailed deterministic disagreement report for a trace dataset')
+    p_rl_trace_dis.add_argument('--input', type=str, required=True)
+    p_rl_trace_dis.add_argument('--bc-model', type=str, default=None)
+    p_rl_trace_dis.add_argument('--appo-experiment', type=str, default=None)
+    p_rl_trace_dis.add_argument('--appo-train-dir', type=str, default='train_dir/rl')
+    p_rl_trace_dis.add_argument('--appo-checkpoint-path', type=str, default=None)
+    p_rl_trace_dis.add_argument('--top-k', type=int, default=10)
+    p_rl_trace_dis.add_argument('--output', type=str, default=None)
+
+    p_rl_trace_shard = subparsers.add_parser('rl-shard-traces', help='Write a smaller deterministic shard of a trace dataset')
+    p_rl_trace_shard.add_argument('--input', type=str, required=True)
+    p_rl_trace_shard.add_argument('--output', type=str, required=True)
+    p_rl_trace_shard.add_argument('--max-episodes', type=int, default=None)
+    p_rl_trace_shard.add_argument('--max-rows', type=int, default=None)
+    p_rl_trace_shard.add_argument('--seeds', type=str, default=None,
+                                  help='Optional comma-separated seed filter')
+    p_rl_trace_shard.add_argument('--teacher-actions', type=str, default=None,
+                                  help='Optional comma-separated teacher-action filter; keeps episodes containing these actions')
+
+    p_rl_rank = subparsers.add_parser('rl-rank-checkpoints', help='Rank APPO checkpoints by deterministic trace match rate')
+    p_rl_rank.add_argument('--experiment', type=str, required=True)
+    p_rl_rank.add_argument('--train-dir', type=str, default='train_dir/rl')
+    p_rl_rank.add_argument('--trace-input', type=str, required=True)
+    p_rl_rank.add_argument('--top-k', type=int, default=5)
+    p_rl_rank.add_argument('--output', type=str, default=None)
+    p_rl_rank.add_argument('--best-alias-output', type=str, default=None,
+                           help='Optional JSON path recording the best-by-trace checkpoint path')
+    p_rl_rank.add_argument('--materialize-best-trace', action='store_true',
+                           help='Copy the current best-by-trace checkpoint to checkpoint_p0/best_trace_match.pth')
+
+    p_rl_dagger = subparsers.add_parser('rl-run-dagger', help='Run one DAgger-lite iteration: relabel student rollouts with the teacher and retrain BC')
+    p_rl_dagger.add_argument('--input', type=str, required=True,
+                             help='Base trace JSONL used as the starting BC dataset')
+    p_rl_dagger.add_argument('--dagger-output', type=str, required=True,
+                             help='Output JSONL for newly relabeled student rollouts')
+    p_rl_dagger.add_argument('--bc-output', type=str, required=True,
+                             help='Output path for the retrained BC checkpoint')
+    p_rl_dagger.add_argument('--merged-output', type=str, default=None,
+                             help='Optional JSONL path to save the merged BC dataset')
+    p_rl_dagger.add_argument('--student-policy', type=str, required=True,
+                             choices=['bc', 'appo', 'wall_avoidance'])
+    p_rl_dagger.add_argument('--task', type=str, default='explore',
+                             choices=['explore', 'survive', 'combat', 'descend', 'resource'])
+    p_rl_dagger.add_argument('--num-episodes', type=int, default=8)
+    p_rl_dagger.add_argument('--max-steps', type=int, default=20)
+    p_rl_dagger.add_argument('--seed-start', type=int, default=42)
+    p_rl_dagger.add_argument('--appo-experiment', type=str, default=None)
+    p_rl_dagger.add_argument('--appo-train-dir', type=str, default='train_dir/rl')
+    p_rl_dagger.add_argument('--appo-checkpoint-path', type=str, default=None)
+    p_rl_dagger.add_argument('--bc-model-path', type=str, default=None)
+    p_rl_dagger.add_argument('--observation-version', type=str, default='v1')
+    p_rl_dagger.add_argument('--merge-ratio', type=float, default=0.5,
+                             help='Fraction of the base trace dataset to keep when merging with new relabeled traces')
+    p_rl_dagger.add_argument('--epochs', type=int, default=20)
+    p_rl_dagger.add_argument('--lr', type=float, default=1e-3)
+    p_rl_dagger.add_argument('--hidden-size', type=int, default=256)
 
     p_rl_rew = subparsers.add_parser('rl-train-reward', help='Train a learned reward model')
     p_rl_rew.add_argument('--task', type=str, default='explore',
@@ -748,6 +1120,8 @@ def main():
                          help='Forward-model server URL for policy=forward_model')
     p_trace.add_argument('--model-name', type=str, default='llama-server',
                          help='Served forward model name for policy=forward_model')
+    p_trace.add_argument('--observation-version', type=str, default='v1',
+                         help='Feature encoder version stored in trace rows')
 
     p_trace_verify = subparsers.add_parser('rl-verify-traces', help='Verify a trace file is multi-turn')
     p_trace_verify.add_argument('--input', type=str, required=True)
@@ -767,6 +1141,8 @@ def main():
     p_bc_eval.add_argument('--seeds', type=str, default='42,43,44')
     p_bc_eval.add_argument('--max-steps', type=int, default=50)
     p_bc_eval.add_argument('--compare-baseline', action='store_true')
+    p_bc_eval.add_argument('--trace-input', type=str, default=None,
+                           help='Optional trace JSONL for deterministic policy evaluation')
 
     # --- manifest ---
     p_man = subparsers.add_parser('manifest', help='Build and save a training manifest')
@@ -827,6 +1203,22 @@ def main():
             return cmd_rl_evaluate_appo(args)
         elif args.command == 'rl-compare-policies':
             return cmd_rl_compare_policies(args)
+        elif args.command == 'rl-check-determinism':
+            return cmd_rl_check_determinism(args)
+        elif args.command == 'rl-compare-actions':
+            return cmd_rl_compare_actions(args)
+        elif args.command == 'rl-short-benchmark':
+            return cmd_rl_short_benchmark(args)
+        elif args.command == 'rl-trace-report':
+            return cmd_rl_trace_report(args)
+        elif args.command == 'rl-trace-disagreements':
+            return cmd_rl_trace_disagreements(args)
+        elif args.command == 'rl-shard-traces':
+            return cmd_rl_shard_traces(args)
+        elif args.command == 'rl-rank-checkpoints':
+            return cmd_rl_rank_checkpoints(args)
+        elif args.command == 'rl-run-dagger':
+            return cmd_rl_run_dagger(args)
         elif args.command == 'rl-train-reward':
             return cmd_rl_train_reward(args)
         elif args.command == 'rl-train-scheduler':

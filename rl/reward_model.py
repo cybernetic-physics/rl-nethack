@@ -7,6 +7,8 @@ import numpy as np
 import torch
 from torch import nn
 
+from rl.io_utils import atomic_torch_save
+
 
 def reward_feature_dim() -> int:
     return 37
@@ -43,7 +45,7 @@ def save_reward_model(model: RewardMLP, path: str, metadata: dict | None = None)
         "state_dict": model.state_dict(),
         "metadata": metadata or {},
     }
-    torch.save(payload, path)
+    atomic_torch_save(path, payload)
 
 
 def load_reward_model(path: str, device: str = "cpu") -> RewardInferenceModel:

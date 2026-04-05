@@ -349,6 +349,9 @@ def main():
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
 
+        if dist["world_size"] > 1:
+            torch.cuda.set_device(dist["local_rank"])
+
         bf16_supported = torch.cuda.is_bf16_supported()
         use_bf16 = bf16_supported
         use_fp16 = not use_bf16
@@ -376,12 +379,16 @@ def main():
         data_hash = hash_file(args.data)
         log(f"Data hash  : {data_hash}")
 
-        model, tokenizer = FastLanguageModel.from_pretrained(
-            model_name=args.model,
-            max_seq_length=args.max_seq_length,
-            load_in_4bit=args.load_in_4bit,
-            dtype=None,
-        )
+        model_load_kwargs = {
+            "model_name": args.model,
+            "max_seq_length": args.max_seq_length,
+            "load_in_4bit": args.load_in_4bit,
+            "dtype": torch.bfloat16 if use_bf16 else torch.float16,
+        }
+        if dist["world_size"] > 1:
+            model_load_kwargs["device_map"] = {"": torch.cuda.current_device()}
+
+        model, tokenizer = FastLanguageModel.from_pretrained(**model_load_kwargs)
 
         model = FastLanguageModel.get_peft_model(
             model,

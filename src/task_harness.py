@@ -15,11 +15,13 @@ import json
 import os
 import random
 import tempfile
+import threading
 from collections import Counter, deque
 
 import nle.env
 
 from nle_agent.agent_http import _build_action_map
+from rl.io_utils import atomic_write_json
 from src.data_generator import wall_avoidance_policy
 from src.memory_tracker import MemoryTracker
 from src.state_encoder import StateEncoder
@@ -41,6 +43,7 @@ TASK_DIRECTIVES = {
 }
 
 _ACTION_MAP = None
+_COUNTERFACTUAL_FORK_LOCK = threading.Lock()
 
 
 def _get_action_map():
@@ -107,45 +110,22 @@ def _counterfactual_score_action(
     tmpdir = tempfile.mkdtemp(prefix="task_cf_")
     out_path = os.path.join(tmpdir, f"{action_name}.json")
 
-    pid = os.fork()
-    if pid == 0:
-        try:
-            obs_after, reward, terminated, truncated, _ = env.step(action_idx)
-            state_after = encoder.encode_full(obs_after)
-            mem_before = snapshot_memory(memory_before)
-            memory_before.update(obs_after)
-            memory_before.detect_rooms()
-            mem_after = snapshot_memory(memory_before)
-            next_hash = observation_hash(obs_after)
-            repeated_state = next_hash in recent_state_hashes
-            revisited_recent_tile = state_after["position"] in recent_positions
-            repeated_action = action_name == prev_action
+    with _COUNTERFACTUAL_FORK_LOCK:
+        pid = os.fork()
+        if pid == 0:
+            try:
+                obs_after, reward, terminated, truncated, _ = env.step(action_idx)
+                state_after = encoder.encode_full(obs_after)
+                mem_before = snapshot_memory(memory_before)
+                memory_before.update(obs_after)
+                memory_before.detect_rooms()
+                mem_after = snapshot_memory(memory_before)
+                next_hash = observation_hash(obs_after)
+                repeated_state = next_hash in recent_state_hashes
+                revisited_recent_tile = state_after["position"] in recent_positions
+                repeated_action = action_name == prev_action
 
-            reward_result = compute_task_rewards(
-                task=task,
-                obs_before=obs_before,
-                obs_after=obs_after,
-                state_before=state_before,
-                state_after=state_after,
-                memory_before=mem_before,
-                memory_after=mem_after,
-                action_name=action_name,
-                reward=reward,
-                terminated=terminated,
-                truncated=truncated,
-                repeated_state=repeated_state,
-                revisited_recent_tile=revisited_recent_tile,
-                repeated_action=repeated_action,
-            )
-            payload = {
-                "action": action_name,
-                "total": reward_result.total,
-                "components": reward_result.components,
-                "terminated": bool(terminated),
-                "truncated": bool(truncated),
-                "position": list(state_after["position"]),
-                "obs_hash": next_hash,
-                "reward_features": encode_task_reward_features(
+                reward_result = compute_task_rewards(
                     task=task,
                     obs_before=obs_before,
                     obs_after=obs_after,
@@ -160,20 +140,48 @@ def _counterfactual_score_action(
                     repeated_state=repeated_state,
                     revisited_recent_tile=revisited_recent_tile,
                     repeated_action=repeated_action,
-                ),
-            }
-            with open(out_path, "w") as f:
-                json.dump(payload, f)
-        finally:
-            env.close()
-            os._exit(0)
+                )
+                payload = {
+                    "action": action_name,
+                    "total": reward_result.total,
+                    "components": reward_result.components,
+                    "terminated": bool(terminated),
+                    "truncated": bool(truncated),
+                    "position": list(state_after["position"]),
+                    "obs_hash": next_hash,
+                    "reward_features": encode_task_reward_features(
+                        task=task,
+                        obs_before=obs_before,
+                        obs_after=obs_after,
+                        state_before=state_before,
+                        state_after=state_after,
+                        memory_before=mem_before,
+                        memory_after=mem_after,
+                        action_name=action_name,
+                        reward=reward,
+                        terminated=terminated,
+                        truncated=truncated,
+                        repeated_state=repeated_state,
+                        revisited_recent_tile=revisited_recent_tile,
+                        repeated_action=repeated_action,
+                    ),
+                }
+                atomic_write_json(out_path, payload)
+            finally:
+                env.close()
+                os._exit(0)
 
-    os.waitpid(pid, 0)
-    with open(out_path, "r") as f:
-        result = json.load(f)
-    os.unlink(out_path)
-    os.rmdir(tmpdir)
-    return result
+        _, status = os.waitpid(pid, 0)
+    try:
+        if status != 0:
+            raise RuntimeError(f"Counterfactual worker for action={action_name} exited with status={status}")
+        with open(out_path, "r") as f:
+            return json.load(f)
+    finally:
+        if os.path.exists(out_path):
+            os.unlink(out_path)
+        if os.path.isdir(tmpdir):
+            os.rmdir(tmpdir)
 
 
 def select_task_action(

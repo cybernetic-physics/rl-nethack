@@ -7,6 +7,7 @@ import torch
 from torch import nn
 
 from rl.feature_encoder import ACTION_SET
+from rl.io_utils import atomic_torch_save
 
 
 class BCPolicyMLP(nn.Module):
@@ -44,7 +45,7 @@ class BCPolicyInference:
 
 def save_bc_model(model: BCPolicyMLP, path: str, metadata: dict | None = None) -> None:
     payload = {"state_dict": model.state_dict(), "metadata": metadata or {}}
-    torch.save(payload, path)
+    atomic_torch_save(path, payload)
 
 
 def load_bc_model(path: str, input_dim: int | None = None, device: str = "cpu") -> BCPolicyInference:

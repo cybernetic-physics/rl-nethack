@@ -1,0 +1,677 @@
+Published at 1st Conference on Lifelong Learning Agents, 2022
+HIERARCHICAL KICKSTARTING FOR SKILL TRANSFER IN
+REINFORCEMENT LEARNING
+Michael Matthews1 Mikayel Samvelyan1,2 Jack Parker-Holder3 Edward Grefenstette1 Tim Rockt ¨aschel1
+1University College London 2Meta AI 3University of Oxford
+michael@mtmatthews.com
+ABSTRACT
+Practising and honing skills forms a fundamental component of how humans learn, yet artiﬁcial
+agents are rarely speciﬁcally trained to perform them. Instead, they are usually trained end-to-end,
+with the hope being that useful skills will be implicitly learned in order to maximise discounted
+return of some extrinsic reward function. In this paper, we investigate how skills can be incorpo-
+rated into the training of reinforcement learning (RL) agents in complex environments with large
+state-action spaces and sparse rewards. To this end, we created SkillHack, a benchmark of tasks
+and associated skills based on the game of NetHack. We evaluate a number of baselines on this
+benchmark, as well as our own novel skill-based method Hierarchical Kickstarting (HKS), which
+is shown to outperform all other evaluated methods. Our experiments show that learning with a
+prior knowledge of useful skills can signiﬁcantly improve the performance of agents on complex
+problems. We ultimately argue that utilising predeﬁned skills provides a useful inductive bias for
+RL problems, especially those with large state-action spaces and sparse rewards.
+1 I NTRODUCTION
+The acquisition and execution of skills form a fundamental component of how humans learn. Consider learning to
+play the game of football. Rather than learning by simply playing successive matches, large parts of training would
+be commonly devoted to developing speciﬁc skills, such as passing, shooting, footwork, and general ﬁtness. Since
+humans seem to beneﬁt from explicitly breaking down a complex task into constituent skills, we hypothesise that
+reinforcement learning (RL) agents can beneﬁt from doing the same.
+Most existing methods that incorporate some form of skill-based learning do so by learning the skills during training,
+simultaneously with the policy that makes use of these skills (Bacon et al., 2016; Frans et al., 2017; Vezhnevets et al.,
+2017). These two layers of learning often result in instability, although recent approaches have shown success in
+limiting this (Nachum et al., 2018; Levy et al., 2019).
+In this work, we narrow our focus and consider only the problem of learning with the aid of predeﬁned skills. Speciﬁ-
+cally, we assume access to a set of expert policies, one for each skill we have deﬁned. These experts could be obtained
+automatically by performing some search for diverse policies (Lehman & Stanley, 2008; Eysenbach et al., 2018;
+Parker-Holder et al., 2020), be hand coded with some heuristic policy, or be trained with RL on a set of skill-speciﬁc
+environments to a level that is deemed sufﬁcient, which is the approach taken in this paper.
+The manifestation of this is SkillHack, 1 a new benchmark for skill-based learning using the MiniHack (Samvelyan
+et al., 2021) framework. The benchmark consists of 8 unique task environments, each of which has an associated set
+of skill acquisition environments for mastering the individual skills necessary for completing each task. The tasks
+are designed to be of a difﬁculty such that not utilising the relevant skill environments makes them very hard to
+solve. Completing the suite of tasks requires a broad range of skills in the NetHack environment (Kuttler et al., 2020)
+including navigation, combat and manipulation of in-game items. The large space of items, as well as actions for
+manipulating them, results in a state-action space that is difﬁcult to explore under a random exploration regime. The
+range of unique and diverse skills in NetHack, combined with its speed and ease of use, make SkillHack a convenient
+benchmark for studying policy transfer in RL, as well as problems such as continual learning and unsupervised RL.
+To evaluate SkillHack, we propose Hierarchical Kickstarting (HKS), a new policy transfer approach which distills
+knowledge acquired from expert policies trained on the skill acquisition environments. We refer to these expert
+1Code available at https://github.com/ucl-dark/skillhack
+1
+arXiv:2207.11584v2  [cs.LG]  15 Aug 2022
+Published at 1st Conference on Lifelong Learning Agents, 2022
+Figure 1: SEA MONSTERS task. The agent must reach the staircase on the opposite bank without dying to the monsters
+in the lake. To do this it must use of the powerful suit of armour that has spawned on the near bank. The agent can
+most easily learn to complete this task by transferring knowledge gained from its associated skill environments.
+(a) TakeOff: The agent must take
+off the clothes it starts with by press-
+ing Shift + t .
+(b) PickUp: The agent must navi-
+gate to the item and pick it up with
+, .
+(c) NavigateWater: The agent
+must reach the staircase, receiving a
+reward penalty every time it tries to
+walk into the water.
+Figure 2: Some of the skill environments for the skills associated with the SEA MONSTERS task.
+policies as teachers. HKS learns a policy-over-teachers πH, which outputs a weighting for each teacher at every
+timestep. These are then used to calculate a weighted average of the action distribution of the teachers. The agent
+policyπ then incurs a loss proportional to the divergence of its own action distribution from this weighted average.
+This incentivises the agent to behave more similarly to highly weighted teachers, potentially accelerating learning by
+nudging the agent to behave more similarly to a useful policy. Simultaneously, the policy-over-teachers is incentivised
+to pick teachers that match the agent. After a burn-in time, these two networks should be in sync, with the policy-over-
+teachers recommending useful teachers based on the current state of the agent, while the agent behaves similarly to the
+chosen teachers. This method can be considered as a more generalised version of Kickstarting (Schmitt et al., 2018),
+where we add the networkπH so that different skills can be prioritised for knowledge transfer at different points within
+an episode.
+We perform an empirical evaluation of HKS as well as several baselines across all SkillHack environments. Our results
+show that learning with a prior knowledge of useful skills can signiﬁcantly improve performance of agents on complex
+problems. We demonstrate that while HKS outperforms other baselines on the overall suite of SkillHack tasks, there
+is still signiﬁcant room for methods to improve.
+In summary, this paper makes the following contributions: (i) we present SkillHack, a new benchmark for skill transfer
+in RL, (ii) we propose HKS, a new method for policy transfer based on skill speciﬁc expert policies, (iii) we provide
+an evaluation and discussion of HKS and several other baseline methods on the SkillHack benchmark.
+2 B ACKGROUND
+2.1 R EINFORCEMENT LEARNING
+We use the standard formalism of Markov Decision Process (MDP) deﬁned as a tuple M =⟨S,A,T,R,γ⟩ repre-
+senting state spaceS, action spaceA, transition probabilityT :S×A− →P(S), reward functionR :S×A− →R,
+and discount factorγ. The agent chooses actions according to a stochastic policyπ :S− →P(S) in order to maximise
+expected episodic reward, deﬁned asE
+[∑T
+t=0γtrt
+]
+whereT is the ﬁnal timestep andrt is reward at timestept. The
+value function of policyπ is deﬁned asvπ(s) = Eπ
+[ ∑T
+t=0γtrt|st =s
+]
+. Model-free approaches to RL aim to learn
+2
+Published at 1st Conference on Lifelong Learning Agents, 2022
+the optimal policy without explicitly learning the dynamics of the environment. Actor-critic algorithms (Konda &
+Tsitsiklis, 2000) make use of both a policy (actor) for control and an estimated value function (critic) for updating the
+policy of the agent. IMPALA (Espeholt et al., 2018) scales up actor-critic to work with multiple actors, each interact-
+ing with their own environment. These actors then periodically send trajectories of experience to a centralised learner,
+which then updates the policy and communicates back to the actors. Since the policy of the actors will lag behind that
+of the centralised learner, the update uses V-trace, an off-policy corrected target value.
+2.2 P OLICY TRANSFER
+Training RL agents from scratch can often be prohibitively expensive and time-consuming, while making use of
+existing knowledge can improve sample efﬁciency and training speed. Policy transfer approaches aim to assist the
+learning process of the agent by utilizing pretrained policies on related tasks. We refer to the policy designed for the
+target task MT as the student, which can leverage knowledge from teacher policiesπE1,πE2,...,π EK trained on a
+set of source domainsM1,M2,..., MK, respectively.
+The Options Framework One way to perform policy transfer is to use options (Sutton et al., 1999), a Hierarchi-
+cal Reinforcement Learning (HRL) framework that introduces temporally-extended actions that can span multiple
+timesteps. An optionω is a 3-tuple⟨I,π,β⟩ representing the states the option can be initiated from, the option policy
+and the option termination function. In a given state s, a policy-over-options selects an option πω for whichs∈I ω.
+Control over actions is then ceded to this option for a number of timesteps. Once the termination condition βω is
+stochastically met, the option ﬁnishes and cedes control back to the policy-over-options, which then selects a new
+option to execute.
+Kickstarting RL Kickstarting (Schmitt et al., 2018) is a policy transfer method that uses one or more expert teachers
+to guide a student policy. Multi-teacher Kickstarting works by adding an auxiliary loss to the student during training,
+deﬁned aslkick =H(∑
+kλkπk(·|st)∥π(·|st)), whereH(·∥· ) is cross-entropy,πk are the teacher policies, π is the
+student policy and λk are the per-teacher Kickstarting coefﬁcients. This means that the agent not only optimises
+for extrinsic reward, but is also incentivised to behave similarly to the teachers. The λk can be varied over training
+(although remain constant within an episode) either with Population-Based Training (Jaderberg et al., 2017) or with a
+manual schedule.
+2.3 N ETHACK
+The NetHack Learning Environment (Kuttler et al., 2020) is an RL environment based off the classic game ofNetHack.
+NetHack is a dungeon crawler game, notorious for its difﬁculty, where the player must work their way through dozens
+of procedurally generated levels, with hundreds of unique enemies and objects. The game is turn based and stochastic,
+with a large action space. MiniHack (Samvelyan et al., 2021) is an extension of the NetHack Learning environment
+that allows for customisation of levels, rewards and termination conditions, while retaining access to the full set of
+entities and environment dynamics from NetHack.
+3 S KILL HACK: A BENCHMARK FOR SKILL TRANSFER
+To serve as a benchmark for skill transfer we developed SkillHack: a set of procedurally generated MiniHack envi-
+ronments containing 8 task environments and 16 skill acquisition environments. The task environments are designed
+to be tricky to solve with vanilla RL, due to the large state-action space and sparse rewards. For this reason, each
+task environment has an associated set of relevant skill environments. By transferring knowledge gained from solving
+these skill environments, the task environment will become easier to solve.
+Each task environment is set up such that the agent receives a +1 reward for successfully completing the task and a
+−1 reward for failing the task and/or dying. The skill environments are set up with bespoke rewards2 to encourage an
+RL agent to learn the skill quickly and in a generalised manner.
+A motivating example is the SEA MONSTERS task (Figure 1). In this task, the agent is faced with a narrow, procedu-
+rally generated bridge over a monster infested lake, with the goal to reach the staircase on the opposite bank. If the
+agent simply walks over the bridge, it will be killed by one of the monsters before it reaches the other side. However,
+on the near side of the lake a powerful piece of armour will be randomly generated and placed on the ﬂoor. The agent
+2Most of the skill environments simply have +1 reward for completing the skill. More complicated skills, for instanceUnlock,
+require an exact sequence of key presses. These environments have additional rewards for getting part way through the sequence.
+3
+Published at 1st Conference on Lifelong Learning Agents, 2022
+Table 1: Summary of SkillHack tasks. Different styles are used to differentiate T ASKS , Skills and
+Items/Entities.
+Task Description
+BATTLE PickUp a randomly placed Sword, Wield the Sword and ﬁnallyFight and kill a
+Monster.
+PREPARE FOR BATTLE PickUp a ration of Food and a piece of Armour. Wear the Armour and Eat the
+Food.
+TARGET PRACTICE Either a set of Daggers or a Wand of Death will spawn on the ﬂoor. PickUp
+the item and either ZapWandOfDeath or Throw the Daggers in order to kill the
+Minotaur.
+MEDUSA PickUp and then PutOn the Towel that is placed in your starting room, thus blind-
+folding yourself. Open the door to the second room where Medusa is caged, but can
+still instantly kill you with her deadly gaze should you enter with your vision intact.
+You must NavigateBlind in this second room in order to ﬁnd the stairway out.
+SEA MONSTERS TakeOff your starting Armour and then PickUp and Wear the strong suit of
+Armour that spawns on the near bank of the lake. Whilst wearing this Armour
+you can NavigateWater across the bridge without dying to the Piranhas. Make
+it to the other side and reach the staircase to complete the task.
+FROZEN LAVA CROSS Either a Wand of Cold or a Frost Horn will spawn on the near side of a
+river of lava. PickUp the item and then create a bridge across the lava with either
+ZapWandOfCold or by ApplyFrostHorn. Finally, NavigateLava across your
+newly made bridge to reach the staircase on the other side.
+IDENTIFY MIMIC Mimics are monsters that can camouﬂage themselves. This task generates 3
+Statues, 2 of which are real and one of which is actually a Mimic that you must
+safely identify. To do this you can PickUp a stack of Daggers and Throw them at
+the Statues. Hitting the Mimic will reveal it and complete the task. Alternatively
+you can NavigateLavaToAmulet by following the bridge across the lava lake and
+then PickUp and PutOn the Amulet of ESP which will reveal the Mimic. Re-
+vealing the Mimic in an unsafe way, for instance by walking into it, will cause you to
+fail the task.
+A LOCKED DOOR PickUp the Skeleton Key and use it to unlock the Door, before proceeding to
+NavigateLava to the exit.
+must Take Off the clothes it starts off wearing, Pick Up and then Wear the armour, before ﬁnallyNavigating
+Water to reach the staircase on the other side of the lake.
+The four skills associated with the task each have their own respective environments (Figure 2), in which skill-speciﬁc
+teacher agents can learn expert policies. The environments are all procedurally generated, with distractions in the form
+of random terrain and entities, in order to prevent overﬁtting (Cobbe et al., 2020). As well as providing reward and
+termination when the skill is successfully performed, a constant negative reward is applied every timestep in order to
+encourage the agent to perform the skill as fast as possible.
+It should be noted that these task and skill acquisition environments only form a fraction of the possible behaviours
+in NetHack. However, the primary aim of SkillHack is not necessarily to directly lead to a more competent NetHack
+agent, but to facilitate research into skill transfer.
+The full list of tasks is summarised in Table 1. More information on the skill acquisition and task environments can be
+found in appendices C and D respectively.
+4 H IERARCHICAL KICKSTARTING
+In this section, we propose Hierarchical Kickstarting (HKS), a new approach for policy transfer that combines the
+strengths of two other policy transfer approaches: Kickstarting and the Options Framework.
+4
+Published at 1st Conference on Lifelong Learning Agents, 2022
+To perform policy transfer from multiple teachers, HKS utilises a hierarchical policy network πH which at every
+timestep weights the relevance of each teacherπk based on the current state. Rather than ceding control to one of the
+teacher policiesπk as in the Options Framework, this weighting is used to calculate a weighted average of the teacher
+action distributions. We then formulate an additional loss, proportional to the cross-entropy of this weighted average
+with the agent action distribution. The policy-over-teachers πH therefore does not directly affect the action selection
+but only the loss incurred by the agent. As a result, the student π is optimised to behave similarly to the average of
+the teachers πk as weighted by πH, as well as maximising external rewards. Conversely, πH is optimised to choose
+teachers that match the behaviour ofπ, forming a cyclic relationship between the two levels of policies.
+The additional auxiliary loss of the student policy in HKS is computed as follows:
+lHKS =λH
+(∑
+k
+πH (k|st)πk(·|st)
+π(·|st)
+)
+, (1)
+here the outputs ofπH are passed through a softmax function.
+HKS can be seen as a combination of Kickstarting and the Options Framework. It generalises Kickstarting by using a
+hierarchical policy-over-teachers which adjusts how much to kickstart from each teacher at each timestep, rather than
+distilling a ﬁxed amount from each teacher. Since skills often have to be performed sequentially to complete a task, it
+is common for only a single skill to be immediately relevant at a given point in time, making this a useful ability.
+Furthermore, HKS also addresses the weakness of the Options Framework. Pretrained options are effective when the
+environment dynamics of the target domain matches those used during the training of the option. However, options
+can be highly unstable when executed directly on a target task which is meaningfully different from the environment
+encountered during training.
+5 E XPERIMENTAL SETUP
+All experiments are run with the IMPALA (Espeholt et al., 2018) framework, using the open-source TorchBeast
+implementation (K ¨uttler et al., 2019). The agent architecture is an adapted version of the one used in Kuttler et al.
+(2020) and Samvelyan et al. (2021).
+The inputs to the network include the full matrix of glyphs that serve as the main screen of the game, along with
+an encoding of the most recently received in-game message (“ You hit the orc!”), the players inventory and a set of
+relevant statistics (health, armour level, etc.). The network uses CNNs for the spatial inputs, as well as LSTM units
+to incorporate memory. The action space consists of 32 actions (16 movement actions and 16 command actions). For
+the full action space see Appendix A and for a full listing of hyperparameters see Appendix F. For more detail on the
+observation space and network architecture see Kuttler et al. (2020) and Samvelyan et al. (2021).
+An expert teacher policy is produced via vanilla RL for each of the 16 skill environments. The results of training the
+experts can be seen in Appendix E. We train vanilla RL, Random Network Distillation (RND) (Burda et al., 2018), the
+Options Framework, Kickstarting and HKS on all 8 tasks for2× 108 timesteps, repeated over at least 3 random seeds.
+For the 3 skill-based methods, only teachers relevant to the target task are used.
+5.1 B ASELINES
+Options Framework We use the pretrained experts as options with frozen weights, while training a policy-over-
+options network to direct them. The option networks have their LSTM units removed (although these are kept in the
+policy-over-options). We consider a degenerate form of the Options Framework where options can be initialised from
+any state and always terminate in one stepIω =S,β(·)ω = 1.
+Kickstarting For the Kickstarting agent, we use the experts as teachers and similarly remove the LSTMs. We keep
+all λk equal and therefore refer to them all as λ = λk. The schedule for λ was manually set to start at λ = 10
+and linearly decay to λ = 1 after 107 timesteps. Retaining a small Kickstarting coefﬁcient was found to increase the
+stability of the method, whereas ifλ was allowed to decay to 0 there would be occasional massive drops in performance
+(Appendix B).
+Hierarchical Kickstarting The LSTM removal and λ schedule are the same as for Kickstarting. The policy-over-
+teachers was implemented as an extra head on the student network in the form of an additional single fully connected
+layer with softmax activations. Preliminary testing of the method found that it would often quickly get stuck in
+5
+Published at 1st Conference on Lifelong Learning Agents, 2022
+local minima where the policy-over-teachers would always weight the same teacher very highly, resulting in poor
+performance. To mitigate this, an additional loss was added proportional to the negative entropy of the policy-over-
+teacherslE =−κH(πH ). This encourages the policy-over-teachers to give a more uniform distribution, preventing it
+from falling into the described local minima. The coefﬁcientκ was set with a manual schedule, starting atκ = 20 and
+linearly decaying toκ = 0 after 2× 107 timesteps.
+Vanilla RL and RND did not require any additional changes.
+6 R ESULTS AND DISCUSSION
+6.1 R ESULTS
+Figure 3: Mean success rate of baselines across all Skill-
+Hack tasks. The shaded area denotes 1 standard error.
+Figure 3 plots the success rate of the 4 methods averaged
+over all 8 of the SkillHack tasks. The complete lack of
+progress by vanilla RL, in contrast to the progress by the
+3 skill-based methods, shows that the SkillHack tasks
+are suitably designed to be a useful benchmark for pol-
+icy transfer. HKS performs best in terms of ﬁnal perfor-
+mance, achieving 56% success rate, as opposed to 41%
+and 32% for Kickstarting and the Options Framework,
+respectively. It does however take marginally longer
+than the other methods to converge. HKS overtakes the
+Options Framework and Kickstarting in success rate at
+around 2× 107 and 3× 107 timesteps respectively. For
+a fair comparison against HKS, the Kickstarting score
+was increased by around 2% for reasons discussed in
+Appendix B.
+Figure 4 splits out the results for each of the SkillHack tasks, painting a more nuanced picture of the results. There are
+some environments where only a subset of the skill-based methods managed to achieve any signiﬁcant performance,
+namely A L OCKED DOOR (HKS), TARGET PRACTICE (Options Framework) and M EDUSA (Kickstarting & HKS).
+In terms of the ﬁnal success rate, HKS always at least equals Kickstarting, although notably loses to the Options
+Framework on T ARGET PRACTICE . Interestingly, the only two tasks where the Options Framework outperforms
+Kickstarting (T ARGET PRACTICE & F ROZEN LAVA CROSS ) are the only two tasks that cannot always be solved
+using the same method for each episode. Both tasks need to be solved differently depending on a random object
+spawned at the start of the episode (See Table 1). The S EA MONSTERS task was the only one to remain unsolved by
+all 4 methods, making it a good candidate for future research into skill-based methods.
+6.2 M ISMATCHED SKILLS
+So far we have only considered the case where the provided skills exactly match those of the task. In practice, it would
+likely be a common situation that the skills do not perfectly correspond to the task at hand. To investigate this, we look
+at how the skill based algorithms perform in two situations: adding a useless skill and removing a useful skill. The
+results are shown in Figure 5.
+The Options Framework performs only marginally worse when given an additional skill, compared to a perfect skill
+set, which makes sense as it has to navigate a slightly larger action space. It performs signiﬁcantly worse when a
+skill is missing, since this fundamentally limits its capability, as it cannot learn new behaviours. Surprisingly, both
+Kickstarting and HKS actually perform better when a skill is missing compared to when an useless skill is added
+(note that we may expect the result to be different for Kickstarting if PBT was implemented). We hypothesise that
+the reason for this is that the remaining skills already give a strong enough prior on exploration, while the existence
+of an additional skill effectively dilutes this prior. Interestingly, this implies that more focus should be put on making
+sure all skills in the skill set are relevant, rather than developing a skill set that covers all possibly useful behaviour. In
+practical terms, this may mean developing a small core set of skills that exhibit known essential behaviour.
+6.3 Q UALITATIVE ANALYSIS OF HKS
+In order to further scrutinise HKS, we can observe how the distributions of the policy-over-teachers change during
+an episode for the converged policies (Figure 6). Note again that the policy-over-teachers does not affect the agents
+6
+Published at 1st Conference on Lifelong Learning Agents, 2022
+Figure 4: Success rate for all methods on the 8 SkillHack tasks, averaged over the repeats of each experiment. The
+shaded area denotes 1 standard error.
+Figure 5: Success rate of the 3 skill based methods on 6 of the SkillHack tasks, when either a useless skill has been
+added (ﬁrst row) or a useful skill has been removed (second row) from the skill set.
+choice of action, but due to the system of losses implemented in HKS, it can be used to identify which skills the agent
+is prioritising at each timestep.
+Sequential Skill Selection All the given tasks can be solved by executing a set of skills in sequence, so we would
+expect to see the policy-over-teachers reﬂect this by prioritising each skill as it becomes relevant. This behaviour is
+indeed observed and is most clearly seen in P REPARE FOR BATTLE , A L OCKED DOOR and FROZEN LAVA CROSS ,
+while being somewhat present in BATTLE . The more interesting cases are when this behaviour does not occur.
+IDENTIFY MIMIC : A Missing Skill While the policy-over-teachers for I DENTIFY MIMIC seems to display the
+expected behaviour by successively prioritising different skills, on closer inspection the chosen skills do not match the
+task description. Speciﬁcally, the agent prioritises the PutOn skill for the ﬁrst 20 timesteps, long before it reaches
+the Amulet of ESP and has any need to PutOn anything. These ﬁrst 20 timesteps are the time when the agent is
+navigating past the statues in order to make it to the lava bridge (See Figure 10d). It would appear that the agent is
+effectively missing a skillNavigatePastStatues and in order to minimise the HKS loss, the policy-over-teachers
+prioritises the existing skill that is most similar to the missing one.
+7
+Published at 1st Conference on Lifelong Learning Agents, 2022
+Figure 6: Distribution of policy-over-teachers for converged HKS policies over the span of a single episode. Results
+are each taken from a single successful run, smoothed with a rolling average of 6 timesteps. Note that the sampled
+FROZEN LAVA CROSS had a Frost Horn spawn. Only the 6 environments in which HKS converged on are shown.
+MEDUSA : A Useless Skill MEDUSA also exhibits unexpected behaviour. In the ﬁnal timesteps, at the time when the
+agent should be navigating while blindfolded towards the staircase, we see that the policy-over-teachers overwhelm-
+ingly prioritises PutOn rather than NavigateBlind. Furthermore, watching the trained agent showed it solved
+the environment in the expected way and did not ﬁnd some unexpected alternate solution. Upon further investiga-
+tion, we found that NavigateBlind does not properly correspond to the MEDUSA task. Speciﬁcally, the blindness
+applied in NavigateBlind uses a Potion of Blindness , which has different mechanics to blindfolding via
+PuttingOn a Towel,3 corresponding to a different input observation. This domain shift made NavigateBlind
+a useless skill4 and HKS correspondingly learned to disregard it by again prioritising the skill during this time period
+that most closely matched the theoretical correct NavigateBlind skill.
+6.4 A NALYSIS OF HKS L OSS
+Figure 7 shows the HKS loss over time for the experiments that were run with missing and additional skills. Notably,
+the HKS loss tends to converge to a non-zero value, indicating that the agent policy would not perfectly match that of
+the policy-over-teachers. This implies that the skills policies do not completely correspond to the policies needed in
+the task, which was to be expected, as the skill acquisition environments did not perfectly match the task environments.
+The HKS loss for the experiments with additional skills tend to converge to a smaller value than those in which a skill
+was removed. This is because the greater range of skills provided in these experiments allows the policy-over-teacher
+to more accurately match the agent policy. In the cases where skills have been removed, the policy-over-teachers is
+again likely substituting in the closest matching skill during the timesteps taken up by the missing skill.
+A notable result is seen on the experiment for A L OCKED DOOR with additional skills. As can be seen from the
+corresponding success rate plot, this experiment failed to converge. The HKS loss converges at close to 0, implying
+that the agent policy has almost perfectly synced with the policy-over-teachers. In the absence of external rewards,
+the agent policy will only be shaped by the intrinsic losses and, ignoring other intrinsic losses (the IMPALA agent
+does include some other intrinsic losses but these are roughly a magnitude smaller than the HKS loss), this means that
+the agent policy will be almost wholly shaped by the HKS loss. Therefore it logically follows that it would learn to
+minimise this loss and perfectly match the policy-over-teachers, which is what we see in the plot. What this plot does
+not show is whether the skills being chosen by the policy-over-teachers is changing during training on this experiment
+or whether they are remaining constant. It seems likely that the case is the latter, as if the agent was changing the skills
+it used over time, it would likely eventually reach the correct set of skills and therefore bias the exploration of the
+agent towards succeeding on the task. This could be an indication that in the case when the initial exploratory period
+fails to ﬁnd any reward, the agent and policy-over-teachers get stuck performing the same set of skills.
+3https://nethackwiki.com/wiki/Blindness
+4A ﬁxed version of this skill is available in the GitHub repository. The authors decided to retain the broken version in this paper
+as an illustrative point.
+8
+Published at 1st Conference on Lifelong Learning Agents, 2022
+Figure 7: The ﬁrst row shows HKS loss for the 6 SkillHack environments that were run with both missing and
+additional skills. The second row shows success rate on these same tasks for reference.
+6.5 L IMITATIONS
+Despite the relative success of the skill based methods over the vanilla RL baseline, each one fails to learn on at least
+two of the SkillHack tasks. As discussed previously, a signiﬁcant reason for this may be that badly designed skills do
+not transfer to the desired task, providing no useful prior for exploration. Indeed, a badly designed skill will likely
+actually harm exploration, by inducing the agent to explore irrelevant action sequences. This is all to say that these
+methods are only as good as the skills that are provided to them, although they have shown some ability to be robust
+to missing and useless skills, provided that the rest of the skill set is well crafted. The reliance on predeﬁned skills
+can be seen as a fundamental limitation of the skill based methods, as they require domain knowledge of the task to
+engineer useful skills or skill acquisition environments. However, if this domain knowledge is present, we believe that
+skill based methods provide a practical way to inject this information into an agent.
+7 R ELATED WORK
+Policy Transfer Policy transfer is deﬁned as the paradigm where the learning process of an agent is supplemented
+by utilizing policies pretrained on related tasks. It is a paradigm that becomes more prevalent as environments develop
+larger state-action spaces, sparser rewards and more open-ended sets of possible behaviours. Knowledge distillation
+is a popular technique in supervised learning that ensembles knowledge from many teacher models into a student
+model (Hinton et al., 2015). Recent work in RL has used the distillation of policies to transfer knowledge from teacher
+policies to the student. Rusu et al. (2016) propose policy distillation where the student policy is trained by minimising
+the divergence between the action distributions of the teacher and student policies over the trajectories sampled via the
+teacher policies. Czarnecki et al. (2019) performs policy distillation using the trajectories that are sampled with the
+student policy, rather than teachers’. Another objective for policy transfer is minimising the cross-entropy between
+the teacher and student policies, as is done in Kickstarting RL (Schmitt et al., 2018). The Actor-Mimic algorithm
+(Parisotto et al., 2016) takes a slightly different approach to Kickstarting. First, the student is pretrained to master all
+the skill environments, but with the coefﬁcient governing this loss function held constant. The resultant weights are
+used to initialise a network that then trains on the target environment, without any supervision from the teachers. A
+different perspective for achieving transfer is maximising the probability that the student and teacher policies will visit
+the same trajectories. An example of such an approach is Distral (Teh et al., 2017) where a central “distilled” policy
+is shared across many tasks in order to capture common behaviour. Each teacher is trained in separation to solve its
+own task while being constrained to stay close to the shared policy.
+Hierarchical Reinforcement Learning While we choose to use the Options Framework as a baseline and as a build-
+ing block of HKS, many other HRL approaches exist. Feudal RL (Dayan & Hinton, 1992) formulates an arbitrarily
+deep hierarchy of managers. The control hierarchy is such that each manager has a super-manager that sets it tasks and
+a set of sub-managers that it delegates tasks to. A recent successful realisation of this framework is FeUdal Networks
+(Vezhnevets et al., 2017), in which a manager sets goals in a learned latent space. Hierarchical Deep Q-Networks
+(Kulkarni et al., 2016) proposes a hierarchical structure for value based RL. A meta-controller produces a value func-
+9
+Published at 1st Conference on Lifelong Learning Agents, 2022
+tion over goals conditioned on the state, while a controller produces a value function over actions, conditioned on
+the state and the chosen goal. A critic checks if the goal is reached and provides intrinsic rewards to the controller,
+which terminates either at the end of the episode or when the goal is reached, in which case the meta-controller picks
+a new goal. HIRO (Nachum et al., 2018) is another 2 level hierarchical model, but with a focus on off-policy learning.
+Off-policy learning in HRL is especially complex, as changes to lower level policies correspond to changing the action
+space of higher level policies. The key insight to correct for this was to relabel old goals. Consider a buffer of states,
+goals, rewards and actions. To perform off-policy learning on this sequence, the goal is adjusted such that if the model
+was run with the current sub-policies, the same action distribution would be induced as in the memory buffer. A
+similar model is Hierarchical Actor-Critic (Levy et al., 2019), which additionally makes use of Hindsight Experience
+Replay to outperform HIRO.
+Benchmarks We consider a range of RL benchmarks and their viability to the problem of skill transfer. Classic
+environments such as those in OpenAI gym (Brockman et al., 2016) are too simple to be broken down into constituent
+skills. Common video game environments such as Atari (Bellemare et al., 2013), DeepMind Lab (Beattie et al., 2016)
+and ViZDoom (Kempka et al., 2016) are complex enough for skill-based learning to be warranted, but much of the
+focus of learning in these environments must be put towards interpreting the high dimensional pixel input. The CORA
+benchmark (Powers et al., 2021) for continual learning proposes schedules of environments which are each shown to
+the agent for some large number of iterations, with one of the primary goals being toforward transfer knowledge from
+previously seen environments to new ones. Skill transfer could be seen as a subset of continual learning, where the
+focus is entirely on the forward transfer of information from skills to tasks.
+The MineRL (Guss et al., 2021) benchmark challenges the RL agent to mine a diamond in the popular video game
+Minecraft. Using vanilla RL to do this would be intractable, so the benchmark comes with a dataset of over 60 million
+state-action tuples of recorded human demonstrations. It should be noted that while similar to the use of expert teachers
+in SkillHack, new samples cannot be dynamically generated from the teachers, meaning this dataset could not be used
+by any of the methods we investigate. Crafter (Hafner, 2022) is a 2D open world survival game, with similar game
+dynamics to Minecraft but with a lower dimensional input space and faster runtime. The paper formulates a taxonomy
+of 22 achievements and their dependencies on each other. By interpreting achievements with dependencies as tasks
+and achievements with no dependencies as skills, Crafter could be phrased as a skill transfer benchmark. However,
+the majority of the tasks included only have 1 associated skill and many skills have no associated task.
+8 C ONCLUSION
+This paper presents SkillHack: a NetHack-based benchmark for skill transfer in RL. SkillHack features 16 skill envi-
+ronments for acquiring knowledge necessary to solve 8 target problems, all of which have been shown to be intractable
+for vanilla RL. Our experimental results show that the SkillHack tasks form a difﬁcult and varied suite of challenges,
+with methods performing markedly differently across the range of tasks. We also propose Hierarchical Kickstarting
+(HKS): a new method for skill transfer that combines Kickstarting and the Options Framework. Evaluating HKS on
+SkillHack shows that it improves the ﬁnal performance on the overall benchmark by 15% over the next best baseline
+(Kickstarting).
+In the near future, we aim to conduct additional experiments to compare the methods by conditioning on experts for
+all 16 skill environments, rather than the subset of relevant experts for each task. We would also like to investigate
+extending our baseline for the Options Framework to allow for options to learn during training (Bacon et al., 2016).
+Finally, we plan to use SkillHack to study other policy transfer approaches including inter-task mapping, representation
+transfer and transfer learning approaches for the framework of unsupervised RL.
+We hope that SkillHack can serve as a useful benchmark in the community for evaluating skill transfer and that HKS
+can ﬁnd applications where traditional RL methods struggle. We are open sourcing both the SkillHack benchmark and
+the HKS method and look forward to contributions from the community.
+ACKNOWLEDGEMENTS
+We would like to thank Yicheng Luo, Minqi Jiang, and Sam Powers for many valuable discussions during the course
+of completing this work. Furthermore, we would like to thank our anonymous reviewers for their insightful feedback
+and recommendations for improving the paper.
+10
+Published at 1st Conference on Lifelong Learning Agents, 2022
+REFERENCES
+Pierre-Luc Bacon, Jean Harb, and Doina Precup. The option-critic architecture. CoRR, abs/1609.05140, 2016. URL
+http://arxiv.org/abs/1609.05140.
+Charles Beattie, Joel Z. Leibo, Denis Teplyashin, Tom Ward, Marcus Wainwright, Heinrich K¨uttler, Andrew Lefrancq,
+Simon Green, V´ıctor Vald´es, Amir Sadik, Julian Schrittwieser, Keith Anderson, Sarah York, Max Cant, Adam Cain,
+Adrian Bolton, Stephen Gaffney, Helen King, Demis Hassabis, Shane Legg, and Stig Petersen. Deepmind lab, 2016.
+M. G. Bellemare, Y . Naddaf, J. Veness, and M. Bowling. The arcade learning environment: An evaluation platform
+for general agents. Journal of Artiﬁcial Intelligence Research , 47:253–279, Jun 2013. ISSN 1076-9757. doi:
+10.1613/jair.3912. URL http://dx.doi.org/10.1613/jair.3912.
+Greg Brockman, Vicki Cheung, Ludwig Pettersson, Jonas Schneider, John Schulman, Jie Tang, and Wojciech
+Zaremba. Openai gym. arXiv preprint arXiv:1606.01540, 2016.
+Yuri Burda, Harrison Edwards, Amos Storkey, and Oleg Klimov. Exploration by random network distillation, 2018.
+URL https://arxiv.org/abs/1810.12894.
+Karl Cobbe, Christopher Hesse, Jacob Hilton, and John Schulman. Leveraging procedural generation to benchmark
+reinforcement learning, 2020.
+Wojciech M. Czarnecki, Razvan Pascanu, Simon Osindero, Siddhant Jayakumar, Grzegorz Swirszcz, and Max Jader-
+berg. Distilling policy distillation. In Kamalika Chaudhuri and Masashi Sugiyama (eds.), Proceedings of the
+Twenty-Second International Conference on Artiﬁcial Intelligence and Statistics, volume 89 of Proceedings of Ma-
+chine Learning Research, pp. 1331–1340. PMLR, 16–18 Apr 2019.
+Peter Dayan and Geoffrey E. Hinton. Feudal reinforcement learning. In Advances in Neural Information Processing
+Systems 5, [NIPS Conference] , pp. 271–278, San Francisco, CA, USA, 1992. Morgan Kaufmann Publishers Inc.
+ISBN 1558602747.
+Lasse Espeholt, Hubert Soyer, Remi Munos, Karen Simonyan, V olodymir Mnih, Tom Ward, Yotam Doron, Vlad
+Firoiu, Tim Harley, Iain Dunning, Shane Legg, and Koray Kavukcuoglu. Impala: Scalable distributed deep-rl with
+importance weighted actor-learner architectures, 2018.
+Benjamin Eysenbach, Abhishek Gupta, Julian Ibarz, and Sergey Levine. Diversity is all you need: Learning skills
+without a reward function, 2018.
+Kevin Frans, Jonathan Ho, Xi Chen, Pieter Abbeel, and John Schulman. Meta learning shared hierarchies. CoRR,
+abs/1710.09767, 2017. URL http://arxiv.org/abs/1710.09767.
+William H. Guss, Mario Ynocente Castro, Sam Devlin, Brandon Houghton, Noboru Sean Kuno, Crissman Loomis,
+Stephanie Milani, Sharada Mohanty, Keisuke Nakata, Ruslan Salakhutdinov, John Schulman, Shinya Shiroshita,
+Nicholay Topin, Avinash Ummadisingu, and Oriol Vinyals. The minerl 2020 competition on sample efﬁcient
+reinforcement learning using human priors, 2021.
+Danijar Hafner. Benchmarking the spectrum of agent capabilities, 2022.
+Geoffrey E. Hinton, Oriol Vinyals, and Jeffrey Dean. Distilling the knowledge in a neural network. ArXiv,
+abs/1503.02531, 2015.
+Max Jaderberg, Valentin Dalibard, Simon Osindero, Wojciech M. Czarnecki, Jeff Donahue, Ali Razavi, Oriol Vinyals,
+Tim Green, Iain Dunning, Karen Simonyan, Chrisantha Fernando, and Koray Kavukcuoglu. Population based
+training of neural networks, 2017.
+Michał Kempka, Marek Wydmuch, Grzegorz Runc, Jakub Toczek, and Wojciech Ja´skowski. Vizdoom: A doom-based
+ai research platform for visual reinforcement learning, 2016.
+Vijay Konda and John Tsitsiklis. Actor-critic algorithms. In S. Solla, T. Leen, and K. M¨uller (eds.), Advances in Neural
+Information Processing Systems, volume 12. MIT Press, 2000. URL https://proceedings.neurips.cc/
+paper/1999/file/6449f44a102fde848669bdd9eb6b76fa-Paper.pdf.
+Tejas D. Kulkarni, Karthik R. Narasimhan, Ardavan Saeedi, and Joshua B. Tenenbaum. Hierarchical deep reinforce-
+ment learning: Integrating temporal abstraction and intrinsic motivation, 2016.
+11
+Published at 1st Conference on Lifelong Learning Agents, 2022
+Heinrich K¨uttler, Nantas Nardelli, Thibaut Lavril, Marco Selvatici, Viswanath Sivakumar, Tim Rockt¨aschel, and Ed-
+ward Grefenstette. TorchBeast: A PyTorch Platform for Distributed RL. arXiv preprint arXiv:1910.03552, 2019.
+URL https://github.com/facebookresearch/torchbeast.
+Heinrich Kuttler, Nantas Nardelli, Alexander H. Miller, Roberta Raileanu, Marco Selvatici, Edward Grefenstette, and
+Tim Rockt¨aschel. The nethack learning environment, 2020.
+Joel Lehman and Kenneth Stanley. Exploiting open-endedness to solve problems through the search for novelty.
+Artiﬁcial Life - ALIFE, 01 2008.
+Andrew Levy, G. Konidaris, Robert W. Platt, and Kate Saenko. Learning multi-level hierarchies with hindsight. In
+ICLR, 2019.
+Oﬁr Nachum, Shixiang Gu, Honglak Lee, and Sergey Levine. Data-efﬁcient hierarchical reinforcement learning, 2018.
+Emilio Parisotto, Lei Jimmy Ba, and Ruslan Salakhutdinov. Actor-mimic: Deep multitask and transfer reinforcement
+learning. In ICLR, 2016.
+Jack Parker-Holder, Aldo Pacchiano, Krzysztof Choromanski, and Stephen Roberts. Effective diversity in population-
+based reinforcement learning. In Advances in Neural Information Processing Systems 33. 2020.
+Sam Powers, Eliot Xing, Eric Kolve, Roozbeh Mottaghi, and Abhinav Gupta. Cora: Benchmarks, baselines, and
+metrics as a platform for continual reinforcement learning agents, 2021.
+Andrei A. Rusu, Sergio Gomez Colmenarejo, C ¸ aglar G¨ulc ¸ehre, Guillaume Desjardins, James Kirkpatrick, Razvan
+Pascanu, V olodymyr Mnih, Koray Kavukcuoglu, and Raia Hadsell. Policy distillation. InICLR, 2016.
+Mikayel Samvelyan, Robert Kirk, Vitaly Kurin, Jack Parker-Holder, Minqi Jiang, Eric Hambro, Fabio Petroni, Hein-
+rich Kuttler, Edward Grefenstette, and Tim Rockt¨aschel. Minihack the planet: A sandbox for open-ended reinforce-
+ment learning research, 2021. URL https://openreview.net/forum?id=skFwlyefkWJ.
+Simon Schmitt, Jonathan J. Hudson, Augustin Z´ıdek, Simon Osindero, Carl Doersch, Wojciech M. Czarnecki, Joel Z.
+Leibo, Heinrich K ¨uttler, Andrew Zisserman, Karen Simonyan, and S. M. Ali Eslami. Kickstarting deep reinforce-
+ment learning. CoRR, abs/1803.03835, 2018. URL http://arxiv.org/abs/1803.03835.
+Richard S. Sutton, Doina Precup, and Satinder Singh. Between mdps and semi-mdps: A framework for temporal
+abstraction in reinforcement learning. Artif. Intell., 112(1–2):181–211, August 1999. ISSN 0004-3702. doi: 10.
+1016/S0004-3702(99)00052-1. URL https://doi.org/10.1016/S0004-3702(99)00052-1.
+Yee Whye Teh, Victor Bapst, Wojciech Marian Czarnecki, John Quan, James Kirkpatrick, Raia Hadsell, Nicolas
+Heess, and Razvan Pascanu. Distral: Robust multitask reinforcement learning, 2017.
+Alexander Sasha Vezhnevets, Simon Osindero, Tom Schaul, Nicolas Heess, Max Jaderberg, David Silver, and Koray
+Kavukcuoglu. Feudal networks for hierarchical reinforcement learning, 2017.
+12
+Published at 1st Conference on Lifelong Learning Agents, 2022
+Name Key
+PickUp ,
+PutOn Shift + p
+Zap z
+TakeOff Shift + t
+Wear Shift + w
+Throw t
+Escape Esc
+Eat e
+Apply a
+Wield w
+Quaff q
+Gold $
+Inv1 f
+Inv2 g
+Inv3 h
+Table 2: Command Actions
+A A CTION SPACE
+NetHack takes ASCII characters as its inputs. These can be modiﬁed with certain keys like Ctrl and Shift . We use a
+reduced action space of size 32, only allowing actions that have been deemed relevant for completing the benchmark.
+This includes 16 movement actions consisting of the 4 cardinal directions, the 4 diagonal directions each with a single
+and long movement option. The remaining actions are summarised in Table 2.
+B K ICKSTARTING COEFFICIENT DISCUSSION
+The Kickstarting coefﬁcient λ was set with a manual schedule deﬁned in Section 5.1. Notably, we never let the
+coefﬁcient drop to 0, but instead specify a minimum value of0.1, meaning that the Kickstarting loss is always present.
+The reason for this was twofold. Firstly, we saw that large spikes in performance would often occur after the coefﬁcient
+had reached its minimum value of 0.1. Therefore, keeping a small minimum allowed Kickstarting and HKS to work
+without going through the lengthy process of tuning the schedule for each environment. Secondly, when the coefﬁcient
+was allowed to drop to 0, we would see infrequent massive drops in performance with both Kickstarting and HKS
+(Around 1 in 2 runs would at some point lose around half of their performance after converging). The reason for this
+is not entirely clear, but is an area of current investigation.
+This artiﬁcial minimum on the coefﬁcient effectively imposes a cap on the performance of Kickstarting, as it is always
+slightly being optimised away from following extrinsic reward. HKS is not as susceptible to this effect, as the policy-
+over-teachers can converge such that the weighted average of teacher action distributions closely matches that which
+would maximise extrinsic reward anyway. This can be seen in the plot of model performances (Figure 4) for the tasks
+BATTLE , P REPARE FOR BATTLE and I DENTIFY MIMIC . In all of these tasks, HKS converges to a slightly higher
+success rate than Kickstarting. To account for this discrepancy, we take the average percentage difference in the ﬁnal
+performances of Kickstarting and HKS on these three tasks, which works out to be 2.2%. The ﬁnal performance for
+Kickstarting averaged over all tasks is 39.9%. We therefore increase this value by 2.2% giving us 40.8%, giving us a
+fairer comparison against HKS.
+C S KILL LISTING
+The list of skills is shown in Table 3. Each skill has an environment where it is learned in isolation, shown in Figures
+8 and 9. It should be noted that many of the environments visually look the same. This is because many environments
+focus on manipulating items in the players inventory, with the rest of the world only serving as a distraction which the
+agent must learn to reliably ignore.
+13
+Published at 1st Conference on Lifelong Learning Agents, 2022
+Name Description
+ApplyFrostHorn Use a frost horn to freeze some lava.
+Eat Eat an apple.
+Fight Hit a monster.
+NavigateBlind Reach the staircase while blinded.
+NavigateLava Reach the staircase past random lava patches.
+NavigateLavaToAmulet Reach an amulet past random lava patches.
+NavigateWater Reach the staircase past random water patches.
+PickUp Pick up a random item.
+PutOn Put on an amulet or towel.
+TakeOff Take off clothes.
+Throw Throw daggers at a statue or at a monster.
+Unlock Use a key to unlock a locked door.
+Wear Wear a robe.
+Wield Wield a sword.
+ZapWandOfCold Use a wand of cold to freeze lava.
+ZapWandOfDeath Use a wand of death to kill a monster.
+Table 3: Skills contained in the benchmark.
+D T ASK LISTING
+The task descriptions can be found in Table 1. The environments are shown in Figures 10 and 11.
+E F URTHER RESULTS
+The experts were all trained on the skill acquisition environments for 7.5× 107 timesteps. The results are shown in
+Figure 12.
+F H YPERPARAMETERS
+The hyperparameters for the IMPALA agent are summarised in Table 4.
+14
+Published at 1st Conference on Lifelong Learning Agents, 2022
+(a) ApplyFrostHorn
+ (b) Eat
+(c) Fight
+ (d) NavigateBlind
+(e) NavigateLava
+(f) NavigateLavaToAmulet
+(g) NavigateWater
+ (h) PickUp
+Figure 8: Skill environments.
+15
+Published at 1st Conference on Lifelong Learning Agents, 2022
+(a) PutOn
+ (b) TakeOff
+(c) Throw
+ (d) Unlock
+(e) Wear
+ (f) Wield
+(g) ZapWandOfCold
+ (h) ZapWandOfDeath
+Figure 9: Skill environments (continued).
+16
+Published at 1st Conference on Lifelong Learning Agents, 2022
+(a) FROZEN LAVA CROSS
+ (b) BATTLE
+(c) MEDUSA
+(d) IDENTIFY MIMIC
+(e) SEA MONSTERS
+Figure 10: Task environments.
+17
+Published at 1st Conference on Lifelong Learning Agents, 2022
+(a) PREPARE FOR BATTLE
+(b) A L OCKED DOOR
+(c) TARGET PRACTICE
+Figure 11: Task environments (continued).
+18
+Published at 1st Conference on Lifelong Learning Agents, 2022
+Figure 12: Success rate for training skill experts on the 16 skill acquisition environments
+Name Value
+Training Settings
+num actors 256
+batch size 32
+unroll length 80
+Model Settings
+hidden dim 256
+embedding dim 64
+glyph type all cat
+equalize input dim false
+layers 5
+crop model cnn
+crop dim 9
+use index select true
+max learner queue size 1024
+Loss Settings
+entropy cost 0.001
+baseline cost 0.5
+discounting 0.999
+reward clipping none
+normalize reward true
+Name Value
+Optimizer Settings
+learning rate 0.0002
+grad norm clipping 40
+Intrinsic Reward Settings
+int.twoheaded true
+int.input full
+int.intrinsic weight 0.1
+int.discounting 0.99
+int.baseline cost 0.5
+int.episodic true
+int.reward clipping none
+int.normalize reward true
+Table 4: Hyperparameters of the IMPALA agent.
+19

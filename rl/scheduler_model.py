@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from rl.io_utils import atomic_torch_save, atomic_write_text
 from rl.options import build_skill_registry
 
 
@@ -117,7 +118,7 @@ def save_scheduler_model(model: SchedulerMLP, path: str, metadata: dict | None =
         "metadata": metadata or {},
         "skill_names": SKILL_NAMES,
     }
-    torch.save(payload, path)
+    atomic_torch_save(path, payload)
 
 
 def load_scheduler_model(path: str, device: str = "cpu") -> SchedulerInferenceModel:
@@ -131,6 +132,4 @@ def load_scheduler_model(path: str, device: str = "cpu") -> SchedulerInferenceMo
 
 
 def write_scheduler_dataset(rows: list[dict], path: str) -> None:
-    with open(path, "w") as f:
-        for row in rows:
-            f.write(json.dumps(row) + "\n")
+    atomic_write_text(path, "".join(json.dumps(row) + "\n" for row in rows))

@@ -29,7 +29,8 @@ python3 -m http.server 8080 -d output/
 ```
 
 **Compatibility fixes applied** (see `fix_env_wrapper_gym_compat.patch`):
-- NLE v0.7.3 patched for deterministic seeding (`patch_nle.py`)
+- Legacy AutoAscend NetHackChallenge wrapper patched for deterministic seeding (`patch_nle.py`)
+- Core repo note: plain `nle.env.NLE().reset(seed=...)` is still not reproducible enough for trusted policy regression
 - gym>=0.21 `env._actions` -> `env.unwrapped._actions`
 - `seed()` takes 1 arg, not 2
 
@@ -81,7 +82,7 @@ autoascend_traces/        Expert bot trace capture (Docker + trace runner)
   Dockerfile.light        Lightweight image, no GPU
   run_with_trace.py       Monkey-patches agent.step() to record observations
   trace_recorder.py       Writes JSON traces
-  patch_nle.py            Seeds NetHackChallenge deterministically
+  patch_nle.py            Seeds the legacy NetHackChallenge wrapper deterministically
   requirements.light.txt  Pinned deps (gym, NLE, torch, etc.)
 
 nle_agent/
@@ -143,11 +144,15 @@ uv sync --extra train --extra test --extra serve
 uv run python cli.py smoke-test
 ```
 
-### Generate Training Data
+### Generate Random Forward-Model Data
 
 ```bash
 uv run python cli.py generate --num-games 200 --max-steps 50 --output data/train.jsonl
 ```
+
+This generates one supervised training example per environment step for the
+forward model. These are single-step examples, but they are collected from
+multi-turn episodes.
 
 ### Generate LLM-Policy Data at High Throughput
 
@@ -190,6 +195,690 @@ uv run python scripts/generate_training_data.py \
 ```
 
 This setup keeps GPUs `2,3` available for other work, including training.
+
+## Full Pipeline
+
+This section is the real operator guide.
+
+If you want to go from:
+
+1. data generation
+2. forward-model SFT
+3. trace generation
+4. reward / scheduler training
+5. behavior cloning
+6. APPO RL
+7. evaluation
+
+these are the commands to run, in order.
+
+There are now **three distinct training/data tracks** in this repo:
+
+- forward-model SFT
+- trace-based policy training / BC
+- APPO RL
+
+They are related, but they are not the same thing.
+
+### Mental Model
+
+Before the exact commands, here is the right way to think about the system.
+
+#### Track A: forward model
+
+This is trained by [train.py](/home/luc/rl-nethack/train.py).
+
+Input:
+
+- current state
+- chosen action
+
+Target:
+
+- predicted delta after the action
+
+This is the SFT path.
+
+It does **not** directly produce an RL policy. It produces a model that can
+predict what will happen next.
+
+#### Track B: traces
+
+This is the bridge between planning/SFT-style supervision and policy training.
+
+A trace file is a **multi-turn** episode export.
+
+Each row in a trace file contains:
+
+- `episode_id`
+- `step`
+- `task`
+- `action`
+- `allowed_actions`
+- `feature_vector`
+- `delta`
+- `reward`
+- `done`
+- hashes and planner metadata
+
+Important:
+
+- trace files are explicitly **multi-turn**
+- there is now a verifier command that checks this
+
+#### Track C: RL / policy training
+
+This is the APPO path under [rl/](/home/luc/rl-nethack/rl).
+
+This is now real learned RL:
+
+- rollout workers
+- recurrence
+- policy/value training
+- checkpoints
+
+The current best way to bootstrap that policy is:
+
+- generate good traces
+- optionally train BC from those traces
+- train reward / scheduler models
+- run APPO with masking and learned components
+
+
+## Stage 0: Environment Setup
+
+### Minimal install for docs/tests
+
+```bash
+uv sync --extra test
+```
+
+### Full install for training + serving + RL
+
+```bash
+uv sync --extra train --extra test --extra serve
+```
+
+What this gives you:
+
+- `train.py` dependencies for LoRA SFT
+- test dependencies
+- vLLM serving dependencies
+- the project CLI
+
+The APPO backend itself is auto-bootstrapped on demand the first time you run:
+
+```bash
+uv run python cli.py rl-train-appo ...
+```
+
+because upstream `sample-factory` metadata conflicts with current `nle`
+packaging.
+
+
+## Stage 1: Generate Forward-Model Training Data
+
+This is the simplest path and does not require any model server.
+
+```bash
+uv run python cli.py generate \
+  --num-games 200 \
+  --max-steps 50 \
+  --output data/train.jsonl \
+  --eval-output data/eval.jsonl \
+  --eval-fraction 0.2
+```
+
+What this does:
+
+- plays `200` NetHack episodes
+- each episode is up to `50` steps
+- writes one JSONL row per step
+- each row is a ShareGPT-style conversation:
+  - system prompt
+  - user prompt with state + action
+  - assistant target with the delta
+
+This dataset is for SFT of the forward model.
+
+It is not a trace file for BC/RL.
+
+
+## Stage 2: Train The Forward Model With SFT
+
+Use all 4 H200s:
+
+```bash
+uv run torchrun --standalone --nproc_per_node=4 train.py \
+  --model Qwen/Qwen2.5-3B-Instruct \
+  --data data/train.jsonl \
+  --eval-data data/eval.jsonl \
+  --output output/adapter \
+  --lora-rank 16 \
+  --lora-alpha 32 \
+  --lr 2e-4 \
+  --epochs 1 \
+  --batch-size 4 \
+  --gradient-accumulation-steps 2 \
+  --dataset-num-proc 8 \
+  --dataloader-num-workers 8
+```
+
+Notes:
+
+- this is distributed LoRA training
+- default path is bf16 LoRA, not 4-bit, because this box has enough memory
+- output is a LoRA adapter directory, typically:
+  - `output/adapter`
+
+This SFT model is a **forward model**, not a policy.
+
+That means:
+
+- it can be evaluated on next-step prediction
+- it can be used as a teacher/planner for trace generation
+- it cannot be directly loaded into the APPO actor-critic as weights
+
+
+## Stage 3: Serve The Forward Model
+
+If you want to use the forward model during trace generation, you need to serve
+it.
+
+The repo’s evaluation and forward-model trace path expect an OpenAI-compatible
+chat endpoint.
+
+Example with your own server:
+
+```bash
+# Example only: use whatever OpenAI-compatible server you prefer
+# and point it at your trained adapter / merged model.
+```
+
+The CLI assumes:
+
+- server URL like `http://127.0.0.1:8765`
+- chat endpoint at `/v1/chat/completions`
+
+You will use that server in:
+
+- `cli.py evaluate`
+- `cli.py golden-evaluate`
+- `cli.py rl-generate-traces --policy forward_model`
+
+
+## Stage 4: Evaluate The Forward Model
+
+Basic held-out evaluation:
+
+```bash
+uv run python cli.py evaluate \
+  --seeds 500,501,502,503,504 \
+  --max-steps 20 \
+  --server-url http://127.0.0.1:8765
+```
+
+Golden debug evaluation:
+
+```bash
+uv run python cli.py golden-generate \
+  --seed 42 \
+  --max-steps 10 \
+  --output data/golden_episode.jsonl
+
+uv run python cli.py golden-evaluate \
+  --input data/golden_episode.jsonl \
+  --server-url http://127.0.0.1:8765
+```
+
+Use the golden path before trusting larger evaluations. It catches train/eval
+format mismatches fast.
+
+
+## Stage 5: Generate Multi-Turn Traces
+
+This is the new path you asked for explicitly.
+
+These traces are **definitely multi-turn** now.
+
+You can verify them with a dedicated command.
+
+### Option A: Generate traces from `task_greedy`
+
+```bash
+uv run python cli.py rl-generate-traces \
+  --output data/explore_task_greedy_traces.jsonl \
+  --num-episodes 100 \
+  --max-steps 30 \
+  --task explore \
+  --policy task_greedy
+```
+
+### Option B: Generate traces from the served forward model
+
+This is the main way to use the SFT model in the RL workflow.
+
+```bash
+uv run python cli.py rl-generate-traces \
+  --output data/explore_forward_model_traces.jsonl \
+  --num-episodes 100 \
+  --max-steps 30 \
+  --task explore \
+  --policy forward_model \
+  --server-url http://127.0.0.1:8765 \
+  --model-name llama-server
+```
+
+How this works:
+
+- for each state
+- for each allowed action
+- the forward model predicts the delta
+- the trace generator scores the predicted outcome
+- it picks the best action
+- then it rolls the real env forward
+
+So this is a true **multi-turn teacher-in-the-loop trace generator** using the
+SFT forward model.
+
+### Option C: Generate traces from a trained APPO policy
+
+```bash
+uv run python cli.py rl-generate-traces \
+  --output data/explore_appo_traces.jsonl \
+  --num-episodes 100 \
+  --max-steps 30 \
+  --task explore \
+  --policy appo \
+  --appo-experiment appo_explore_masked
+```
+
+### Option D: Generate traces from a BC policy
+
+```bash
+uv run python cli.py rl-generate-traces \
+  --output data/explore_bc_traces.jsonl \
+  --num-episodes 100 \
+  --max-steps 30 \
+  --task explore \
+  --policy bc \
+  --bc-model-path output/explore_bc.pt
+```
+
+### Verify that traces are actually multi-turn
+
+```bash
+uv run python cli.py rl-verify-traces \
+  --input data/explore_task_greedy_traces.jsonl
+```
+
+Expected output includes:
+
+- `episodes`
+- `rows`
+- `max_steps_in_episode`
+- `avg_steps_in_episode`
+- `multi_turn_episodes`
+- `all_multi_turn`
+
+If `all_multi_turn` is `true`, the trace file is a real multi-turn dataset.
+
+
+## Stage 6: Train A Behavior Cloning Policy From Traces
+
+Once you have a trace file, you can train a policy directly on it.
+
+Example:
+
+```bash
+uv run python cli.py rl-train-bc \
+  --input data/explore_task_greedy_traces.jsonl \
+  --output output/explore_bc.pt \
+  --epochs 20 \
+  --lr 1e-3
+```
+
+This trains a compact policy network on:
+
+- `feature_vector`
+- action labels
+- allowed-action masks
+
+This is the cleanest direct bridge from:
+
+- teacher traces
+- to a trainable policy
+
+without going straight into RL.
+
+Evaluate the BC policy:
+
+```bash
+uv run python cli.py rl-evaluate-bc \
+  --model output/explore_bc.pt \
+  --task explore \
+  --seeds 42,43,44 \
+  --max-steps 50 \
+  --compare-baseline
+```
+
+Use BC as:
+
+- a bootstrap policy,
+- a control baseline,
+- or a future initialization source for RL-related policy work.
+
+
+## Stage 7: Train Learned Reward Models
+
+Reward models are now trainable from task-harness preference pairs.
+
+Example:
+
+```bash
+uv run python cli.py rl-train-reward \
+  --task explore \
+  --seeds 42,43,44,45,46,47 \
+  --max-steps 30 \
+  --dataset-output data/explore_reward_prefs.jsonl \
+  --output output/explore_reward.pt \
+  --epochs 20 \
+  --lr 1e-3
+```
+
+This uses task-harness counterfactual branches to build pairwise preferences
+and then trains a Bradley-Terry-style reward model.
+
+You can then use that model in APPO.
+
+
+## Stage 8: Train A Learned Scheduler
+
+The scheduler path is also trainable now.
+
+Example:
+
+```bash
+uv run python cli.py rl-train-scheduler \
+  --seeds 42,43,44,45,46,47 \
+  --max-steps 30 \
+  --dataset-output data/scheduler_rows.jsonl \
+  --output output/scheduler.pt \
+  --epochs 20 \
+  --lr 1e-3
+```
+
+This trains a small classifier to imitate the current rule-based scheduler.
+
+That gives you a real learned high-level scheduler artifact for the APPO env.
+
+
+## Stage 9: Train APPO RL
+
+There are now several useful APPO modes.
+
+### Baseline APPO with hand-shaped reward
+
+```bash
+uv run python cli.py rl-train-appo \
+  --experiment appo_explore \
+  --num-workers 4 \
+  --num-envs-per-worker 8 \
+  --rollout-length 32 \
+  --recurrence 16 \
+  --batch-size 1024 \
+  --num-batches-per-epoch 1 \
+  --ppo-epochs 1 \
+  --train-for-env-steps 20000 \
+  --enabled-skills explore
+```
+
+Important:
+
+- env-side invalid action clamping is on by default now
+- invalid requests are penalized
+- this is a real RL run
+
+### APPO with learned reward
+
+```bash
+uv run python cli.py rl-train-appo \
+  --experiment appo_explore_learned_reward \
+  --num-workers 4 \
+  --num-envs-per-worker 8 \
+  --rollout-length 32 \
+  --recurrence 16 \
+  --batch-size 1024 \
+  --num-batches-per-epoch 1 \
+  --ppo-epochs 1 \
+  --train-for-env-steps 20000 \
+  --enabled-skills explore \
+  --reward-source learned \
+  --learned-reward-path output/explore_reward.pt
+```
+
+### APPO with learned scheduler
+
+```bash
+uv run python cli.py rl-train-appo \
+  --experiment appo_learned_scheduler \
+  --num-workers 4 \
+  --num-envs-per-worker 8 \
+  --rollout-length 32 \
+  --recurrence 16 \
+  --batch-size 1024 \
+  --num-batches-per-epoch 1 \
+  --ppo-epochs 1 \
+  --train-for-env-steps 20000 \
+  --scheduler learned \
+  --scheduler-model-path output/scheduler.pt
+```
+
+### APPO with both learned reward and learned scheduler
+
+```bash
+uv run python cli.py rl-train-appo \
+  --experiment appo_full_stack \
+  --num-workers 4 \
+  --num-envs-per-worker 8 \
+  --rollout-length 32 \
+  --recurrence 16 \
+  --batch-size 1024 \
+  --num-batches-per-epoch 1 \
+  --ppo-epochs 1 \
+  --train-for-env-steps 20000 \
+  --reward-source learned \
+  --learned-reward-path output/explore_reward.pt \
+  --scheduler learned \
+  --scheduler-model-path output/scheduler.pt
+```
+
+
+## Stage 10: Evaluate APPO
+
+Use the built-in evaluator:
+
+```bash
+uv run python cli.py rl-evaluate-appo \
+  --experiment appo_explore \
+  --seeds 42,43,44 \
+  --max-steps 50 \
+  --compare-baseline
+```
+
+This reports:
+
+- avg task reward
+- avg unique tiles
+- avg rooms discovered
+- repeated action rate
+- invalid action rate
+- action counts
+
+If `--compare-baseline` is set and the run is single-skill, it also runs
+`task_greedy` so you can compare directly.
+
+
+## Recommended End-To-End Flows
+
+### Flow A: simplest useful forward-model path
+
+```bash
+uv sync --extra train --extra test --extra serve
+
+uv run python cli.py generate \
+  --num-games 200 \
+  --max-steps 50 \
+  --output data/train.jsonl \
+  --eval-output data/eval.jsonl
+
+uv run torchrun --standalone --nproc_per_node=4 train.py \
+  --model Qwen/Qwen2.5-3B-Instruct \
+  --data data/train.jsonl \
+  --eval-data data/eval.jsonl \
+  --output output/adapter
+```
+
+### Flow B: teacher traces -> BC
+
+```bash
+uv run python cli.py rl-generate-traces \
+  --output data/explore_task_greedy_traces.jsonl \
+  --num-episodes 100 \
+  --max-steps 30 \
+  --task explore \
+  --policy task_greedy
+
+uv run python cli.py rl-verify-traces \
+  --input data/explore_task_greedy_traces.jsonl
+
+uv run python cli.py rl-train-bc \
+  --input data/explore_task_greedy_traces.jsonl \
+  --output output/explore_bc.pt
+
+uv run python cli.py rl-evaluate-bc \
+  --model output/explore_bc.pt \
+  --task explore \
+  --seeds 42,43,44 \
+  --max-steps 50
+```
+
+### Flow C: SFT forward model -> teacher traces -> BC -> RL
+
+```bash
+# 1. Generate SFT data
+uv run python cli.py generate \
+  --num-games 200 \
+  --max-steps 50 \
+  --output data/train.jsonl \
+  --eval-output data/eval.jsonl
+
+# 2. Train forward model
+uv run torchrun --standalone --nproc_per_node=4 train.py \
+  --model Qwen/Qwen2.5-3B-Instruct \
+  --data data/train.jsonl \
+  --eval-data data/eval.jsonl \
+  --output output/adapter
+
+# 3. Serve that forward model using your OpenAI-compatible server
+
+# 4. Generate multi-turn traces with the forward model in the loop
+uv run python cli.py rl-generate-traces \
+  --output data/explore_forward_model_traces.jsonl \
+  --num-episodes 100 \
+  --max-steps 30 \
+  --task explore \
+  --policy forward_model \
+  --server-url http://127.0.0.1:8765 \
+  --model-name llama-server
+
+# 5. Verify they are multi-turn
+uv run python cli.py rl-verify-traces \
+  --input data/explore_forward_model_traces.jsonl
+
+# 6. Train BC from those traces
+uv run python cli.py rl-train-bc \
+  --input data/explore_forward_model_traces.jsonl \
+  --output output/explore_bc.pt
+
+# 7. Train reward model
+uv run python cli.py rl-train-reward \
+  --task explore \
+  --output output/explore_reward.pt
+
+# 8. Train scheduler
+uv run python cli.py rl-train-scheduler \
+  --output output/scheduler.pt
+
+# 9. Run APPO with learned reward + learned scheduler
+uv run python cli.py rl-train-appo \
+  --experiment appo_full_stack \
+  --num-workers 4 \
+  --num-envs-per-worker 8 \
+  --rollout-length 32 \
+  --recurrence 16 \
+  --batch-size 1024 \
+  --num-batches-per-epoch 1 \
+  --ppo-epochs 1 \
+  --train-for-env-steps 20000 \
+  --reward-source learned \
+  --learned-reward-path output/explore_reward.pt \
+  --scheduler learned \
+  --scheduler-model-path output/scheduler.pt
+
+# 10. Evaluate APPO against baseline
+uv run python cli.py rl-evaluate-appo \
+  --experiment appo_full_stack \
+  --seeds 42,43,44 \
+  --max-steps 50 \
+  --compare-baseline
+```
+
+
+## What “Use The SFT Model” Means In This Repo
+
+This is important because it is easy to misunderstand.
+
+Right now, “use the SFT model” means:
+
+- train the forward model with `train.py`
+- serve it behind an OpenAI-compatible endpoint
+- use it in `rl-generate-traces --policy forward_model`
+
+It does **not** currently mean:
+
+- directly loading LoRA weights into the APPO actor-critic
+
+because those architectures are different.
+
+The correct bridge today is:
+
+- SFT forward model
+- multi-turn trace generation
+- BC and/or RL training from those traces
+
+
+## Current State Of The Stack
+
+Today the repo can do all of the following:
+
+- generate forward-model SFT data
+- train a distributed LoRA forward model
+- evaluate the forward model
+- generate explicit multi-turn traces
+- verify that traces are multi-turn
+- train BC from traces
+- train learned reward models
+- train learned schedulers
+- train APPO RL with masking
+- evaluate APPO checkpoints against baselines
+
+The main thing that is still not true is:
+
+- APPO does not yet beat `task_greedy` reliably
+
+So the stack is now functionally complete enough to iterate on policy quality,
+which is the correct next bottleneck.
 
 ## Current Priorities
 

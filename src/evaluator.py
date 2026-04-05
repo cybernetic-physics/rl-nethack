@@ -23,6 +23,11 @@ from src.state_encoder import StateEncoder
 from src.data_generator import build_messages, wall_avoidance_policy
 from nle_agent.agent_http import _build_action_map
 
+LIVE_ENV_WARNING = (
+    "Held-out seed evaluation is only a diagnostic in this repo because plain "
+    "nle.env.NLE().reset(seed=...) is not reproducible across runs."
+)
+
 
 # ---------------------------------------------------------------------------
 # 1. parse_prediction
@@ -341,6 +346,10 @@ def generate_test_data(
             ground_truth_delta (dict): structured delta from encode_delta
             seed (int): the seed used
             step (int): step index within the game
+
+    Notes:
+        This path is not suitable for strict regression gating because NLE seed
+        resets are not fully reproducible across runs.
     """
     action_map = _build_action_map()
     test_data = []
@@ -460,6 +469,8 @@ def run_evaluation(
         'server_available': eval_result['server_available'],
         'model': eval_result['model'],
         'errors': eval_result['errors'],
+        'evaluation_mode': 'live_env_seeded',
+        'warning': LIVE_ENV_WARNING,
     }
 
 

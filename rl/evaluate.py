@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections import Counter
+from pathlib import Path
+import re
 
 import torch
 from gymnasium import spaces
@@ -15,8 +17,60 @@ from rl.feature_encoder import ACTION_SET
 from rl.sf_env import NethackSkillEnv
 from src.task_harness import evaluate_task_policy
 
+LIVE_ENV_WARNING = (
+    "Live seed-based evaluation is not a stable regression signal in this repo because "
+    "NLE reset(seed=...) is not reproducible across runs. Use trace-based evaluation for trusted comparisons."
+)
 
-def _load_actor_critic(experiment: str, train_dir: str, device: str):
+
+def _checkpoint_sort_key(path: Path) -> tuple[int, int, str]:
+    name = path.name
+    checkpoint_match = re.match(r"^checkpoint_(\d+)_(\d+)\.pth$", name)
+    if checkpoint_match:
+        return (int(checkpoint_match.group(2)), 0, name)
+    best_match = re.match(r"^best_(\d+)_(\d+)_reward_.*\.pth$", name)
+    if best_match:
+        return (int(best_match.group(2)), 1, name)
+    return (int(path.stat().st_mtime), -1, name)
+
+
+def _find_checkpoint_path(cfg) -> Path:
+    checkpoint_dir = Path(Learner.checkpoint_dir(cfg, 0))
+    candidates = sorted(
+        list(checkpoint_dir.glob("checkpoint_*.pth")) + list(checkpoint_dir.glob("best_*.pth")),
+        key=_checkpoint_sort_key,
+    )
+    if not candidates:
+        raise FileNotFoundError(f"No checkpoints found in {checkpoint_dir}")
+    return candidates[-1]
+
+
+def list_checkpoint_paths(experiment: str, train_dir: str) -> list[Path]:
+    checkpoint_dir = Path(train_dir) / experiment / "checkpoint_p0"
+    if not checkpoint_dir.exists():
+        raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint_dir}")
+    candidates = sorted(
+        list(checkpoint_dir.glob("checkpoint_*.pth")) + list(checkpoint_dir.glob("best_*.pth")),
+        key=_checkpoint_sort_key,
+    )
+    if not candidates:
+        raise FileNotFoundError(f"No checkpoints found in {checkpoint_dir}")
+    return candidates
+
+
+def _load_checkpoint_payload(checkpoint_path: Path, torch_device: torch.device) -> dict:
+    try:
+        return torch.load(checkpoint_path, map_location=torch_device, weights_only=False)
+    except TypeError:
+        return torch.load(checkpoint_path, map_location=torch_device)
+    except Exception:
+        payload = Learner.load_checkpoint([str(checkpoint_path)], torch_device)
+        if payload is None or "model" not in payload:
+            raise RuntimeError(f"Could not load checkpoint payload from {checkpoint_path}")
+        return payload
+
+
+def _load_actor_critic(experiment: str, train_dir: str, device: str, checkpoint_path: str | None = None):
     argv = ["--algo=APPO", "--env=rl_nethack_skill", f"--experiment={experiment}", f"--train_dir={train_dir}", f"--device={device}"]
     parser, _ = parse_sf_args(argv)
     parser.add_argument("--env_max_episode_steps", type=int, default=200)
@@ -55,8 +109,8 @@ def _load_actor_critic(experiment: str, train_dir: str, device: str):
     actor_critic = create_actor_critic(cfg, spaces.Dict({"obs": env.observation_space}), env.action_space)
     actor_critic.eval()
     actor_critic.model_to_device(torch_device)
-    checkpoints = Learner.get_checkpoints(Learner.checkpoint_dir(cfg, 0), "checkpoint_*")
-    checkpoint_dict = Learner.load_checkpoint(checkpoints, torch_device)
+    resolved_checkpoint_path = Path(checkpoint_path) if checkpoint_path else _find_checkpoint_path(cfg)
+    checkpoint_dict = _load_checkpoint_payload(resolved_checkpoint_path, torch_device)
     actor_critic.load_state_dict(checkpoint_dict["model"])
     return cfg, env, actor_critic, torch_device
 
@@ -69,8 +123,14 @@ def evaluate_appo_policy(
     deterministic: bool = True,
     mask_actions: bool = True,
     compare_baseline: bool = False,
+    checkpoint_path: str | None = None,
 ):
-    cfg, env, actor_critic, device = _load_actor_critic(experiment, train_dir, device="cpu")
+    cfg, env, actor_critic, device = _load_actor_critic(
+        experiment,
+        train_dir,
+        device="cpu",
+        checkpoint_path=checkpoint_path,
+    )
     env.config.env.max_episode_steps = max_steps
     rows = []
 
@@ -123,6 +183,8 @@ def evaluate_appo_policy(
     total_steps = sum(row["steps"] for row in rows) or 1
     summary = {
         "episodes": len(rows),
+        "evaluation_mode": "live_env_seeded",
+        "warning": LIVE_ENV_WARNING,
         "avg_task_reward": round(sum(row["total_task_reward"] for row in rows) / len(rows), 4),
         "avg_unique_tiles": round(sum(row["unique_tiles"] for row in rows) / len(rows), 2),
         "avg_rooms_discovered": round(sum(row["rooms_discovered"] for row in rows) / len(rows), 2),
@@ -130,7 +192,12 @@ def evaluate_appo_policy(
         "invalid_action_rate": round(sum(row["invalid_action_requests"] for row in rows) / total_steps, 4),
         "action_counts": dict(sum((Counter(row["action_counts"]) for row in rows), Counter())),
     }
-    result = {"experiment": experiment, "summary": summary, "episodes": rows}
+    result = {
+        "experiment": experiment,
+        "checkpoint_path": checkpoint_path,
+        "summary": summary,
+        "episodes": rows,
+    }
     if compare_baseline and len(env.config.options.enabled_skills) == 1:
         task = env.config.options.enabled_skills[0]
         result["baseline"] = evaluate_task_policy(task=task, seeds=seeds, max_steps=max_steps, policy="task_greedy")

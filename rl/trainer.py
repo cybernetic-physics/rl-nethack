@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import asdict
 
 import torch
 
 from rl.config import RLConfig
+from rl.io_utils import atomic_torch_save, atomic_write_text, experiment_lock
 from rl.model import build_model_spec
 from rl.sf_env import make_nethack_skill_env
 
@@ -49,11 +51,7 @@ class APPOTrainerScaffold:
         }
 
     def write_plan(self, path: str) -> str:
-        os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(self.render_training_plan(), f, indent=2)
-            f.write("\n")
-        return path
+        return atomic_write_text(path, json.dumps(self.render_training_plan(), indent=2) + "\n")
 
     def build_sf_argv(self) -> list[str]:
         cfg = self.config
@@ -137,7 +135,8 @@ class APPOTrainerScaffold:
         os.makedirs(checkpoint_dir, exist_ok=True)
         checkpoint_path = os.path.join(checkpoint_dir, "checkpoint_000000000_0.pth")
         optimizer = torch.optim.Adam(actor_critic.parameters(), lr=sf_cfg.learning_rate, eps=sf_cfg.adam_eps)
-        torch.save(
+        atomic_torch_save(
+            checkpoint_path,
             {
                 "best_performance": float("-inf"),
                 "curr_lr": float(sf_cfg.learning_rate),
@@ -146,7 +145,6 @@ class APPOTrainerScaffold:
                 "optimizer": optimizer.state_dict(),
                 "train_step": 0,
             },
-            checkpoint_path,
         )
         return checkpoint_path
 
@@ -188,15 +186,21 @@ class APPOTrainerScaffold:
         parser.add_argument("--invalid_action_fallback", type=str, default=self.config.env.invalid_action_fallback)
         sf_cfg = parse_full_cfg(parser, argv)
         warmstart_checkpoint = None
-        if self.config.model.bc_init_path:
-            env = make_nethack_skill_env(None, sf_cfg, None)
-            actor_critic = create_actor_critic(sf_cfg, spaces.Dict({"obs": env.observation_space}), env.action_space)
-            warmstart_checkpoint = self.maybe_write_bc_warmstart_checkpoint(sf_cfg, actor_critic)
-            env.close()
-        status = run_rl(sf_cfg)
-        return {
-            "status": str(status),
-            "plan": plan,
-            "argv": argv,
-            "warmstart_checkpoint": warmstart_checkpoint,
-        }
+        experiment_dir = os.path.join(self.config.train_dir, self.config.experiment)
+        lock_path = os.path.join(experiment_dir, ".launch.lock")
+        with experiment_lock(lock_path):
+            if self.config.model.bc_init_path and os.path.isdir(experiment_dir):
+                shutil.rmtree(experiment_dir)
+            if self.config.model.bc_init_path:
+                env = make_nethack_skill_env(None, sf_cfg, None)
+                actor_critic = create_actor_critic(sf_cfg, spaces.Dict({"obs": env.observation_space}), env.action_space)
+                warmstart_checkpoint = self.maybe_write_bc_warmstart_checkpoint(sf_cfg, actor_critic)
+                env.close()
+            status = run_rl(sf_cfg)
+            return {
+                "status": str(status),
+                "plan": plan,
+                "argv": argv,
+                "warmstart_checkpoint": warmstart_checkpoint,
+                "experiment_lock": lock_path,
+            }

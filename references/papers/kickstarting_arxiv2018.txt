@@ -1,0 +1,876 @@
+Kickstarting Deep Reinforcement Learning
+Simon Schmitt * 1 Jonathan J. Hudson * 1 Augustin Zidek * 1
+Simon Osindero 1 Carl Doersch 1 Wojciech M. Czarnecki 1 Joel Z. Leibo 1 Heinrich Kuttler 1
+Andrew Zisserman 1 Karen Simonyan 1 S. M. Ali Eslami 1
+Abstract
+We present a method for using previously-trained
+‘teacher’ agents to kickstart the training of a
+new ‘student’ agent. To this end, we lever-
+age ideas from policy distillation (Rusu et al.,
+2015; Parisotto et al., 2015) and population based
+training (Jaderberg et al., 2017). Our method
+places no constraints on the architecture of the
+teacher or student agents, and it regulates itself
+to allow the students to surpass their teachers in
+performance. We show that, on a challenging
+and computationally-intensive multi-task bench-
+mark (Beattie et al., 2016), kickstarted training
+improves the data efﬁciency of new agents, mak-
+ing it signiﬁcantly easier to iterate on their de-
+sign. We also show that the same kickstarting
+pipeline can allow a single student agent to lever-
+age multiple ‘expert’ teachers which specialise
+on individual tasks. In this setting kickstarting
+yields surprisingly large gains, with the kick-
+started agent matching the performance of an
+agent trained from scratch in almost 10× fewer
+steps, and surpassing its ﬁnal performance by
+42%. Kickstarting is conceptually simple and
+can easily be incorporated into reinforcement
+learning experiments.
+1. Introduction
+Learning from teachers is a hallmark of human develop-
+ment, partly since gathering experience in the environ-
+ment is time-consuming and bears signiﬁcant risks (Hen-
+rich, 2015). In recent artiﬁcial intelligence research, ever-
+increasing task complexity is raising the cost of learning;
+with modern agents requiring up to billions of environment
+steps to achieve competitive performance from scratch (Es-
+peholt et al., 2018). Therefore, there is great interest in
+*Equal contribution 1DeepMind, London, UK. Correspon-
+dence to: Simon Schmitt<suschmitt@google.com>.
+considering how agents might effectively learn from other
+agents, using them as teachers.
+Despite the prevalence of weight transfer in supervised
+deep learning, such as pre-training networks on Ima-
+geNet (Girshick et al., 2014; Oquab et al., 2014), there
+has been limited success in leveraging previously trained
+agents in the reinforcement learning (RL) setting. In this
+paper we advocate a new approach, kickstarting, where the
+explicit goal is to train new ‘student’ agents rapidly when
+in the presence of previously trained ‘teacher’ agents. In
+essence, the kickstarted student agent asks: “What would
+my teacher do if it were in my shoes?”, and is encouraged to
+act in a similar manner. This differs from imitation learn-
+ing (Argall et al., 2009) where an agent learns from the
+recorded experiences of an expert, not the expert itself.
+We combine ideas from policy distillation (Rusu et al.,
+2015) and population based training (Jaderberg et al.,
+2017), yielding a method that is conceptually simple and
+can easily be incorporated into reinforcement learning ex-
+periments. Our method does not prescribe any architectural
+constraints on the student or teacher agents. Unlike in stan-
+dard distillation, the framework automatically adjusts the
+inﬂuence of the teachers on the student agents, allowing the
+students to rapidly surpass their teachers in performance.
+We present the following results, using the IMPALA
+agent (Espeholt et al., 2018), and experimental evaluation
+on the DMLab-30 task suite (Beattie et al., 2016): (i) We
+show that by kickstarting with a single teacher agent, we
+achieve up to 1.5× speedup over training a state-of-the-art
+agent from scratch on a challenging multi-task benchmark.
+(ii) We show that the student agent can rapidly outperform
+its teacher. (iii) We show that by kickstarting with multiple,
+task-speciﬁc expert teacher agents, we realise signiﬁcant
+gains, with the kickstarted agent matching the performance
+of an agent trained from scratch in 9.58× fewer steps, and
+surpassing its ﬁnal performance by 42.2%. Taken together,
+our experiments demonstrate conclusively that kickstarting
+can signiﬁcantly speed up the pace of research.
+arXiv:1803.03835v1  [cs.LG]  10 Mar 2018
+Kickstarting Deep Reinforcement Learning
+Teacher
+Expert at Task 1
+Teacher
+Expert at Task 2
+Teacher
+Expert at Task 3
+Policy Policy Policy
+Task 
+1
+Student
+All Tasks
+Policy
+Task 
+2
+Task 
+3
+Knowledge Transfer
+Student’s Actions
+Teacher
+All Tasks
+Policy
+Task 
+1
+Student
+All Tasks
+Policy
+Task 
+2
+Task 
+3
+Knowledge Transfer
+Student’s Actions
+b c
+Task 
+1
+Agent
+All Tasks
+Policy
+Task 
+2
+Task 
+3
+Actions
+a
+Observations Student’s
+Observations
+Student’s
+Observations
+Student’s Rewards
+Rewards
+Student’s Rewards
+Figure 1. Overview. Schematics of the three agent training scenarios explored in this paper. a: Standard multi-task RL. An agent learns
+to perform well on several tasks by acting on and observing all of them. b: Single-teacher kickstarting (section 5.1). Observations
+from all tasks are also fed to a ﬁxed, previously-trained teacher, and knowledge is transferred from teacher to student by encouraging
+the student to match the teacher’s actions. c: Multiple-teacher kickstarting (section 5.2). For each task, observations are sent to a
+task-speciﬁc expert teacher; the student is encouraged to match this teacher’s actions on the task.
+2. Kickstarting RL Agents
+We consider the reinforcement learning setting where pre-
+trained agents are readily available, which is often the case
+in practice (e.g. such agents could be previous versions of
+the agent solving the same task, or ‘expert’ agents spe-
+cialising in sub-tasks). We wish to train a new student
+agent with an arbitrary architecture in a way that both op-
+timises the usual RL objective (i.e. expected return) and at
+the same time makes use of the pre-trained teacher agent
+in a way that leads to faster training and/or higher rewards.
+To address these desiderata, we propose a framework called
+kickstarting, depicted in Figure 1.
+The main idea is to employ an auxiliary loss function which
+encourages the student policy to be close to the teacher pol-
+icy on the trajectories sampled by the student. Importantly,
+the weight of this loss in the overall learning objective is al-
+lowed to change over time, so that the student can gradually
+focus more on maximising rewards it receives from the en-
+vironment, potentially surpassing the teacher (which might
+indeed have an architecture with less learning capacity).
+In multi-task problems, it is also straightforward to ex-
+tend this approach to the case of multiple teachers, each
+of which is an expert on a particular task: in this case the
+student will learn from an appropriate teacher on each task
+using an analogous formulation.
+2.1. Knowledge Transfer
+The core of kickstarting is a knowledge transfer mechanism
+which allows a student network to exploit access to (possi-
+bly multiple) expert teachers. One of the well known ap-
+proaches to this problem is policy distillation (Rusu et al.,
+2015) which deﬁnes it as a supervised learning problem.
+Namely, a teacher policy πT is used to generate trajecto-
+riesx, each containing a sequence of states (xt)t≥0, over
+which one tries to match student’s policyπS, parameterised
+byω, toπT . The corresponding loss function term for each
+sequences and each time stept is:
+ldistill(ω,x,t ) = H(πT (a|xt)∥πS(a|xt,ω )), (1)
+where H(·∥·) is the cross-entropy.
+Unlike in policy distillation, we do not wish for the student
+agent to merely replicate the behaviour of the teacher, but
+rather to maximise its own future rewards; teacher policies
+should only be proxies, helping to achieve this goal.
+We begin with a standard RL objective (Sutton & Barto,
+1998) of maximising the expected return EπS [R] over
+trajectories generated by the student agent; the return is
+deﬁned as a sum of future discounted rewards: R =∑
+t≥0γtrt, where γ ∈ [0, 1) is the discount factor, rt is
+the reward received at time t, and at ∼ πS is the action
+sampled from the student policy. We consider policy-based
+model-free RL methods which optimise EπS [R] by gradi-
+ent ascent w.r.t.ω using some estimate of the policy gradi-
+ent. This is usually represented as a loss ℓRL(ω,x,t ) over
+a trajectoryx sampled from some behaviour policy.
+Kickstarting adds to the above loss a term which is the
+cross-entropy between the teacher and student policies,
+weighted at optimisation iterationk by the scalingλk≥ 0:
+lk
+kick(ω,x,t ) = ℓRL(ω,x,t )+λkH(πT (a|xt)∥πS(a|xt,ω )),
+(2)
+wherex is a trajectory generated by following the student
+policyπS. Introduction of λk allows an agent to initially
+focus on the supervision provided by the teacher. This en-
+sures a dense learning signal, and does not have to be fully
+Kickstarting Deep Reinforcement Learning
+aligned with the RL objective. Then through adaptation of
+λk during the course of learning, the agent is able to shift its
+optimization focus on the (potentially sparse) reward sig-
+nalrt, similar to how continuation methods relax optimisa-
+tion problems to make ﬁnding the solution easier (Gulcehre
+et al., 2016; Mobahi, 2016).
+The kickstarting loss is closely related to policy distillation
+(as there is a knowledge transfer from teacher to student),
+but it differs in a few key aspects from (1) deﬁned in (Rusu
+et al., 2015):
+• The student is solely responsible for generating trajec-
+tories, and can explore parts of the state space that the
+teacher does not visit. We note that student trajecto-
+ries have also been used for distillation in (Parisotto
+et al., 2015) which is otherwise similar to (Rusu et al.,
+2015) and still does not incorporate the RL objective.
+• The knowledge transfer process changes over time
+due to λk. In particular, after a certain number of it-
+erationsT0 we would like to have λk = 0 ∀k > T0
+so that eventually the student becomes independent of
+the teacher and acts purely to maximise its own re-
+wards.
+• The resulting formulation still uses reinforcement
+learning and is not reduced to supervised learning.
+The student is no longer forced to exactly replicate the
+teacher’s behaviour. As we will show in Section 5 the
+presence of the RL component in the objective leads
+to higher rewards compared to using the distillation
+loss only.
+Our auxiliary loss can also be seen from the perspec-
+tive of entropy regularisation. In the A3C actor-critic
+method (Mnih et al., 2016) one adds the negated entropy
+H(πS(a|xt,ω )) as an auxiliary loss to encourage explo-
+ration. But minimisation of negated entropy is equivalent
+to minimising the KL divergence DKL(πS(a|xt,ω )∥U ),
+whereU is a uniform distribution over actions. Similarly
+the kickstarter loss is equivalent to the KL divergence be-
+tween the teacher and the student policies. In this sense,
+the kickstarter loss can be seen as encouraging behaviour
+similar to the teacher, but just as entropy regularisation is
+not supposed to lead to convergence to a uniform policy,
+the goal of kickstarting is not to converge to the teacher’s
+policy. The aim of both is to provide a helpful auxiliary
+loss, based on what is a sensible behaviour – for the case of
+entropy regularization it is just sampling a random action,
+while for kickstarting it is following the teacher.
+In the following sections we elaborate on the terms com-
+prising the full learning objective and the corresponding
+update rules (Section 2.2), and describe how one can adjust
+λk in an automatic, reward-driven manner (Section 2.3).
+2.2. Kickstarting Actor-Critic
+We begin with a brief recap of the actor-critic RL objec-
+tive (Mnih et al., 2016). The updates for the policy can be
+expressed as a simple loss over the sampled trajectory and
+consists of two terms: the ﬁrst corresponds to reward max-
+imisation (i.e. the policy gradient term) and the second cor-
+responds to entropy regularisation (a term to encourage ex-
+ploration). Using the notation introduced in previous sec-
+tions it can be written as:
+ℓA3C(ω,x,t ) = logπS(at|xt,ω )(rt +γvt+1−V (xt|θ))
+−βH(πS(a|xt,ω ))
+wherex are sampled from the learner’s policy (i.e. the tra-
+jectories are on-policy), β is the exploration weight, vt+1
+is the value function target, andV (xt;θ) is a value approx-
+imation computed by the critic network parameterised byθ
+(θ andω do not have to be disjoint, e.g. when the policy and
+critic are implemented as separate heads on top of a shared
+network, which is the case here). The critic is updated by
+minimising the loss to the value target∥V (xt;θ)−vt∥2
+2.
+Consequently, the A3C kickstarting loss becomes:
+ℓA3C(ω,x,t ) +λkH(πT (a|xt)∥πS(a|xt,ω )). (3)
+Note that the ℓA3C term contains an entropy cost, which
+encourages the student to explore beyond the teacher’s su-
+pervision.
+IMPALA (Espeholt et al., 2018) extends the actor-critic
+formulation of (Mnih et al., 2016) to a large-scale setting
+with distributed worker machines. Multiple actor work-
+ers interact with copies of the environment, taking actions
+according to the current policy, and generating trajecto-
+ries of experience. These trajectories are sent to a learner
+worker, which computes the policy update on a batch of
+trajectories. Due to the lag between sampling actions (by
+the actors) and computing the update (by the learner), IM-
+PALA’s actor-critic algorithm (called V-trace) is off-policy,
+and consequently needs to employ a correction (based on
+importance sampling).
+V-trace introduces importance sampling weights ρt to the
+policy gradient for a student trajectory,x, corresponding to
+maximising the expected return at stept:
+ρt∇ω logπS(at|xt,ω )
+(
+rt +γvt+1−V (xt|θ)
+)
+. (4)
+Apart from this modiﬁcation, it follows the actor critic
+loss and thus incorporation of Kickstarting into IMPALA
+is analogous to any other actor-critic system. The only dif-
+ference is that the trajectories used for the kickstarting loss
+now come from the actors of the student policy, rather than
+directly from the student.
+Kickstarting Deep Reinforcement Learning
+2.3. Population Based Training
+An important element of the proposed method is the ad-
+justment of the schedule of kickstarter loss weights (λk in
+Eq. 2). While this can be done manually – similarly to how
+learning rate schedules are often hand-crafted for a given
+application – it requires additional expert knowledge of the
+problem, and a method of trial and error, which is time-
+consuming. This problem becomes even more pronounced
+if we haveK teachers, rather than a single teacher; thereby
+requiring tuning forK different schedules.
+An alternative, which we employ, is to use an online hy-
+perparameter tuning technique: the recently proposed Pop-
+ulation Based Training (Jaderberg et al., 2017) (PBT). This
+method trains a population of agents in parallel in order
+to jointly optimise network weights and hyperparameters
+which affect learning dynamics (such as the learning rate
+or entropy cost). In our instantiation of PBT, each agent
+periodically selects another member of the population at
+random and checks whether its performance is signiﬁcantly
+better than its own. If this is true, weights and hyperpa-
+rameters of the better agent are adopted. Independently of
+the outcome, with ﬁxed probability, each hyperparameter
+is slightly modiﬁed for the purpose of exploration.
+While using PBT is not essential to get the beneﬁts of kick-
+starting, we found it useful in practice, as it helps to further
+decrease the time it takes to perform research iterations. In
+particular, it allows us to automatically adjust the schedule
+for λk separately for each teacher in a multi-teacher sce-
+nario, while simultaneously adjusting the learning rate as
+well as the entropy regularisation strength.
+3. Related Work
+The idea of having experts which can be used to train new
+agents through matching the output distributions was ex-
+plored originally for supervised learning and model com-
+pression (Hinton et al., 2015; Ba & Caruana, 2014; Bucilu
+et al., 2006), and was subsequently adapted for multitask
+reinforcement learning. Typically one gathers experience
+from expert policies, which are then used to train a student
+model using supervised learning (Rusu et al., 2015; Berseth
+et al., 2018). Consequently the focus has hitherto been on
+compression and teacher-matching, rather than the ultimate
+goal of reward maximisation.
+Similarly in the Actor-Mimic (Parisotto et al., 2015) ap-
+proach, one tries to replicate the teacher’s behaviour to later
+exploit it for transfer learning. In departure from (Rusu
+et al., 2015), the Actor-Mimic collects experience from the
+student policy, and this is empirically shown to be beneﬁ-
+cial for replication of the teacher’s behaviour. Although it
+is not explored in these papers, after performing distillation
+one could ﬁne-tune the student policy using rewards.
+From this perspective kickstarting can be seen as a contin-
+uous version of such two-phase learning, with a focus on
+reward maximisation from the very beginning (which does
+not require arbitrary stopping criteria for any of the phases,
+as it is a joint optimisation problem).
+In this sense it is even more related to the dynamics of
+learning emerging from Distral (Teh et al., 2017). How-
+ever there the focus is on the performance of teachers, and a
+student is used purely as a communication channel between
+them (as one jointly tries to distill knowledge from teachers
+to the student, and the student regularises the teachers so
+they do not move too far away from its policy). Finally, the
+kickstarting approach has similarities to the ‘never-ending
+learning’ paradigm (Mitchell et al., 2015; Chen et al., 2013;
+Carlson et al., 2010), which has long argued that machines
+should gradually accumulate knowledge from diverse ex-
+perience and over long timeframes.
+4. Experimental Setup
+All experiments were based on the IMPALA agent (Es-
+peholt et al., 2018), trained on the DMLab-30 task
+suite (Beattie et al., 2016). We ﬁrst give an outline of the
+construction of the agent. We follow that with a short de-
+scription of the task suite.
+4.1. IMPALA
+We experiment with the same two agent network architec-
+tures as in (Espeholt et al., 2018). Both architectures have
+a convolutional pathway for visual features, followed by an
+LSTM, the ouptut of which is fed to policy and value heads.
+These heads are simple linear layers. For the tasks where
+language input is available, there is an additional language
+LSTM whose output is concatenated with the output of the
+visual network. The ‘small’ agent is intended as a sim-
+pler baseline, which is fast to train, and has 2 convolutional
+layers. The ‘large’ agent represents the state of the art for
+these tasks; it has 15 convolutional layers, and signiﬁcantly
+outperforms the small agent.
+4.2. Population Based Training
+In our experiments each population member comprised one
+high-capacity learner worker (running on a Nvidia P100
+GPU) and 150 actor workers, with each actor running a sin-
+gle copy of the environment. The workers were distributed
+equally, 5 per task, between the 30 tasks of the suite.
+For the multi-teacher setup, we use a separate λi
+k for each
+teacher, and allow PBT to choose a schedule for each.
+However, we expect that the distillation weights will be
+correlated. Hence we implement the weights in factorised
+way:λi
+k =αkρi
+k, so that the evolution algorithm can make
+all weights stronger or weaker simultaneously.
+Kickstarting Deep Reinforcement Learning
+4.3. DMLab-30 Suite
+We evaluate our agents on the DMLab-30 task suite (Beat-
+tie et al., 2016). DMLab-30 consists of 30 distinct tasks that
+are designed to challenge a broad range of agent “cogni-
+tive capabilities”. For example, the suite includes tasks in-
+volving navigation through procedurally-generated mazes
+(requiring short- and long-term memory of maze structure,
+and in some cases planning and prediction), tasks of for-
+aging for food items in naturalistic environments (chal-
+lenging the visual system of an agent), and tasks based
+on classical experiments from cognitive neuroscience like
+visual search (Leibo et al., 2018). Due to the breadth of
+tasks and the complexity of the 3D environments, this suite
+comprises a challenging and comprehensive benchmark for
+agent development.
+We measure the performance of each agent on DMLab-30
+by calculating the mean capped human-normalised score.
+We record the average return for all episodes in a window
+of 30 million environment frames that the IMPALA learner
+experiences. We normalise the per task score relative to
+human performance, where human performance is consid-
+ered to be 100. These scores are then capped at 100. This
+capping provides us with a metric that helps focus on pro-
+ducing agents that have human level competency across the
+entire suite, rather than allowing, for instance, an agent to
+merely exploit its super-human reaction times and conse-
+quently achieve a very high score due to signiﬁcant skew
+on a small subset of tasks. To obtain a score for the full
+suite, we average this human-normalised score across all
+30 tasks.
+5. Experimental Results
+We present agent kickstarting results using a single teacher
+and using multiple teachers separately, in section 5.1 and
+5.2 respectively.
+5.1. Kickstarting With a Single Teacher
+We experiment with kickstarting from a single small
+teacher to a large student agent. This resembles the typical
+architecture exploration use-case where a large architecture
+sweep takes place after a small preliminary study. Figure 2
+compares kickstarted training to from-scratch training per-
+formance over time. We observe a substantial speedup:
+6.92× to reach a score of 30, and 1.53× to reach a score
+of 50. In fact, it takes the large student only about 1 billion
+frames to reach the small teacher’s ﬁnal (after 10 billion
+frames) performance. Table 1 gives a speedup break-down.
+Figure 2 also shows the schedule for the kickstarting dis-
+tillation weight over the same time period, showing a re-
+duction to almost negligible weight after 2 billion steps. At
+that point the student is essentially free, and it continues
+0.0 0.2 0.4 0.6 0.8 1.0
+Environment Frames 1e10
+0
+10
+20
+30
+40
+50
+60Mean Capped Normalised Score
+Kickstarting with a single small teacher
+Large kickstarted with small teacher
+Large from scratch
+Small from scratch
+0.0 0.2 0.4 0.6 0.8 1.0
+Environment Frames 1e10
+10
+−9
+10
+−8
+10
+−7
+10
+−6
+10
+−5
+10
+−4
+10
+−3
+10
+−2
+10
+−1
+10
+0
+10
+1
+Distillation weight λk
+Figure 2. Performance of agents on all DMLab-30 tasks. We ob-
+serve that the kickstarted agent learns faster than small and large
+from-scratch agents. Top: Rolling average of agent’s score (mean
+of top-3 PBT population members each). Bottom: PBT evolution
+of kickstarting distillation weight over the course of training for
+the best population member. See also Table 1.
+to learn and surpasses the teacher by a margin of +43.4%
+(56.9 vs. 39.7 DMLab-30 score).
+We also experimented with kickstarting a large student
+agent with a large teacher trained from scratch. Figure 4
+shows that this agent achieves higher performance than the
+equivalent agent kickstarted by a small teacher. This is as
+expected, reﬂecting the better tuition from the large teacher
+agent, as compared to the small teacher.
+5.1.1. PBT AND OTHER DISTILLATION WEIGHTING
+APPROACHES
+As mentioned, we expect the distillation weight λk to
+be important, especially as the student’s performance ap-
+proaches the teacher’s. Thus, we consider ways to con-
+trolλk, including various hand-crafted schedules and con-
+stants. Results are shown in Table 2 and Figure 3. Note
+that even for the manually-speciﬁed schedules, PBT still
+controls other hyperparameters (learning rate and entropy
+cost), as described in (Espeholt et al., 2018). In general,
+Kickstarting Deep Reinforcement Learning
+Table 1. Beneﬁts of kickstarting with a single small teacher. We report score after a ﬁxed number of frames have been experienced, and
+the total number of frames required in order to reach ﬁxed levels of performance. See also Figure 2.
+Score at Frames Frames to Reach Score
+0.5B 1.0B 2.0B 10.0B 30.0 40.0 50.0
+Large kickstarted 37.4 39.4 42.4 56.9 0.13B 1.39B 5.31B
+Large from scratch 24.1 31.1 37.5 51.9 0.99B 3.26B 8.14B
+Improvement +55.2% +26.7% +13.1% +9.6% 6.92× 2.35× 1.53×
+0.0 0.2 0.4 0.6 0.8 1.0
+Environment Frames 1e10
+0
+10
+20
+30
+40
+50
+60
+70Mean Capped Normalised Score
+Distillation weight scheduling strategies
+PBT
+Linear schedules
+From scratch
+Constant schedules
+Figure 3. Performance of different strategies for changing the dis-
+tillation weight λk over the course of training. Agents with a
+constant setting ofλk perform well at ﬁrst, but their performance
+ultimately plateaus. Linear schedules can work well, but only if
+chosen correctly. PBT performance is competitive and alleviates
+the need for sweeps over such schedules. The reported metric is
+the average DMLab-30 score of the top-3 population members for
+each method. The ‘From Scratch’ curve shows the performance
+of the teacher agent for comparison. See also Table 2.
+0.0 0.2 0.4 0.6 0.8 1.0
+Environment Frames 1e10
+0
+10
+20
+30
+40
+50
+60
+70
+80Mean Capped Normalised Score
+Kickstarting with multiple teachers
+Large kickstarted with multiple large teachers
+Large kickstarted with multiple small teachers
+Large kickstarted with single large teacher
+Large kickstarted with single small teacher
+Large from scratch
+Figure 4. Comparison of performance for agents kickstarted with
+a single (large or small) teacher and with multiple (large or small)
+teachers, showing a signiﬁcant boost for both multiple teachers
+and for larger teachers. Kickstarting always improves over multi-
+task training from scratch. The reported metric is the average
+DMLab-30 score among the top-3 PBT members.
+Table 2. Final performance for different distillation weight
+scheduling strategies. The reported metric is average DMLab-30
+score of the top-3 population members at 10B frames. See also
+Figure 3.
+Score at Frames 1.0B 10.0B
+Baselines
+Small from scratch (teacher) 21.6 39.7
+Large from scratch 31.1 51.9
+Kickstarting: PBT
+Large kickstarted with small teacher 39.4 56.9
+Kickstarting: Constant Schedules
+Schedule: constant = 1 40.0 41.2
+Schedule: constant = 2 39.6 40.8
+Kickstarting: Linear Schedules
+Schedule: linear from 1 to 0 at 1B 41.3 59.4
+Schedule: linear from 1 to 0 at 2B 40.1 60.8
+Schedule: linear from 1 to 0 at 4B 39.9 53.1
+Schedule: linear from 2 to 0 at 1B 40.7 60.5
+Schedule: linear from 2 to 0 at 2B 40.0 51.5
+Schedule: linear from 2 to 0 at 4B 39.2 50.3
+constant schedules can perform well early on, but ulti-
+mately cause the agent to plateau near the teacher’s ﬁnal
+performance, suggesting that the agent is trying too hard
+to match the teacher. Linear schedules that reduce λk to 0
+tend to work better, although it is important to reduce this
+weight quickly, a fact that was not apparenta priori. Using
+PBT to control this hyperparameter works nearly as well as
+the best manually-speciﬁed schedules, suggesting that it is
+an efﬁcient alternative to running a sweep across schedules.
+5.2. Kickstarting With Multiple Teachers
+We next extend kickstarting to a scenario where we have
+multiple ‘expert’ teachers, potentially trained separately on
+different tasks. We expect that the ensemble of experts
+will together have considerably more knowledge about the
+task suite, and so ideally the student will absorb even more
+knowledge than it could from a single teacher.
+Kickstarting Deep Reinforcement Learning
+Table 3. Beneﬁts of kickstarting with multiple teachers, analogous to Table 1. We report score after a ﬁxed number of frames have been
+experienced, and the total number of frames required to reach ﬁxed levels of performance. See also Figure 4.
+Score at Frames Frames to Reach Score
+0.5B 1.0B 2.0B 10.0B 30.0 50.0 70.0
+Large kickstarted 44.8 51.0 61.3 73.8 0.21B 0.85B 4.27B
+Large from scratch 24.1 31.1 37.5 51.9 0.99B 8.14B -
+Improvement +85.9% +64.0% +63.5% +42.2% 4.29× 9.58× -
+Figure 4 and Table 3 show our overall results in this sce-
+nario. Indeed, the kickstarted agent achieves high perfor-
+mance, far higher than an agent trained from scratch, and
+even higher than an agent kickstarted with a single teacher
+(73.8 vs 56.9 for a comparable single teacher setup). This
+suggests that kickstarting works well even when combin-
+ing the expertise of many diverse agents, which means that
+multi-expert kickstarting is a good way to learn a single
+agent that performs well on a large set of tasks.
+5.2.1. E XPERT KICKSTARTING VS . D ISTILLATION
+Figure 5 shows a comparison between agents kickstarted
+with multiple teachers and an agent of the same architecture
+trained purely with the distillation loss (2), without any of
+the typical reinforcement learning losses, and thus similar
+to Policy Distillation and Actor-Mimic (Rusu et al., 2015;
+Parisotto et al., 2015). Kickstarting outperforms distillation
+by a signiﬁcant margin, with the gap widening as training
+time increases. This suggests that it is useful for the stu-
+dent to learn from its own rewards as well as the teacher’s
+policy, and indeed necessary for the student to outperform
+the teacher.
+0.0 0.2 0.4 0.6 0.8 1.0
+Environment Frames 1e10
+40
+45
+50
+55
+60
+65
+70
+75Mean Capped Normalised Score
+Kickstarting with PBT variants vs. distillation
+Kickstarted, per−task λ i
+k with PBT
+Kickstarted, shared λk with PBT
+Kickstarted, constant λ
+Distillation baseline
+Figure 5. Comparison of four approaches for knowledge trans-
+fer from multiple large teachers: kickstarting with three PBT
+parametrizations for the distillation weight λ (constant weight
+across all tasksλ, evolved shared weight for all tasksλk, evolved
+per-task weight λi
+k), and a pure policy distillation agent without
+any reinforcement learning loss.
+5.2.2. A NALYSIS OF DISTILLATION WEIGHT λk
+Thus far we have considered a single approach to setting
+λk: a separate λi
+k for the i’th teacher, where PBT auto-
+matically selects a schedule for each. This follows from
+the intuition that the student may surpass different experts
+at different times. However, one might ask how important
+it is to tune schedules separately in practice. Figure 5 ex-
+plores alternatives where a sharedλk is used for all teachers
+and updated via PBT, or where a constant λ is used for all
+teachers. While a ﬁxed schedule still performs poorly, we
+ﬁnd that a separateλi
+k for each teacher provides a negligi-
+ble boost, suggesting that the procedure is not exceptionally
+sensitive to this hyperparameter.
+5.2.3. P ER TASK PERFORMANCE
+We brieﬂy analyze agent performance on a few DMLab-
+30 tasks to gain insight into our performance gains when
+kickstarting with multiple teachers. Two kinds of tasks,
+laser tag and navigation, are particularly informative.
+The task suite contains a set of similar ‘laser tag’ tasks in
+which agents must navigate a procedurally-generated maze
+and tag other opponent ‘bots’ with a laser. Figure 6 shows
+the performance of three types of agent: a multi-task agent
+kickstarted with expert teachers; a multi-task agent trained
+from-scratch; and a single-task expert agent. In the 1-bot
+variant, encounters with the single opponent (and thus re-
+wards) are very sparse: thus the from-scratch agent and
+even the single-task expert do not learn. The multi-teacher
+kickstarted agent, however, learns quickly. The reason is
+that a single-task expert learned strong performance on the
+3-bot task (thanks to denser rewards), and its knowledge
+transfers to the 1-bot variant. In fact, we ﬁnd the student
+‘ignores’ the (incompentent) 1-bot expert (its λi
+k quickly
+goes to 0). Figure 7 shows the performance on the “ex-
+plore goal locations small” navigation task. Here, the agent
+must repeatedly navigate a random maze: for several tri-
+als, the spawn position is random, but the goal location and
+maze layout remain the same. Agents that cannot remem-
+ber the maze layout after respawning–such as the from-
+scratch agent in Figure 7–cannot score higher than 300 on
+this task.
+Kickstarting Deep Reinforcement Learning
+0.0 0.2 0.4 0.6 0.8 1.0
+Environment Frames 1e10
+−2
+0
+2
+4
+6
+8
+10Mean Return
+Task: lasertag_1_opponent_large
+0.0 0.2 0.4 0.6 0.8 1.0
+Environment Frames 1e10
+−5
+0
+5
+10
+15
+20
+25 Task: lasertag_3_opponents_large
+Large kickstarted with multiple large teachers
+Large expert for lasertag_3_opponents_large
+Large expert for lasertag_1_opponent_large
+Large from scratch
+Figure 6. Performance of a from-scratch multi-task agent, two single-task expert agents (distinct for each task), and a multi-task agent
+kickstarted with experts on two laser-tag tasks. The multitask from-scratch agent learns neither task. The expert on the (easier) 3-bot
+task learns, whereas the agent trained solely on the (harder) 1-bot variant does not. The student kickstarted using the experts masters
+both the 1- and 3-bot variants, indicating transfer from the 3- to the 1-bot environment.
+0.0 0.2 0.4 0.6 0.8 1.0
+Environment Frames 1e10
+0
+100
+200
+300
+400
+500Mean Return
+Task: explore_goal_locations_small
+Small expert for explore_goal_locations_small
+Large kickstarted with multiple small teachers
+Small from scratch
+Figure 7. Performance of a from-scratch multi-task agent, a
+single-task expert, and a multi-task agent kickstarted with experts
+on a navigation task. The multitask from-scratch agent fails to ac-
+quire short-term memory, while the agent kickstarted with expert
+teachers does thanks to the expert.
+The expert learns to use its short term memory and scores
+considerably higher and, thanks to this expert, the kick-
+started agent also masters the task. This is perhaps sur-
+prising because the kickstarting mechanism only guides
+the student agent in which action to take: it puts no con-
+straint on how the student structures its internal memory
+state. However, the student can only predict the teacher’s
+behaviour by remembering information from before the
+respawn, which seems to be enough supervisory signal to
+drive short-term memory formation. We ﬁnd this a won-
+derful parallel with how the best human educators teach:
+not telling the student what to think, but simply putting the
+student in a fruitful position to learn for themselves.
+6. Conclusion
+We have presented kickstarting – a training paradigm that
+helps both shorten the cycle-time for research iterations
+in deep RL, and that helps student agents achieve perfor-
+mances that exceed those attained by agents trained from
+scratch. The method is simple to implement in policy-
+based reinforcement learning setups. In contrast to policy
+distillation, our method allows students to actively balance
+their own learning objectives with the advice given by the
+teachers. This feature allows the students to surpass the
+performance of their teachers.
+More fundamentally, we believe this result opens the path-
+way to a new research direction, where new agents are de-
+signed to be adept in absorbing and using the knowledge of
+previously trained agents. Indeed, it might be possible for
+this scheme to lead to the training of complex agents that
+would not have been possible to train from scratch in the
+absence of their particular ancestral lineage.
+Acknowledgements
+We thank Lasse Espeholt, Hubert Soyer, and Chloe Hillier
+for helpful discussions, advice and support.
+References
+Argall, Brenna D., Chernova, Sonia, Veloso, Manuela,
+and Browning, Brett. A survey of robot learning from
+demonstration. Robotics and Autonomous Systems ,
+2009.
+Kickstarting Deep Reinforcement Learning
+Ba, Jimmy and Caruana, Rich. Do deep nets really need to
+be deep? In Advances in Neural Information Processing
+Systems 27, pp. 2654–2662, 2014.
+Beattie, Charles, Leibo, Joel Z., Teplyashin, Denis,
+Ward, Tom, Wainwright, Marcus, Kuttler, Heinrich,
+Lefrancq, Andrew, Green, Simon, Valdes, Victor,
+Sadik, Amir, Schrittwieser, Julian, Anderson, Keith,
+York, Sarah, Cant, Max, Cain, Adam, Bolton, Adrian,
+Gaffney, Stephen, King, Helen, Hassabis, Demis, Legg,
+Shane, and Petersen, Stig. DeepMind Lab. CoRR,
+abs/1612.03801, 2016.
+Berseth, Glen, Xie, Cheng, Cernek, Paul, and Van de
+Panne, Michiel. Progressive reinforcement learning with
+distillation for multi-skilled motion control. ICLR, 2018.
+Bucilu, Cristian, Caruana, Rich, and Niculescu-Mizil,
+Alexandru. Model compression. In Proceedings of the
+12th ACM SIGKDD international conference on Knowl-
+edge discovery and data mining . ACM, 2006.
+Carlson, Andrew, Betteridge, Justin, Kisiel, Bryan, Settles,
+Burr, Hruschka Jr, Estevam R, and Mitchell, Tom M. To-
+ward an architecture for never-ending language learning.
+In AAAI, volume 5, pp. 3. Atlanta, 2010.
+Chen, Xinlei, Shrivastava, Abhinav, and Gupta, Abhinav.
+NEIL: Extracting visual knowledge from web data. In
+ICCV, pp. 1409–1416. IEEE, 2013.
+Espeholt, Lasse, Soyer, Hubert, Munos, Remi, Simonyan,
+Karen, Mnih, V olodymir, Ward, Tom, Doron, Yotam,
+Firoiu, Vlad, Harley, Tim, Dunning, Iain, Legg, Shane,
+and Kavukcuoglu, Koray. IMPALA: Scalable distributed
+deep-RL with importance weighted actor-learner archi-
+tectures. arXiv:1802.01561, 2018.
+Girshick, Ross, Donahue, Jeff, Darrell, Trevor, and Malik,
+Jitendra. Rich feature hierarchies for accurate object de-
+tection and semantic segmentation. InProceedings of the
+IEEE conference on computer vision and pattern recog-
+nition, pp. 580–587, 2014.
+Gulcehre, Caglar, Moczulski, Marcin, Visin, Francesco,
+and Bengio, Yoshua. Mollifying networks. arXiv
+preprint arXiv:1608.04980, 2016.
+Henrich, Joseph. The secret of our success: how culture is
+driving human evolution, domesticating our species, and
+making us smarter. Princeton University Press, 2015.
+Hinton, Geoffrey, Vinyals, Oriol, and Dean, Jeff. Distilling
+the knowledge in a neural network. arXiv:1503.02531,
+2015.
+Jaderberg, Max, Dalibard, Valentin, Osindero, Simon,
+Czarnecki, Wojciech M., Donahue, Jeff, Razavi, Ali,
+Vinyals, Oriol, Green, Tim, Dunning, Iain, Simonyan,
+Karen, Fernando, Chrisantha, and Kavukcuoglu, Koray.
+Population based training of neural networks. CoRR,
+abs/1711.09846, 2017.
+Leibo, Joel Z, d’Autume, Cyprien de Masson, Zoran,
+Daniel, Amos, David, Beattie, Charles, Anderson, Keith,
+Casta˜neda, Antonio Garc ´ıa, Sanchez, Manuel, Green,
+Simon, Gruslys, Audrunas, et al. Psychlab: A psychol-
+ogy laboratory for deep reinforcement learning agents.
+arXiv:1801.08116, 2018.
+Mitchell, Tom M, Cohen, William W, Hruschka Jr, Este-
+vam R, Talukdar, Partha Pratim, Betteridge, Justin, Carl-
+son, Andrew, Mishra, Bhavana Dalvi, Gardner, Matthew,
+Kisiel, Bryan, Krishnamurthy, Jayant, et al. Never end-
+ing learning. In AAAI, pp. 2302–2310, 2015.
+Mnih, V olodymyr, Badia, Adri `a Puigdom `enech, Mirza,
+Mehdi, Graves, Alex, Lillicrap, Timothy P., Harley, Tim,
+Silver, David, and Kavukcuoglu, Koray. Asynchronous
+methods for deep reinforcement learning. International
+Conference on Machine Learning, 2016.
+Mobahi, Hossein. Training recurrent neural networks by
+diffusion. arXiv preprint arXiv:1601.04114, 2016.
+Oquab, Maxime, Bottou, L ´eon, Laptev, Ivan, and Sivic,
+Josef. Learning and transferring mid-level image rep-
+resentations using convolutional neural networks. 2014
+IEEE Conference on Computer Vision and Pattern
+Recognition, pp. 1717–1724, 2014.
+Parisotto, Emilio, Ba, Jimmy Lei, and Salakhutdinov, Rus-
+lan. Actor-mimic: Deep multitask and transfer reinforce-
+ment learning. arXiv:1511.06342, 2015.
+Rusu, Andrei A., Colmenarejo, Sergio Gomez, G ¨ulc ¸ehre,
+C ¸ aglar, Desjardins, Guillaume, Kirkpatrick, James, Pas-
+canu, Razvan, Mnih, V olodymyr, Kavukcuoglu, Ko-
+ray, and Hadsell, Raia. Policy distillation. CoRR,
+abs/1511.06295, 2015.
+Sutton, R.S. and Barto, A.G. Reinforcement learning: An
+introduction, volume 116. Cambridge Univ Press, 1998.
+Teh, Yee, Bapst, Victor, Czarnecki, Wojciech M, Quan,
+John, Kirkpatrick, James, Hadsell, Raia, Heess, Nicolas,
+and Pascanu, Razvan. Distral: Robust multitask rein-
+forcement learning. In Advances in Neural Information
+Processing Systems, pp. 4499–4509, 2017.

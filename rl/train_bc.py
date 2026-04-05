@@ -32,6 +32,18 @@ def train_bc_model(
     if not rows:
         raise ValueError("No trace rows to train on")
 
+    versions = {row.get("observation_version", observation_version) for row in rows}
+    if len(versions) != 1:
+        raise ValueError(f"Mixed observation versions in trace rows: {sorted(versions)}")
+    trace_version = next(iter(versions))
+    if trace_version != observation_version:
+        raise ValueError(
+            f"Requested observation_version={observation_version} but trace rows use {trace_version}"
+        )
+
+    input_dims = {len(row["feature_vector"]) for row in rows}
+    if len(input_dims) != 1:
+        raise ValueError(f"Mixed feature dimensions in trace rows: {sorted(input_dims)}")
     input_dim = len(rows[0]["feature_vector"])
     device = torch.device("cpu")
     model = BCPolicyMLP(input_dim=input_dim, hidden_size=hidden_size)
