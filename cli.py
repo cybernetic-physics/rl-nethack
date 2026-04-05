@@ -6,6 +6,7 @@ Subcommands:
   generate    -- Generate training data from NLE gameplay
   report      -- Run a game and produce HTML + text reports
   evaluate    -- Evaluate model prediction accuracy
+  task-evaluate -- Evaluate task-directed control policies
   golden-generate -- Build a tiny golden debug episode
   golden-evaluate -- Evaluate a model against a saved golden episode
   manifest    -- Build and save a training manifest
@@ -236,6 +237,55 @@ def cmd_golden_evaluate(args):
     return 0
 
 
+def cmd_task_evaluate(args):
+    """Evaluate task-directed policies on fixed seeds."""
+    from src.task_harness import evaluate_task_policy
+
+    seeds = [int(s) for s in args.seeds.split(',')]
+    policies = [args.policy]
+    if args.compare_baseline and args.policy != "wall_avoidance":
+        policies = ["wall_avoidance", args.policy]
+
+    all_results = []
+    print(f"Task evaluation for {args.task}")
+    print(f"  Directive: {args.task}")
+    print(f"  Seeds: {seeds}")
+    print(f"  Max steps: {args.max_steps}")
+
+    for policy in policies:
+        result = evaluate_task_policy(
+            task=args.task,
+            seeds=seeds,
+            max_steps=args.max_steps,
+            policy=policy,
+        )
+        all_results.append(result)
+        summary = result["summary"]
+        print()
+        print(f"Policy: {policy}")
+        print(f"  Episodes:            {summary['episodes']}")
+        print(f"  Avg task reward:     {summary['avg_task_reward']:.2f}")
+        print(f"  Avg env reward:      {summary['avg_env_reward']:.2f}")
+        print(f"  Avg unique tiles:    {summary['avg_unique_tiles']:.2f}")
+        print(f"  Avg rooms:           {summary['avg_rooms_discovered']:.2f}")
+        print(f"  Avg final HP:        {summary['avg_final_hp']:.2f}")
+        print(f"  Avg final depth:     {summary['avg_final_depth']:.2f}")
+        print(f"  Survival rate:       {summary['survival_rate']:.1%}")
+        print(f"  Repeated state rate: {summary['repeated_state_rate']:.1%}")
+        print(f"  Repeated action rate:{summary['repeated_action_rate']:.1%}")
+        if summary["action_counts"]:
+            top_actions = sorted(summary["action_counts"].items(), key=lambda kv: (-kv[1], kv[0]))[:6]
+            print(f"  Top actions:         {top_actions}")
+
+    if args.output:
+        payload = all_results[0] if len(all_results) == 1 else {"results": all_results}
+        with open(args.output, "w") as f:
+            json.dump(payload, f, indent=2)
+        print()
+        print(f"Saved task evaluation to: {args.output}")
+    return 0
+
+
 def cmd_smoke_test(args):
     """Quick end-to-end test: generate 2 games, verify JSONL, build manifest, verify."""
     from src.state_encoder import StateEncoder
@@ -372,6 +422,23 @@ def main():
     p_eval.add_argument('--server-url', type=str, default='http://127.0.0.1:8765',
                         help='llama-server URL (default: http://127.0.0.1:8765)')
 
+    # --- task-evaluate ---
+    p_task = subparsers.add_parser('task-evaluate', help='Evaluate task-directed control policies')
+    p_task.add_argument('--task', type=str, default='explore',
+                        choices=['explore', 'survive', 'combat', 'descend', 'resource'],
+                        help='Task to evaluate')
+    p_task.add_argument('--policy', type=str, default='task_greedy',
+                        choices=['task_greedy', 'wall_avoidance'],
+                        help='Policy to run')
+    p_task.add_argument('--compare-baseline', action='store_true',
+                        help='Also run wall_avoidance for comparison')
+    p_task.add_argument('--seeds', type=str, default='42,43,44',
+                        help='Comma-separated list of seeds')
+    p_task.add_argument('--max-steps', type=int, default=20,
+                        help='Maximum steps per episode')
+    p_task.add_argument('--output', type=str, default=None,
+                        help='Optional JSON output path')
+
     # --- manifest ---
     p_man = subparsers.add_parser('manifest', help='Build and save a training manifest')
     p_man.add_argument('--base-model', type=str, required=True,
@@ -423,6 +490,8 @@ def main():
             return cmd_report(args)
         elif args.command == 'evaluate':
             return cmd_evaluate(args)
+        elif args.command == 'task-evaluate':
+            return cmd_task_evaluate(args)
         elif args.command == 'manifest':
             return cmd_manifest(args)
         elif args.command == 'golden-generate':

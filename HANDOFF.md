@@ -15,6 +15,8 @@ Train a small model to predict what happens next given accumulated exploration m
 - Machine reality check: this host is 4x H200, not 4x H100
 - Closed-loop golden replay harness added and validated on a tiny saved episode
 - Local policy generator now uses structured prompts, full state history, and frontier-biased action sanitization
+- Task-directed closed-loop evaluation harness added for `explore`, `survive`, `combat`, `descend`, and `resource`
+- One-step counterfactual control policy added: fork the live env, score candidate actions with shaped task reward, and execute the best action
 
 ### What is built
 - nle_agent/agent_http.py -- play via local OpenAI-compatible server or OpenRouter
@@ -120,40 +122,68 @@ Applied here:
 - Train/eval distribution mismatch already exists: training examples include the system prompt, but evaluator requests currently send only the user prompt.
 - Before scaling data or model size further, we should be able to overfit one tiny episode and replay it step-by-step without divergence.
 
+### Task Harness Results (Apr 5)
+
+New code:
+- [src/task_rewards.py](/home/luc/rl-nethack/src/task_rewards.py) defines repo-owned shaped rewards for `explore`, `survive`, `combat`, `descend`, and `resource`
+- [src/task_harness.py](/home/luc/rl-nethack/src/task_harness.py) runs real episodes, tracks trajectory metrics, and implements a one-step counterfactual controller
+- [cli.py](/home/luc/rl-nethack/cli.py) now exposes `task-evaluate`
+
+Explore benchmark, seeds `42,43,44`, `10` steps:
+- baseline `wall_avoidance`: avg task reward `-1.17`, avg unique tiles `36.33`, repeated action rate `20.0%`
+- task-directed `task_greedy`: avg task reward `7.27`, avg unique tiles `93.00`, repeated action rate `6.7%`
+- conclusion: shaped exploration reward is good enough to improve closed-loop behavior right now
+
+Survival benchmark, seeds `42,43,44`, `15` steps:
+- baseline `wall_avoidance`: avg task reward `-1.63`, avg unique tiles `65.67`, repeated action rate `17.8%`
+- task-directed `task_greedy`: avg task reward `-0.37`, avg unique tiles `67.00`, repeated action rate `0.0%`
+- conclusion: loop penalties were required; after adding them, the controller is more stable than baseline, but survival shaping is still weak and not yet a strong policy objective
+
+Interpretation:
+- This is the repo's first real closed-loop task-control harness
+- It is not PPO and not learned RL yet
+- It is a useful control/evaluation loop that closes the gap between forward-model work and future RL/planning
+- The current controller is one-step greedy, so deeper planning or learned value estimation is the obvious next improvement
+
 ## Next Steps
 
-### 1. Remove remaining inference-side bottlenecks
-- Keep the two-replica topology on GPUs `0,1`; it still beats both TP=2 serving and the current in-process `vllm-batch` path
-- If batching is revisited, it should probably be with two 1-GPU in-process workers or a different scheduling topology, not the current single TP=2 engine
-- Keep automatic prefix caching enabled
+### 1. Turn the task harness into learned control
+- Reuse `scripts/generate_counterfactual_data.py` and the new shaped rewards to label one-step actions by task value
+- Train a reward/value model that predicts shaped task return for candidate actions
+- Replace the expensive fork-per-action planner with a learned scorer once the labels are reliable
 
-### 2. Generate a larger local corpus
+### 2. Add task-specific eval suites
+- Keep `explore` and `survive` as always-on regression tasks
+- Add curated short suites for combat, stairs/descent, and pickup/resource moments
+- Report trajectory metrics, not just one-step delta accuracy
+
+### 3. Generate a larger local corpus
 - The balanced `3B` path now holds up at 10k scale, so target `50k-200k` examples on GPUs 0,1
 - Keep train/eval split by seed
 - Combine policy data with counterfactual and AutoAscend-derived data where possible
 
-### 3. Scale training to the full machine
+### 4. Scale training to the full machine
 - Use all 4 H200s for LoRA training via `torchrun`
 - Start with Qwen 2.5 3B or 7B for the forward model
 - Increase sequence length and effective batch once the dataset is no longer tiny
 
-### 4. Evaluate and plan
+### 5. Evaluate and plan
 - Compare predictions vs actual on held-out seeds
 - Add metrics for action-conditioned deltas, combat outcomes, and exploration gains
 - Once the forward model is competent, use it for look-ahead planning
 
-### 5. Build a real debug harness before more training work
+### 6. Build a real debug harness before more training work
 - Create a golden single-episode dataset, around 10-20 steps, with saved prompt, action, target delta, and next-state hash for every step
 - Train on only that episode until training loss is near zero
 - Add a closed-loop replay script that runs the model on that exact start state and compares prompt hash, predicted delta, and next-state hash step-by-step
 - Do not trust larger runs until the golden replay stays aligned for the full episode
 
-### 6. Fix distribution mismatches in the current loop
+### 7. Fix distribution mismatches in the current loop
 - Make evaluation use the same message structure as training, including the system prompt
 - Keep separate eval suites for random-policy data, LLM-policy data, and golden closed-loop replay
 - Log raw observation hashes, formatted prompt hashes, parsed predictions, and next-state hashes so mismatches are obvious
 
-### 7. Improve the future RL / planning loop in the right order
+### 8. Improve the future RL / planning loop in the right order
 - First make the forward model accurate on short deterministic trajectories
 - Then test one-step planning against counterfactual rollouts from the same saved state
 - Only after that should we build deeper look-ahead or policy-improvement loops
