@@ -529,11 +529,12 @@ Even though the repo now has “skills”, it does not yet have:
 So the policy is still much flatter than the final intended system.
 
 
-### 6. No SFT-to-APPO bridge
+### 6. No direct SFT-to-APPO weight bridge
 
 You asked to “use the SFT model as base”.
 
-That is not currently possible in this repo.
+Direct weight loading from the SFT adapter into the APPO actor-critic is still
+not possible in this repo.
 
 Why:
 
@@ -542,13 +543,385 @@ Why:
 - the APPO learner is a separate actor-critic network created by Sample
   Factory,
 - there is no shared architecture or weight mapping,
-- and there is no current behavior-cloning or distillation path from the LM
-  model into the APPO policy.
+- and there is no direct adapter-to-policy import path.
 
-So right now the only honest answer is:
+However, the repo now does have an indirect bridge:
+
+- generate explicit multi-turn traces,
+- optionally use the SFT forward model as the trace-generation policy,
+- train BC from those traces,
+- then train APPO from that behavioral starting point in future work.
+
+So the honest answer now is:
 
 - APPO can be compared to the old stack behaviorally,
-- but it cannot yet be initialized from the SFT adapter weights.
+- it can be bootstrapped through traces and BC,
+- but it still cannot be initialized directly from the SFT adapter weights.
+
+
+## Full Bounded Pipeline Run (Apr 5, 2026)
+
+After the earlier APPO integration work, I ran a bounded end-to-end pipeline
+with the goal of exercising:
+
+1. forward-model data generation,
+2. forward-model SFT,
+3. explicit multi-turn trace generation,
+4. BC policy training,
+5. learned reward training,
+6. learned scheduler training,
+7. APPO training,
+8. evaluation of the resulting policies.
+
+Constraint:
+
+- keep the whole run under one hour,
+- use only local GPUs,
+- and prefer GPUs `0,1,2` once the user allowed expanding past `0,1`.
+
+
+## Important SFT Fix Found During The Pipeline Run
+
+The first distributed SFT attempt failed with a real DDP/device-placement bug.
+
+Observed failure:
+
+- Unsloth loaded the model in a per-rank configuration that caused Accelerate
+  to reject training on a different device than the one the quantized model had
+  been loaded on.
+
+Root cause:
+
+- [train.py](/home/luc/rl-nethack/train.py) was not explicitly pinning each
+  `torchrun` rank to its own CUDA device before model load.
+
+Fix applied:
+
+- call `torch.cuda.set_device(dist["local_rank"])` before model creation,
+- pass `device_map={"": torch.cuda.current_device()}` in distributed mode,
+- make the intended bf16 load path explicit.
+
+This fix is in the working tree in
+[train.py](/home/luc/rl-nethack/train.py) and was used for the successful run
+below.
+
+
+## Pipeline Commands Actually Run
+
+### 1. Generate forward-model SFT data
+
+```bash
+uv run python cli.py generate \
+  --num-games 300 \
+  --max-steps 30 \
+  --output data/pipeline_train.jsonl \
+  --eval-output data/pipeline_eval.jsonl \
+  --eval-fraction 0.2
+```
+
+Output:
+
+- [data/pipeline_train.jsonl](/home/luc/rl-nethack/data/pipeline_train.jsonl)
+- [data/pipeline_eval.jsonl](/home/luc/rl-nethack/data/pipeline_eval.jsonl)
+
+Counts:
+
+- total examples: `8990`
+- train examples: `7190`
+- eval examples: `1800`
+
+
+### 2. Train forward model with SFT on GPUs `0,1,2`
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2 uv run torchrun --standalone --nproc_per_node=3 \
+  train.py \
+  --model Qwen/Qwen2.5-0.5B-Instruct \
+  --data data/pipeline_train.jsonl \
+  --eval-data data/pipeline_eval.jsonl \
+  --output output/pipeline_adapter \
+  --max-seq-length 768 \
+  --lora-rank 16 \
+  --lora-alpha 32 \
+  --lr 2e-4 \
+  --batch-size 2 \
+  --gradient-accumulation-steps 2 \
+  --max-steps 60 \
+  --dataset-num-proc 4 \
+  --dataloader-num-workers 2 \
+  --logging-steps 10 \
+  --save-steps 30
+```
+
+Observed result:
+
+- runtime: about `27.6s`
+- global steps: `60`
+- final train loss: `0.5690`
+- adapter hash: `cf2b58a0029932640894869ef01d2564b9639c9fb4954312f80e801d8e5781d1`
+
+Artifacts:
+
+- [output/pipeline_adapter](/home/luc/rl-nethack/output/pipeline_adapter)
+- [output/pipeline_adapter/training_meta.json](/home/luc/rl-nethack/output/pipeline_adapter/training_meta.json)
+
+
+### 3. Generate explicit multi-turn traces
+
+I attempted a larger `task_greedy` trace run first, but the trace generator is
+slow because it uses the counterfactual task harness internally. To keep the
+run bounded, I regenerated a smaller clean trace set and verified it.
+
+Command used for the clean file:
+
+```bash
+uv run python cli.py rl-generate-traces \
+  --output data/pipeline_explore_traces_clean.jsonl \
+  --num-episodes 40 \
+  --max-steps 24 \
+  --task explore \
+  --policy task_greedy
+```
+
+Verification command:
+
+```bash
+uv run python cli.py rl-verify-traces \
+  --input data/pipeline_explore_traces_clean.jsonl
+```
+
+Verified result for the clean artifact:
+
+- episodes: `3`
+- rows: `68`
+- max steps in episode: `24`
+- avg steps per episode: `22.67`
+- all episodes multi-turn: `true`
+
+Artifact:
+
+- [data/pipeline_explore_traces_clean.jsonl](/home/luc/rl-nethack/data/pipeline_explore_traces_clean.jsonl)
+
+Important interpretation:
+
+- yes, the trace format is genuinely multi-turn,
+- but the bounded clean trace artifact is still small,
+- because `task_greedy` trace generation remains expensive.
+
+
+### 4. Train BC policy from the multi-turn traces
+
+```bash
+uv run python cli.py rl-train-bc \
+  --input data/pipeline_explore_traces_clean.jsonl \
+  --output output/pipeline_explore_bc.pt \
+  --epochs 25 \
+  --lr 0.001
+```
+
+Result:
+
+- num examples: `68`
+- final loss: `1.0892`
+- train accuracy: `0.5588`
+
+Artifact:
+
+- [output/pipeline_explore_bc.pt](/home/luc/rl-nethack/output/pipeline_explore_bc.pt)
+
+
+### 5. Train learned reward model
+
+```bash
+uv run python cli.py rl-train-reward \
+  --task explore \
+  --seeds 42,43,44,45,46,47,48,49 \
+  --max-steps 24 \
+  --dataset-output data/pipeline_explore_reward_prefs.jsonl \
+  --output output/pipeline_explore_reward.pt \
+  --epochs 25 \
+  --lr 0.001
+```
+
+Result:
+
+- num pairs: `192`
+- final loss: `0.2894`
+
+Artifacts:
+
+- [data/pipeline_explore_reward_prefs.jsonl](/home/luc/rl-nethack/data/pipeline_explore_reward_prefs.jsonl)
+- [output/pipeline_explore_reward.pt](/home/luc/rl-nethack/output/pipeline_explore_reward.pt)
+
+
+### 6. Train learned scheduler
+
+```bash
+uv run python cli.py rl-train-scheduler \
+  --seeds 42,43,44,45,46,47,48,49 \
+  --max-steps 24 \
+  --dataset-output data/pipeline_scheduler_rows.jsonl \
+  --output output/pipeline_scheduler.pt \
+  --epochs 25 \
+  --lr 0.001
+```
+
+Result:
+
+- num examples: `192`
+- final loss: `0.2093`
+- train accuracy: `0.9531`
+
+Artifacts:
+
+- [data/pipeline_scheduler_rows.jsonl](/home/luc/rl-nethack/data/pipeline_scheduler_rows.jsonl)
+- [output/pipeline_scheduler.pt](/home/luc/rl-nethack/output/pipeline_scheduler.pt)
+
+
+### 7. Train APPO on learned reward + learned scheduler
+
+```bash
+CUDA_VISIBLE_DEVICES=2 uv run python cli.py rl-train-appo \
+  --experiment pipeline_appo_learned \
+  --num-workers 4 \
+  --num-envs-per-worker 8 \
+  --rollout-length 32 \
+  --recurrence 16 \
+  --batch-size 1024 \
+  --num-batches-per-epoch 1 \
+  --ppo-epochs 1 \
+  --train-for-env-steps 12000 \
+  --enabled-skills explore \
+  --reward-source learned \
+  --learned-reward-path output/pipeline_explore_reward.pt \
+  --scheduler learned \
+  --scheduler-model-path output/pipeline_scheduler.pt
+```
+
+Resolved configuration:
+
+- total parallel envs: `32`
+- rollout length: `32`
+- recurrence: `16`
+- train target: `12000` env steps
+- checkpoint written at `13312` collected frames
+- final reported FPS: about `144.7`
+
+Artifacts:
+
+- [train_dir/rl/pipeline_appo_learned/config.json](/home/luc/rl-nethack/train_dir/rl/pipeline_appo_learned/config.json)
+- [train_dir/rl/pipeline_appo_learned/checkpoint_p0/checkpoint_000000013_13312.pth](/home/luc/rl-nethack/train_dir/rl/pipeline_appo_learned/checkpoint_p0/checkpoint_000000013_13312.pth)
+
+
+## Evaluation Results From The Bounded Pipeline
+
+### BC evaluation
+
+Command:
+
+```bash
+uv run python cli.py rl-evaluate-bc \
+  --model output/pipeline_explore_bc.pt \
+  --task explore \
+  --seeds 42,43,44 \
+  --max-steps 50
+```
+
+Result summary:
+
+- episodes: `3`
+- avg unique tiles: `74.0`
+- avg rooms discovered: `1.33`
+- avg env reward: `0.0`
+- action counts:
+  - `east: 146`
+  - `north: 4`
+
+Interpretation:
+
+- the BC policy is simplistic and highly collapsed,
+- but it still moves through the map enough to get reasonable exploration
+  coverage.
+
+
+### APPO evaluation
+
+Command:
+
+```bash
+uv run python cli.py rl-evaluate-appo \
+  --experiment pipeline_appo_learned \
+  --seeds 42,43,44 \
+  --max-steps 50
+```
+
+Result summary:
+
+- avg task reward: `-28.2989`
+- avg unique tiles: `48.0`
+- avg rooms discovered: `1.33`
+- repeated action rate: `0.9733`
+- invalid action rate: `0.0`
+- action counts:
+  - `west: 149`
+  - `east: 1`
+
+Interpretation:
+
+- action masking is working in the sense that invalid-action rate is `0.0`,
+- but the policy still collapses almost completely to one direction,
+- so the run is operationally successful and behaviorally weak.
+
+
+### Relative ranking
+
+From this bounded pipeline run:
+
+1. `task_greedy` heuristic remains strongest overall from earlier validated
+   `explore` benchmarks,
+2. the BC policy from multi-turn traces is currently better than the APPO
+   policy,
+3. the learned APPO policy is still significantly underperforming.
+
+That is the most important result from this run.
+
+
+## What The Pipeline Run Proved
+
+The repo can now do all of the following in one workflow:
+
+- generate forward-model SFT data,
+- run real multi-GPU SFT locally,
+- generate explicit multi-turn trace data,
+- verify that traces are actually multi-turn,
+- train a BC policy on those traces,
+- train learned reward and scheduler models,
+- train a real APPO RL policy with those learned components,
+- and evaluate the resulting policies.
+
+So the repo now has a real end-to-end training pipeline.
+
+However, the best current bridge from supervision into control is BC, not RL.
+
+The learned APPO path still does not beat the BC policy produced from the same
+pipeline, and it still does not approach the existing `task_greedy` controller.
+
+
+## Updated Next Steps After The Bounded Pipeline Run
+
+The highest-value next step is now clear:
+
+1. initialize APPO from BC weights instead of training from scratch,
+2. enlarge the multi-turn trace corpus substantially,
+3. keep action masking strict,
+4. narrow the `explore` action space further,
+5. then rerun the same bounded benchmark and compare:
+   - `task_greedy`
+   - BC
+   - BC-initialized APPO
+
+If that still does not close the gap, the next bottleneck is likely the policy
+representation or the reward signal rather than dataflow.
 
 
 ## What We Learned
@@ -602,8 +975,8 @@ At the time this document was written, the working tree also contains
 uncommitted changes outside this file:
 
 - [CURRENT-RL-SYSTEM.md](/home/luc/rl-nethack/CURRENT-RL-SYSTEM.md)
-- [rl/sf_env.py](/home/luc/rl-nethack/rl/sf_env.py)
-- [rl/trainer.py](/home/luc/rl-nethack/rl/trainer.py)
+- [README.md](/home/luc/rl-nethack/README.md)
+- [train.py](/home/luc/rl-nethack/train.py)
 - `train_dir/` experiment artifacts
 
 Important:
@@ -625,13 +998,16 @@ The repo has crossed an important threshold:
 But the first meaningful `explore` experiment did not uplift over the existing
 controller.
 
-So the next phase should not be “scale the same run harder”.
+And after the first bounded end-to-end pipeline run, the same conclusion still
+holds.
+
+So the next phase should not be “scale the same RL run harder”.
 
 It should be:
 
-1. fix action masking,
-2. tighten the action space,
-3. improve policy inputs,
-4. add proper APPO evaluation,
-5. then rerun the `explore` benchmark until APPO can beat `wall_avoidance`
-   consistently and start approaching `task_greedy`.
+1. use BC as the real initialization path,
+2. enlarge and clean the multi-turn trace corpus,
+3. tighten the action space,
+4. improve policy inputs,
+5. then rerun the `explore` benchmark until APPO can beat BC and start
+   approaching `task_greedy`.
