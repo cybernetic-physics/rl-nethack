@@ -23,7 +23,12 @@ from nle_agent.agent_http import _build_action_map
 from src.data_generator import wall_avoidance_policy
 from src.memory_tracker import MemoryTracker
 from src.state_encoder import StateEncoder
-from src.task_rewards import compute_task_rewards, observation_hash, snapshot_memory
+from src.task_rewards import (
+    compute_task_rewards,
+    encode_task_reward_features,
+    observation_hash,
+    snapshot_memory,
+)
 
 
 SAFE_ACTIONS = ("north", "south", "east", "west", "wait", "search", "pickup", "up", "down")
@@ -140,6 +145,22 @@ def _counterfactual_score_action(
                 "truncated": bool(truncated),
                 "position": list(state_after["position"]),
                 "obs_hash": next_hash,
+                "reward_features": encode_task_reward_features(
+                    task=task,
+                    obs_before=obs_before,
+                    obs_after=obs_after,
+                    state_before=state_before,
+                    state_after=state_after,
+                    memory_before=mem_before,
+                    memory_after=mem_after,
+                    action_name=action_name,
+                    reward=reward,
+                    terminated=terminated,
+                    truncated=truncated,
+                    repeated_state=repeated_state,
+                    revisited_recent_tile=revisited_recent_tile,
+                    repeated_action=repeated_action,
+                ),
             }
             with open(out_path, "w") as f:
                 json.dump(payload, f)

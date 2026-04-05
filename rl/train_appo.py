@@ -23,7 +23,10 @@ def parse_args(argv=None):
     parser.add_argument("--train-for-env-steps", type=int, default=50_000_000)
     parser.add_argument("--scheduler", type=str, default="rule_based")
     parser.add_argument("--reward-source", type=str, default="hand_shaped")
+    parser.add_argument("--learned-reward-path", type=str, default=None)
+    parser.add_argument("--scheduler-model-path", type=str, default=None)
     parser.add_argument("--enabled-skills", type=str, default="explore,survive,combat,descend,resource")
+    parser.add_argument("--disable-action-mask", action="store_true")
     parser.add_argument("--write-plan", type=str, default=None)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
@@ -44,8 +47,11 @@ def build_config(args) -> RLConfig:
     config.appo.ppo_epochs = args.ppo_epochs
     config.appo.train_for_env_steps = args.train_for_env_steps
     config.options.scheduler = args.scheduler
+    config.options.scheduler_model_path = args.scheduler_model_path
     config.reward.source = args.reward_source
+    config.reward.learned_reward_path = args.learned_reward_path
     config.options.enabled_skills = [s.strip() for s in args.enabled_skills.split(",") if s.strip()]
+    config.env.enforce_action_mask = not args.disable_action_mask
     return config
 
 

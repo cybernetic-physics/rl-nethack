@@ -8,6 +8,9 @@ Subcommands:
   evaluate    -- Evaluate model prediction accuracy
   task-evaluate -- Evaluate task-directed control policies
   rl-train-appo -- Run the modular APPO + options scaffold
+  rl-evaluate-appo -- Evaluate a trained APPO checkpoint
+  rl-train-reward -- Train a learned reward model from task-harness preferences
+  rl-train-scheduler -- Train a learned scheduler from rule-based labels
   golden-generate -- Build a tiny golden debug episode
   golden-evaluate -- Evaluate a model against a saved golden episode
   manifest    -- Build and save a training manifest
@@ -312,13 +315,68 @@ def cmd_rl_train_appo(args):
         "--scheduler", args.scheduler,
         "--reward-source", args.reward_source,
         "--enabled-skills", args.enabled_skills,
+        "--disable-action-mask" if args.disable_action_mask else "",
     ]
     argv = [arg for arg in argv if arg != ""]
+    if args.learned_reward_path:
+        argv.extend(["--learned-reward-path", args.learned_reward_path])
+    if args.scheduler_model_path:
+        argv.extend(["--scheduler-model-path", args.scheduler_model_path])
     if args.write_plan:
         argv.extend(["--write-plan", args.write_plan])
     if args.dry_run:
         argv.append("--dry-run")
     return train_appo_main(argv)
+
+
+def cmd_rl_evaluate_appo(args):
+    from rl.evaluate import evaluate_appo_policy
+
+    seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
+    result = evaluate_appo_policy(
+        experiment=args.experiment,
+        train_dir=args.train_dir,
+        seeds=seeds,
+        max_steps=args.max_steps,
+        deterministic=not args.stochastic,
+        mask_actions=not args.disable_eval_mask,
+        compare_baseline=args.compare_baseline,
+    )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_rl_train_reward(args):
+    from rl.train_reward_model import main as train_reward_main
+
+    argv = [
+        "--task", args.task,
+        "--seeds", args.seeds,
+        "--max-steps", str(args.max_steps),
+        "--output", args.output,
+        "--epochs", str(args.epochs),
+        "--lr", str(args.lr),
+    ]
+    if args.dataset_output:
+        argv.extend(["--dataset-output", args.dataset_output])
+    if args.input:
+        argv.extend(["--input", args.input])
+    return train_reward_main(argv)
+
+
+def cmd_rl_train_scheduler(args):
+    from rl.train_scheduler import main as train_scheduler_main
+
+    argv = [
+        "--seeds", args.seeds,
+        "--max-steps", str(args.max_steps),
+        "--output", args.output,
+        "--epochs", str(args.epochs),
+        "--lr", str(args.lr),
+    ]
+    if args.dataset_output:
+        argv.extend(["--dataset-output", args.dataset_output])
+    return train_scheduler_main(argv)
 
 
 def cmd_smoke_test(args):
@@ -504,12 +562,53 @@ def main():
                       help='Skill scheduler')
     p_rl.add_argument('--reward-source', type=str, default='hand_shaped',
                       help='Reward source')
+    p_rl.add_argument('--learned-reward-path', type=str, default=None,
+                      help='Path to learned reward model when using --reward-source learned')
+    p_rl.add_argument('--scheduler-model-path', type=str, default=None,
+                      help='Path to learned scheduler model when using --scheduler learned')
     p_rl.add_argument('--enabled-skills', type=str, default='explore,survive,combat,descend,resource',
                       help='Comma-separated skill list')
+    p_rl.add_argument('--disable-action-mask', action='store_true',
+                      help='Disable env-side invalid action clamping')
     p_rl.add_argument('--write-plan', type=str, default=None,
                       help='Optional JSON output path for the resolved training plan')
     p_rl.add_argument('--dry-run', action='store_true',
                       help='Print scaffold plan without launching training')
+
+    p_rl_eval = subparsers.add_parser('rl-evaluate-appo', help='Evaluate a trained APPO checkpoint')
+    p_rl_eval.add_argument('--experiment', type=str, required=True,
+                           help='Experiment name under train_dir/rl')
+    p_rl_eval.add_argument('--train-dir', type=str, default='train_dir/rl',
+                           help='RL train directory')
+    p_rl_eval.add_argument('--seeds', type=str, default='42,43,44',
+                           help='Comma-separated seed list')
+    p_rl_eval.add_argument('--max-steps', type=int, default=50,
+                           help='Max steps per episode')
+    p_rl_eval.add_argument('--stochastic', action='store_true',
+                           help='Use sampled actions instead of argmax')
+    p_rl_eval.add_argument('--disable-eval-mask', action='store_true',
+                           help='Disable action masking during checkpoint evaluation')
+    p_rl_eval.add_argument('--compare-baseline', action='store_true',
+                           help='Also evaluate task_greedy if the checkpoint is single-skill')
+
+    p_rl_rew = subparsers.add_parser('rl-train-reward', help='Train a learned reward model')
+    p_rl_rew.add_argument('--task', type=str, default='explore',
+                          choices=['explore', 'survive', 'combat', 'descend', 'resource'])
+    p_rl_rew.add_argument('--seeds', type=str, default='42,43,44,45,46,47')
+    p_rl_rew.add_argument('--max-steps', type=int, default=30)
+    p_rl_rew.add_argument('--dataset-output', type=str, default=None)
+    p_rl_rew.add_argument('--input', type=str, default=None)
+    p_rl_rew.add_argument('--output', type=str, required=True)
+    p_rl_rew.add_argument('--epochs', type=int, default=20)
+    p_rl_rew.add_argument('--lr', type=float, default=1e-3)
+
+    p_rl_sched = subparsers.add_parser('rl-train-scheduler', help='Train a learned scheduler')
+    p_rl_sched.add_argument('--seeds', type=str, default='42,43,44,45,46,47')
+    p_rl_sched.add_argument('--max-steps', type=int, default=30)
+    p_rl_sched.add_argument('--dataset-output', type=str, default=None)
+    p_rl_sched.add_argument('--output', type=str, required=True)
+    p_rl_sched.add_argument('--epochs', type=int, default=20)
+    p_rl_sched.add_argument('--lr', type=float, default=1e-3)
 
     # --- manifest ---
     p_man = subparsers.add_parser('manifest', help='Build and save a training manifest')
@@ -566,6 +665,12 @@ def main():
             return cmd_task_evaluate(args)
         elif args.command == 'rl-train-appo':
             return cmd_rl_train_appo(args)
+        elif args.command == 'rl-evaluate-appo':
+            return cmd_rl_evaluate_appo(args)
+        elif args.command == 'rl-train-reward':
+            return cmd_rl_train_reward(args)
+        elif args.command == 'rl-train-scheduler':
+            return cmd_rl_train_scheduler(args)
         elif args.command == 'manifest':
             return cmd_manifest(args)
         elif args.command == 'golden-generate':

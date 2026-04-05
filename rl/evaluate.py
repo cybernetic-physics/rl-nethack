@@ -1,0 +1,135 @@
+from __future__ import annotations
+
+from collections import Counter
+
+import torch
+from gymnasium import spaces
+from sample_factory.algo.learning.learner import Learner
+from sample_factory.algo.utils.rl_utils import prepare_and_normalize_obs
+from sample_factory.cfg.arguments import load_from_checkpoint, parse_full_cfg, parse_sf_args
+from sample_factory.model.actor_critic import create_actor_critic
+from sample_factory.model.model_utils import get_rnn_size
+
+from rl.config import RLConfig
+from rl.feature_encoder import ACTION_SET
+from rl.sf_env import NethackSkillEnv
+from src.task_harness import evaluate_task_policy
+
+
+def _load_actor_critic(experiment: str, train_dir: str, device: str):
+    argv = ["--algo=APPO", "--env=rl_nethack_skill", f"--experiment={experiment}", f"--train_dir={train_dir}", f"--device={device}"]
+    parser, _ = parse_sf_args(argv)
+    parser.add_argument("--env_max_episode_steps", type=int, default=200)
+    parser.add_argument("--reward_source", type=str, default="hand_shaped")
+    parser.add_argument("--intrinsic_reward_weight", type=float, default=1.0)
+    parser.add_argument("--extrinsic_reward_weight", type=float, default=0.0)
+    parser.add_argument("--skill_scheduler", type=str, default="rule_based")
+    parser.add_argument("--scheduler_model_path", type=str, default=None)
+    parser.add_argument("--enabled_skills", type=str, default="explore")
+    parser.add_argument("--active_skill_bootstrap", type=str, default="explore")
+    parser.add_argument("--learned_reward_path", type=str, default=None)
+    parser.add_argument("--enforce_action_mask", type=str, default="True")
+    parser.add_argument("--invalid_action_penalty", type=float, default=2.0)
+    parser.add_argument("--invalid_action_fallback", type=str, default="wait")
+    cfg = parse_full_cfg(parser, argv)
+    cfg = load_from_checkpoint(cfg)
+    torch_device = torch.device(device)
+
+    env_cfg = RLConfig()
+    env_cfg.env.max_episode_steps = cfg.env_max_episode_steps
+    env_cfg.options.enabled_skills = [s.strip() for s in str(cfg.enabled_skills).split(",") if s.strip()]
+    env_cfg.options.scheduler = cfg.skill_scheduler
+    env_cfg.options.scheduler_model_path = getattr(cfg, "scheduler_model_path", None)
+    env_cfg.env.active_skill_bootstrap = cfg.active_skill_bootstrap
+    env_cfg.reward.source = cfg.reward_source
+    env_cfg.reward.learned_reward_path = getattr(cfg, "learned_reward_path", None)
+    env_cfg.reward.extrinsic_weight = cfg.extrinsic_reward_weight
+    env_cfg.reward.intrinsic_weight = cfg.intrinsic_reward_weight
+    env_cfg.reward.invalid_action_penalty = cfg.invalid_action_penalty
+    env_cfg.env.enforce_action_mask = str(cfg.enforce_action_mask).lower() == "true"
+    env_cfg.env.invalid_action_fallback = cfg.invalid_action_fallback
+    env = NethackSkillEnv(env_cfg)
+
+    actor_critic = create_actor_critic(cfg, spaces.Dict({"obs": env.observation_space}), env.action_space)
+    actor_critic.eval()
+    actor_critic.model_to_device(torch_device)
+    checkpoints = Learner.get_checkpoints(Learner.checkpoint_dir(cfg, 0), "checkpoint_*")
+    checkpoint_dict = Learner.load_checkpoint(checkpoints, torch_device)
+    actor_critic.load_state_dict(checkpoint_dict["model"])
+    return cfg, env, actor_critic, torch_device
+
+
+def evaluate_appo_policy(
+    experiment: str,
+    train_dir: str,
+    seeds: list[int],
+    max_steps: int,
+    deterministic: bool = True,
+    mask_actions: bool = True,
+    compare_baseline: bool = False,
+):
+    cfg, env, actor_critic, device = _load_actor_critic(experiment, train_dir, device="cpu")
+    env.config.env.max_episode_steps = max_steps
+    rows = []
+
+    for seed in seeds:
+        obs, info = env.reset(seed=seed)
+        rnn_states = torch.zeros([1, get_rnn_size(cfg)], dtype=torch.float32, device=device)
+        total_reward = 0.0
+        action_counts = Counter()
+        invalid_requested = 0
+        repeated_actions = 0
+        prev_action = None
+
+        for step in range(max_steps):
+            obs_dict = {"obs": torch.from_numpy(obs).unsqueeze(0).to(device)}
+            normalized_obs = prepare_and_normalize_obs(actor_critic, obs_dict)
+            policy_outputs = actor_critic(normalized_obs, rnn_states)
+            raw_logits = actor_critic.action_distribution().raw_logits.clone()
+            if mask_actions:
+                allowed = set(info.get("allowed_actions", []))
+                for idx, name in enumerate(ACTION_SET):
+                    if name not in allowed:
+                        raw_logits[0, idx] = -1e9
+            action = int(torch.argmax(raw_logits, dim=1).item()) if deterministic else int(policy_outputs["actions"].squeeze().item())
+            rnn_states = policy_outputs["new_rnn_states"]
+            action_name = ACTION_SET[action]
+            obs, rew, terminated, truncated, info = env.step(action)
+            debug = info.get("debug", {})
+            invalid_requested += int(debug.get("invalid_action_requested", False))
+            repeated_actions += int(prev_action == debug.get("action_name"))
+            prev_action = debug.get("action_name")
+            action_counts[debug.get("action_name", action_name)] += 1
+            total_reward += float(rew)
+            if terminated or truncated:
+                break
+
+        rows.append(
+            {
+                "seed": seed,
+                "total_task_reward": round(total_reward, 4),
+                "unique_tiles": int(env.adapter.memory.total_explored),
+                "rooms_discovered": len(env.adapter.memory.rooms),
+                "steps": step + 1,
+                "repeated_action_steps": repeated_actions,
+                "invalid_action_requests": invalid_requested,
+                "action_counts": dict(action_counts),
+            }
+        )
+
+    env.close()
+    total_steps = sum(row["steps"] for row in rows) or 1
+    summary = {
+        "episodes": len(rows),
+        "avg_task_reward": round(sum(row["total_task_reward"] for row in rows) / len(rows), 4),
+        "avg_unique_tiles": round(sum(row["unique_tiles"] for row in rows) / len(rows), 2),
+        "avg_rooms_discovered": round(sum(row["rooms_discovered"] for row in rows) / len(rows), 2),
+        "repeated_action_rate": round(sum(row["repeated_action_steps"] for row in rows) / total_steps, 4),
+        "invalid_action_rate": round(sum(row["invalid_action_requests"] for row in rows) / total_steps, 4),
+        "action_counts": dict(sum((Counter(row["action_counts"]) for row in rows), Counter())),
+    }
+    result = {"experiment": experiment, "summary": summary, "episodes": rows}
+    if compare_baseline and len(env.config.options.enabled_skills) == 1:
+        task = env.config.options.enabled_skills[0]
+        result["baseline"] = evaluate_task_policy(task=task, seeds=seeds, max_steps=max_steps, policy="task_greedy")
+    return result

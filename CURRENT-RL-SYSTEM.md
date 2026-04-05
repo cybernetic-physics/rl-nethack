@@ -5,23 +5,27 @@ exists today.
 
 The short version:
 
-- this repo does **not** currently have a learned PPO / GRPO / APPO-style RL
-  training loop,
-- it **does** have:
+- this repo now has a **real APPO backend** for low-level RL training,
+- it also has:
   - supervised fine-tuning for a forward model,
   - gameplay rollout code for collecting training data,
   - a task-directed closed-loop control and evaluation harness,
-  - a counterfactual rollout generator for "what if I took action X?" data.
+  - a counterfactual rollout generator for "what if I took action X?" data,
+  - a custom NetHack skill environment wired into Sample Factory APPO.
 
 If you came in expecting a standard RL codebase with rollout workers,
-advantages, value heads, clipped objectives, and policy updates: that is **not**
- what is implemented here yet.
+advantages, value heads, clipped objectives, and policy updates: that now
+**does exist in early form**, but only for the new APPO path. The rest of the
+repo still contains older non-RL and pre-RL systems.
 
 
 ## 1. What Is Actually Trained Today
 
-The only actual model training path in the repo right now is in
-[train.py](/home/luc/rl-nethack/train.py).
+There are now **two distinct training paths** in the repo.
+
+### Path A: forward-model supervised training
+
+This is in [train.py](/home/luc/rl-nethack/train.py).
 
 That script uses:
 
@@ -51,6 +55,33 @@ The trainer is configured in [train.py](/home/luc/rl-nethack/train.py):
 There is no RL loss here. No returns, no GAE, no policy ratio, no clipped
 objective, no reward model training, no rollout buffer.
 
+### Path B: APPO low-level RL training
+
+This is in:
+
+- [rl/trainer.py](/home/luc/rl-nethack/rl/trainer.py)
+- [rl/train_appo.py](/home/luc/rl-nethack/rl/train_appo.py)
+- [rl/sf_env.py](/home/luc/rl-nethack/rl/sf_env.py)
+
+This path uses:
+
+- Sample Factory
+- APPO
+- a custom Gymnasium env wrapping NLE
+- hand-shaped task rewards projected into a skill-conditioned RL env
+
+The APPO path does have:
+
+- rollout workers
+- rollout length
+- recurrence
+- actor-critic training
+- value loss
+- GAE
+- PPO-style clipping
+
+So the repo now has **real learned RL**, but only in this new RL subtree.
+
 
 ## 2. What "Rollout" Means In This Repo
 
@@ -65,7 +96,7 @@ In this repo today, a "rollout" usually means:
 - write training/eval examples,
 - or score task behavior.
 
-There are three main rollout systems.
+There are now four main rollout/training systems.
 
 
 ## 3. System A: LLM / Policy Data Generation
@@ -305,7 +336,89 @@ This controller does not do:
 It only does **one-step counterfactual selection**.
 
 
-## 6. Task Rewards: What The Harness Optimizes
+## 6. System D: Sample Factory APPO Backend
+
+This is in:
+
+- [rl/train_appo.py](/home/luc/rl-nethack/rl/train_appo.py)
+- [rl/trainer.py](/home/luc/rl-nethack/rl/trainer.py)
+- [rl/sf_env.py](/home/luc/rl-nethack/rl/sf_env.py)
+- [rl/env_adapter.py](/home/luc/rl-nethack/rl/env_adapter.py)
+- [rl/feature_encoder.py](/home/luc/rl-nethack/rl/feature_encoder.py)
+
+### What it does
+
+It trains a low-level policy with APPO against a custom NetHack skill env.
+
+The APPO env currently:
+
+- wraps NLE
+- tracks memory via `MemoryTracker`
+- tracks an active skill
+- computes a compact vector observation
+- uses the repo’s hand-shaped task rewards as the main training signal
+
+### Are these multi-turn rollouts?
+
+Yes.
+
+This is the first true RL rollout system in the repo.
+
+Rollouts are controlled by Sample Factory parameters such as:
+
+- `num_workers`
+- `num_envs_per_worker`
+- `rollout`
+- `recurrence`
+
+These are now real RL rollout knobs, not just data-generation concurrency.
+
+### What is learned?
+
+Sample Factory builds and trains an actor-critic model.
+
+In the current smoke-tested setup it used:
+
+- observation space:
+  - `Dict('obs': Box(-10.0, 10.0, (106,), float32))`
+- action space:
+  - `Discrete(13)`
+- model:
+  - MLP encoder
+  - GRU core
+  - linear policy head
+  - linear value head
+
+### What is the policy optimizing?
+
+Right now:
+
+- intrinsic/task reward from the repo’s hand-shaped task reward functions
+- optionally mixed with env reward through:
+  - `intrinsic_reward_weight`
+  - `extrinsic_reward_weight`
+
+So the APPO path is learned RL, but the reward source is still the old
+hand-shaped task logic, not a learned reward model.
+
+### What is "group size" here?
+
+Still no GRPO-style group size.
+
+The important RL knobs are now:
+
+- `num_workers`
+- `num_envs_per_worker`
+- `rollout`
+- `recurrence`
+- `batch_size`
+- `num_batches_per_epoch`
+- `num_epochs`
+
+Those are the real APPO dataflow parameters.
+
+
+## 7. Task Rewards: What The Harness And APPO Env Optimize
 
 Task rewards are defined in
 [src/task_rewards.py](/home/luc/rl-nethack/src/task_rewards.py).
@@ -331,10 +444,11 @@ Examples:
 This is important:
 
 - the harness is already task-conditioned,
-- but the reward is currently **hand-shaped**, not learned from feedback.
+- the APPO env also currently consumes these rewards,
+- but the reward is still **hand-shaped**, not learned from feedback.
 
 
-## 7. Evaluation: What We Measure Today
+## 8. Evaluation: What We Measure Today
 
 There are currently two very different evaluation paths.
 
@@ -375,8 +489,23 @@ This measures trajectory behavior:
 
 This is the current behavior-level evaluation layer.
 
+### APPO smoke validation
 
-## 8. What "Batch Size" Means In This Repo
+The new APPO backend has been smoke-tested through a real run launched from
+`cli.py rl-train-appo`.
+
+That run successfully:
+
+- registered the custom env,
+- initialized the actor-critic,
+- collected experience,
+- trained,
+- and wrote checkpoints/config under `train_dir/rl/...`
+
+This is backend validation, not yet a meaningful benchmark of policy quality.
+
+
+## 9. What "Batch Size" Means In This Repo
 
 There are several unrelated batch-like knobs.
 
@@ -414,21 +543,37 @@ In the `vllm-batch` backend:
 
 This is inference throughput tuning, not RL grouping.
 
+### APPO learner batch size
 
-## 9. What Is Missing If You Expect "Real RL"
+In [rl/train_appo.py](/home/luc/rl-nethack/rl/train_appo.py) and
+[rl/trainer.py](/home/luc/rl-nethack/rl/trainer.py):
 
-The repo currently does **not** have:
+- `--batch-size`
+  - APPO minibatch size
+- `--num-batches-per-epoch`
+  - how many minibatches are collected before each training iteration
+- `--ppo-epochs`
+  - how many passes over that dataset
 
-- PPO
+This is now a real RL batch concept in the repo.
+
+
+## 10. What Is Missing If You Expect A Mature RL Stack
+
+The repo now **does** have APPO.
+
+But it still does **not yet** have:
+
 - GRPO
-- APPO
-- actor-critic training
 - replay buffer / rollout buffer
-- advantage estimation
-- value function training
 - reward model training
-- option / skill policy training
+- learned option / skill policy conditioning in the model itself
 - learned high-level policy over skills
+- learned reward models from preferences
+- robust action masking inside the APPO policy
+- a richer observation encoder than the current compact 106-dim vector
+- serious multi-GPU / high-throughput APPO configs for this box
+- real benchmark results against `task_greedy`
 
 What it does have is:
 
@@ -436,16 +581,18 @@ What it does have is:
 - one-step counterfactual branching
 - hand-shaped task reward functions
 - trajectory evaluation
+- a real APPO actor-critic training path
 
 So the current stack is best described as:
 
 1. collect trajectories,
 2. train a forward model with SFT,
-3. evaluate closed-loop task behavior with a hand-shaped controller,
-4. prepare for future RL / planning work.
+3. train a low-level APPO policy on hand-shaped task reward,
+4. evaluate closed-loop task behavior with both a hand-shaped controller and a learned RL backend,
+5. prepare for hierarchical / reward-model / scheduler work.
 
 
-## 10. Practical Answers To Your Specific Questions
+## 11. Practical Answers To Your Specific Questions
 
 ### "How many rollouts are there?"
 
@@ -459,12 +606,15 @@ Depends on which subsystem you mean.
 - `generate_counterfactual_data.py`
   - one outer rollout per game
   - plus up to 9 one-step branches per interesting state
+- `rl-train-appo`
+  - `num_workers * num_envs_per_worker` live RL rollouts in parallel
 
 ### "Are these multi-turn rollouts?"
 
 - forward-data generation games: **yes**
 - task-harness episodes: **yes**
 - counterfactual branches: **no**, one-step only
+- APPO env rollouts: **yes**
 - SFT training itself: **not rollouts at all**
 
 ### "What is the group size?"
@@ -479,25 +629,37 @@ Closest answers:
   - up to **9 actions**
 - rollout concurrency for data generation:
   - `--workers`
+- APPO parallel rollouts:
+  - `num_workers * num_envs_per_worker`
 - SFT global batch:
   - `batch_size * grad_accum * world_size`
+- APPO learner batch:
+  - `batch_size`, `num_batches_per_epoch`, `num_epochs`
 
 ### "Is there any learned policy right now?"
 
-Not in the main path.
+Yes.
 
-The main trained model is a **forward prediction LM**.
-The current task controller is **algorithmic**, not learned.
+There are now two learned model families:
+
+- the forward prediction LM from [train.py](/home/luc/rl-nethack/train.py)
+- the APPO low-level policy/value model from the new `rl/` stack
+
+The current task controller in [src/task_harness.py](/home/luc/rl-nethack/src/task_harness.py)
+is still algorithmic.
 
 
-## 11. Recommended Mental Model For This Repo
+## 12. Recommended Mental Model For This Repo
 
 If you want the correct mental model, think of the repo as:
 
 - **today**
-  - forward-model training project with control/eval scaffolding
+  - hybrid project with:
+    - forward-model SFT,
+    - a hand-shaped control harness,
+    - and a first real APPO RL backend
 - **not yet**
-  - full RL agent training system
+  - full hierarchical skill RL system with learned rewards and scheduler
 
 The most important files for understanding that are:
 
@@ -507,17 +669,21 @@ The most important files for understanding that are:
 - [src/task_harness.py](/home/luc/rl-nethack/src/task_harness.py)
 - [src/task_rewards.py](/home/luc/rl-nethack/src/task_rewards.py)
 - [src/evaluator.py](/home/luc/rl-nethack/src/evaluator.py)
+- [rl/train_appo.py](/home/luc/rl-nethack/rl/train_appo.py)
+- [rl/trainer.py](/home/luc/rl-nethack/rl/trainer.py)
+- [rl/sf_env.py](/home/luc/rl-nethack/rl/sf_env.py)
 
 
-## 12. If We Wanted To Make This A Real RL System Next
+## 13. If We Wanted To Mature This RL System Next
 
 The current code naturally points to this progression:
 
 1. keep the current task rewards and task evaluation,
-2. use counterfactual rollouts to label better/worse action outcomes,
-3. train a reward or value model per task,
-4. replace one-step brute-force action selection with a learned scorer,
-5. then add real policy optimization if needed.
+2. benchmark APPO against `task_greedy`,
+3. improve observations / model architecture,
+4. use counterfactual rollouts to label better/worse action outcomes,
+5. train a reward or value model per task,
+6. move from flat task-conditioned APPO toward full options / scheduler hierarchy
 
 That would be the first point where terms like:
 
@@ -529,4 +695,3 @@ That would be the first point where terms like:
 - group size
 
 become central in the usual RL sense.
-

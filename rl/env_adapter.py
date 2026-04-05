@@ -34,7 +34,7 @@ class SkillEnvAdapter:
         self.encoder = StateEncoder()
         self.action_map = _build_action_map()
         self.registry = build_skill_registry()
-        self.scheduler = build_scheduler(config.options.scheduler)
+        self.scheduler = build_scheduler(config.options.scheduler, config.options.scheduler_model_path)
         self.env = nle.env.NLE()
         self.memory = MemoryTracker()
         self.obs = None

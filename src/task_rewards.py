@@ -14,6 +14,11 @@ from nle import nethack
 
 
 DEFAULT_ACTIONS = ("north", "south", "east", "west", "wait", "search")
+REWARD_ACTIONS = (
+    "north", "south", "east", "west", "wait", "search",
+    "pickup", "up", "down", "kick", "eat", "drink", "drop",
+)
+REWARD_TASKS = ("explore", "survive", "combat", "descend", "resource")
 THREAT_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
 USEFUL_ITEM_TILES = {
     "gold", "scroll", "potion", "wand", "ring", "gem", "amulet",
@@ -189,6 +194,62 @@ def compute_task_rewards(
 
     total = float(sum(components.values()))
     return TaskRewardResult(total=total, components=components)
+
+
+def encode_task_reward_features(
+    task: str,
+    obs_before: dict,
+    obs_after: dict,
+    state_before: dict,
+    state_after: dict,
+    memory_before,
+    memory_after,
+    action_name: str,
+    reward: float,
+    terminated: bool,
+    truncated: bool,
+    repeated_state: bool = False,
+    revisited_recent_tile: bool = False,
+    repeated_action: bool = False,
+) -> list[float]:
+    del truncated
+
+    hp_before = int(obs_before["blstats"][nethack.NLE_BL_HP])
+    hp_after = int(obs_after["blstats"][nethack.NLE_BL_HP])
+    depth_before = int(obs_before["blstats"][nethack.NLE_BL_DEPTH])
+    depth_after = int(obs_after["blstats"][nethack.NLE_BL_DEPTH])
+    gold_before = int(obs_before["blstats"][nethack.NLE_BL_GOLD])
+    gold_after = int(obs_after["blstats"][nethack.NLE_BL_GOLD])
+    score_before = int(obs_before["blstats"][nethack.NLE_BL_SCORE])
+    score_after = int(obs_after["blstats"][nethack.NLE_BL_SCORE])
+    xp_before = int(obs_before["blstats"][nethack.NLE_BL_XP])
+    xp_after = int(obs_after["blstats"][nethack.NLE_BL_XP])
+
+    task_one_hot = [1.0 if task == name else 0.0 for name in REWARD_TASKS]
+    action_one_hot = [1.0 if action_name == name else 0.0 for name in REWARD_ACTIONS]
+
+    features = [
+        float(hp_before) / max(1.0, float(state_before.get("hp_max", 1))),
+        float(hp_after) / max(1.0, float(state_after.get("hp_max", 1))),
+        float(hp_after - hp_before) / 10.0,
+        float(depth_after - depth_before),
+        float(gold_after - gold_before) / 100.0,
+        float(score_after - score_before) / 100.0,
+        float(xp_after - xp_before) / 10.0,
+        float(memory_after.total_explored - memory_before.total_explored) / 50.0,
+        float(len(memory_after.rooms) - len(memory_before.rooms)),
+        float(_visible_stairs(obs_after) - _visible_stairs(obs_before)),
+        float(_visible_useful_items(state_after) - _visible_useful_items(state_before)),
+        float(_adjacent_hostile_count(obs_before, state_before)) / 8.0,
+        float(_adjacent_hostile_count(obs_after, state_after)) / 8.0,
+        float(reward) / 10.0,
+        1.0 if terminated else 0.0,
+        1.0 if repeated_state else 0.0,
+        1.0 if revisited_recent_tile else 0.0,
+        1.0 if repeated_action else 0.0,
+        1.0 if state_after.get("standing_on_down_stairs") else 0.0,
+    ]
+    return [float(x) for x in (features + task_one_hot + action_one_hot)]
 
 
 def low_value_inventory_context(state: dict) -> bool:

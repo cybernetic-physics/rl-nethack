@@ -38,7 +38,9 @@ class APPOTrainerScaffold:
             "train_for_env_steps": self.config.appo.train_for_env_steps,
             "enabled_skills": list(self.config.options.enabled_skills),
             "scheduler": self.config.options.scheduler,
+            "scheduler_model_path": self.config.options.scheduler_model_path,
             "reward_source": self.config.reward.source,
+            "learned_reward_path": self.config.reward.learned_reward_path,
             "model": asdict(self.model_spec),
             "dependency_status": self.dependency_status(),
         }
@@ -85,6 +87,14 @@ class APPOTrainerScaffold:
             f"--reward_source={cfg.reward.source}",
             f"--intrinsic_reward_weight={cfg.reward.intrinsic_weight}",
             f"--extrinsic_reward_weight={cfg.reward.extrinsic_weight}",
+            f"--skill_scheduler={cfg.options.scheduler}",
+            f"--scheduler_model_path={cfg.options.scheduler_model_path or ''}",
+            f"--enabled_skills={','.join(cfg.options.enabled_skills)}",
+            f"--active_skill_bootstrap={cfg.env.active_skill_bootstrap}",
+            f"--learned_reward_path={cfg.reward.learned_reward_path or ''}",
+            f"--enforce_action_mask={str(cfg.env.enforce_action_mask)}",
+            f"--invalid_action_penalty={cfg.reward.invalid_action_penalty}",
+            f"--invalid_action_fallback={cfg.env.invalid_action_fallback}",
         ]
 
     def launch(self, dry_run: bool = True) -> dict:
@@ -111,6 +121,14 @@ class APPOTrainerScaffold:
         parser.add_argument("--reward_source", type=str, default=self.config.reward.source)
         parser.add_argument("--intrinsic_reward_weight", type=float, default=self.config.reward.intrinsic_weight)
         parser.add_argument("--extrinsic_reward_weight", type=float, default=self.config.reward.extrinsic_weight)
+        parser.add_argument("--skill_scheduler", type=str, default=self.config.options.scheduler)
+        parser.add_argument("--scheduler_model_path", type=str, default=self.config.options.scheduler_model_path)
+        parser.add_argument("--enabled_skills", type=str, default=",".join(self.config.options.enabled_skills))
+        parser.add_argument("--active_skill_bootstrap", type=str, default=self.config.env.active_skill_bootstrap)
+        parser.add_argument("--learned_reward_path", type=str, default=self.config.reward.learned_reward_path)
+        parser.add_argument("--enforce_action_mask", type=str, default=str(self.config.env.enforce_action_mask))
+        parser.add_argument("--invalid_action_penalty", type=float, default=self.config.reward.invalid_action_penalty)
+        parser.add_argument("--invalid_action_fallback", type=str, default=self.config.env.invalid_action_fallback)
         sf_cfg = parse_full_cfg(parser, argv)
         status = run_rl(sf_cfg)
         return {

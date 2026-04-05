@@ -5,6 +5,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from rl.config import RLConfig
 from rl.feature_encoder import observation_dim
+from rl.reward_model import reward_feature_dim
+from rl.scheduler_model import scheduler_feature_dim
 from rl.sf_env import NethackSkillEnv
 from rl.options import build_skill_registry
 from rl.scheduler import SchedulerContext, build_scheduler
@@ -53,4 +55,24 @@ def test_skill_env_reset_and_step():
     assert isinstance(terminated, bool)
     assert isinstance(truncated, bool)
     assert "debug" in info
+    env.close()
+
+
+def test_feature_dims_are_stable():
+    assert observation_dim() == 106
+    assert reward_feature_dim() == 37
+    assert scheduler_feature_dim() > 0
+
+
+def test_skill_env_masks_invalid_action_requests():
+    config = RLConfig()
+    config.options.enabled_skills = ["explore"]
+    env = NethackSkillEnv(config)
+    obs, info = env.reset(seed=42)
+    assert "drink" not in info["allowed_actions"]
+    drink_idx = 11
+    obs, reward, terminated, truncated, info = env.step(drink_idx)
+    assert info["debug"]["invalid_action_requested"] is True
+    assert info["debug"]["requested_action_name"] == "drink"
+    assert info["debug"]["action_name"] != "drink"
     env.close()

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from rl.options import SkillOption
+from rl.scheduler_model import encode_scheduler_features, load_scheduler_model
 
 
 @dataclass
@@ -37,8 +38,26 @@ class RuleBasedScheduler(SkillScheduler):
         return ctx.available_skills[0]
 
 
-def build_scheduler(name: str) -> SkillScheduler:
+class LearnedScheduler(SkillScheduler):
+    def __init__(self, model_path: str):
+        self.model = load_scheduler_model(model_path)
+
+    def select_skill(self, ctx: SchedulerContext) -> str:
+        features = encode_scheduler_features(
+            state=ctx.state,
+            memory=ctx.memory,
+            active_skill=ctx.active_skill,
+            steps_in_skill=ctx.steps_in_skill,
+            available_skills=ctx.available_skills,
+        )
+        return self.model.select_skill(features, ctx.available_skills)
+
+
+def build_scheduler(name: str, model_path: str | None = None) -> SkillScheduler:
     if name == "rule_based":
         return RuleBasedScheduler()
+    if name == "learned":
+        if not model_path:
+            raise ValueError("learned scheduler requires a model path")
+        return LearnedScheduler(model_path)
     raise ValueError(f"Unknown scheduler: {name}")
-

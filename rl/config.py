@@ -10,6 +10,8 @@ class EnvConfig:
     max_episode_steps: int = 200
     use_memory_tracker: bool = True
     active_skill_bootstrap: str = "explore"
+    enforce_action_mask: bool = True
+    invalid_action_fallback: str = "wait"
 
 
 @dataclass
@@ -54,6 +56,7 @@ class RewardConfig:
     intrinsic_weight: float = 1.0
     repeated_state_penalty: float = 0.25
     repeated_action_penalty: float = 0.25
+    invalid_action_penalty: float = 2.0
 
 
 @dataclass
@@ -62,6 +65,7 @@ class OptionConfig:
         default_factory=lambda: ["explore", "survive", "combat", "descend", "resource"]
     )
     scheduler: str = "rule_based"
+    scheduler_model_path: str | None = None
     max_steps_per_skill: int = 32
     allow_forced_skill_switch: bool = True
 
