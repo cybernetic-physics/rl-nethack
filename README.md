@@ -207,6 +207,15 @@ uv run python cli.py manifest \
   --output output/manifest.json
 ```
 
+### Golden Debug Harness
+
+```bash
+uv run python cli.py golden-generate --seed 42 --max-steps 10 --output data/golden_episode.jsonl
+uv run python cli.py golden-evaluate --input data/golden_episode.jsonl --server-url http://127.0.0.1:8000
+```
+
+Use this before trusting larger runs. The goal is to catch prompt-format, parsing, and evaluator mismatches on a tiny saved episode.
+
 ### Run with Docker Compose on This Machine
 
 ```bash

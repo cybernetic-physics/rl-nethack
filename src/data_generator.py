@@ -37,6 +37,17 @@ def _get_action_map() -> Dict[str, int]:
     return _ACTION_MAP
 
 
+def build_messages(prompt_text: str, target_text: Optional[str] = None) -> list[dict]:
+    """Build the canonical message list used by training and evaluation."""
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": prompt_text},
+    ]
+    if target_text is not None:
+        messages.append({"role": "assistant", "content": target_text})
+    return messages
+
+
 # Directions that the wall_avoidance_policy can choose from
 _DIRECTIONS = ['north', 'south', 'east', 'west']
 
@@ -134,13 +145,7 @@ def generate_game(
         target_text = encoder.format_target(delta)
 
         # Build ShareGPT conversation
-        conversation = {
-            "conversations": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt_text},
-                {"role": "assistant", "content": target_text},
-            ]
-        }
+        conversation = {"conversations": build_messages(prompt_text, target_text)}
 
         yield json.dumps(conversation)
 

@@ -12,6 +12,7 @@ Provides:
 import json
 import random
 import re
+import hashlib
 import sys
 import urllib.request
 from typing import Dict, List, Optional
@@ -19,7 +20,7 @@ from typing import Dict, List, Optional
 import nle.env
 
 from src.state_encoder import StateEncoder
-from src.data_generator import wall_avoidance_policy
+from src.data_generator import build_messages, wall_avoidance_policy
 from nle_agent.agent_http import _build_action_map
 
 
@@ -261,11 +262,13 @@ def evaluate_model(
         }
 
     for item in test_data:
-        prompt = item['prompt']
+        messages = item.get('messages')
+        if messages is None:
+            prompt = item['prompt']
+            messages = build_messages(prompt)
+
         payload = json.dumps({
-            "messages": [
-                {"role": "user", "content": prompt},
-            ],
+            "messages": messages,
             "max_tokens": 128,
             "temperature": 0.2,
         }).encode()
@@ -333,6 +336,7 @@ def generate_test_data(
     Returns:
         List of dicts, each with:
             prompt (str): formatted state + action
+            messages (list[dict]): canonical message list for model calls
             target (str): formatted delta
             ground_truth_delta (dict): structured delta from encode_delta
             seed (int): the seed used
@@ -364,9 +368,11 @@ def generate_test_data(
 
             delta = encoder.encode_delta(obs, obs_after, action_name)
             target_text = encoder.format_target(delta)
+            messages = build_messages(prompt_text)
 
             test_data.append({
                 'prompt': prompt_text,
+                'messages': messages,
                 'target': target_text,
                 'ground_truth_delta': delta,
                 'seed': seed,
@@ -455,3 +461,9 @@ def run_evaluation(
         'model': eval_result['model'],
         'errors': eval_result['errors'],
     }
+
+
+def hash_messages(messages: list[dict]) -> str:
+    """Return a stable hash for a model input message list."""
+    payload = json.dumps(messages, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()

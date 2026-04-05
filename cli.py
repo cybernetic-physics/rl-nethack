@@ -6,6 +6,8 @@ Subcommands:
   generate    -- Generate training data from NLE gameplay
   report      -- Run a game and produce HTML + text reports
   evaluate    -- Evaluate model prediction accuracy
+  golden-generate -- Build a tiny golden debug episode
+  golden-evaluate -- Evaluate a model against a saved golden episode
   manifest    -- Build and save a training manifest
   smoke-test  -- Quick end-to-end validation (no GPU needed)
 """
@@ -178,6 +180,62 @@ def cmd_manifest(args):
     return 0
 
 
+def cmd_golden_generate(args):
+    """Build a tiny golden debug episode JSONL."""
+    from src.closed_loop_debug import build_golden_episode
+    from src.state_encoder import StateEncoder
+
+    encoder = StateEncoder()
+    result = build_golden_episode(
+        seed=args.seed,
+        max_steps=args.max_steps,
+        encoder=encoder,
+        output_path=args.output,
+    )
+    print("Golden episode saved.")
+    print(f"  Seed:      {result['seed']}")
+    print(f"  Examples:  {result['examples']}")
+    print(f"  Output:    {result['path']}")
+    return 0
+
+
+def cmd_golden_evaluate(args):
+    """Evaluate a model against a saved golden debug episode."""
+    from src.closed_loop_debug import evaluate_golden_episode
+
+    result = evaluate_golden_episode(
+        path=args.input,
+        server_url=args.server_url,
+        model_name_or_path=args.model_name,
+        max_samples=args.max_samples,
+    )
+
+    if not result["server_available"]:
+        print()
+        print(f"WARNING: Server not available at {args.server_url}")
+        return 0
+
+    acc = result["accuracy"]
+    print("Golden episode evaluation:")
+    print(f"  Examples evaluated: {acc['n']}")
+    print(f"  Exact match rate:   {acc['exact_match_rate']:.1%}")
+    print(f"  Position accuracy:  {acc['pos_accuracy']:.1%}")
+    print(f"  HP accuracy:        {acc['hp_accuracy']:.1%}")
+    print(f"  Gold accuracy:      {acc['gold_accuracy']:.1%}")
+    print(f"  Depth accuracy:     {acc['depth_accuracy']:.1%}")
+    print(f"  Survived accuracy:  {acc['survived_accuracy']:.1%}")
+
+    mismatches = [row for row in result["comparisons"] if not row["exact_match"]]
+    if mismatches:
+        first = mismatches[0]
+        print(f"  First mismatch step: {first['step']}")
+        print(f"  Action:              {first['action']}")
+        print(f"  Message hash:        {first['message_hash']}")
+    else:
+        print("  All steps matched.")
+    return 0
+
+
 def cmd_smoke_test(args):
     """Quick end-to-end test: generate 2 games, verify JSONL, build manifest, verify."""
     from src.state_encoder import StateEncoder
@@ -329,6 +387,26 @@ def main():
     p_man.add_argument('--output', type=str, required=True,
                        help='Output manifest JSON path')
 
+    # --- golden-generate ---
+    p_gold_gen = subparsers.add_parser('golden-generate', help='Build a tiny golden debug episode')
+    p_gold_gen.add_argument('--seed', type=int, default=42,
+                            help='Random seed for the episode (default: 42)')
+    p_gold_gen.add_argument('--max-steps', type=int, default=10,
+                            help='Maximum steps to record (default: 10)')
+    p_gold_gen.add_argument('--output', type=str, default='data/golden_episode.jsonl',
+                            help='Output JSONL path (default: data/golden_episode.jsonl)')
+
+    # --- golden-evaluate ---
+    p_gold_eval = subparsers.add_parser('golden-evaluate', help='Evaluate a model against a golden episode')
+    p_gold_eval.add_argument('--input', type=str, default='data/golden_episode.jsonl',
+                             help='Input golden episode JSONL path')
+    p_gold_eval.add_argument('--server-url', type=str, default='http://127.0.0.1:8765',
+                             help='Model server URL')
+    p_gold_eval.add_argument('--model-name', type=str, default='llama-server',
+                             help='Model name for logging only')
+    p_gold_eval.add_argument('--max-samples', type=int, default=None,
+                             help='Optional cap on golden examples to evaluate')
+
     # --- smoke-test ---
     subparsers.add_parser('smoke-test', help='Quick end-to-end validation')
 
@@ -347,6 +425,10 @@ def main():
             return cmd_evaluate(args)
         elif args.command == 'manifest':
             return cmd_manifest(args)
+        elif args.command == 'golden-generate':
+            return cmd_golden_generate(args)
+        elif args.command == 'golden-evaluate':
+            return cmd_golden_evaluate(args)
         elif args.command == 'smoke-test':
             return cmd_smoke_test(args)
         else:

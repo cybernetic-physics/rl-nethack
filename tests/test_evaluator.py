@@ -23,8 +23,10 @@ from src.evaluator import (
     compute_accuracy,
     evaluate_model,
     generate_test_data,
+    hash_messages,
     run_evaluation,
 )
+from src.data_generator import SYSTEM_PROMPT
 from src.state_encoder import StateEncoder
 
 
@@ -306,7 +308,7 @@ class TestEvaluateModel:
         # Server won't be running, but we can verify max_samples doesn't crash
         result = evaluate_model(
             model_name_or_path="test",
-            test_data=[{'prompt': 'p1', 'target': 't1'}, {'prompt': 'p2', 'target': 't2'}],
+            test_data=[{'prompt': 'p1', 'messages': [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": "p1"}], 'target': 't1'}, {'prompt': 'p2', 'messages': [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": "p2"}], 'target': 't2'}],
             server_url="http://127.0.0.1:19999",
             max_samples=1,
         )
@@ -336,10 +338,21 @@ class TestGenerateTestData:
         data = generate_test_data(seeds=[42], max_steps=3, encoder=self.encoder)
         for item in data:
             assert 'prompt' in item
+            assert 'messages' in item
             assert 'target' in item
             assert 'ground_truth_delta' in item
             assert 'seed' in item
             assert 'step' in item
+
+    def test_messages_have_system_and_user_roles(self):
+        data = generate_test_data(seeds=[42], max_steps=3, encoder=self.encoder)
+        for item in data:
+            messages = item["messages"]
+            assert len(messages) == 2
+            assert messages[0]["role"] == "system"
+            assert messages[0]["content"] == SYSTEM_PROMPT
+            assert messages[1]["role"] == "user"
+            assert messages[1]["content"] == item["prompt"]
 
     def test_prompt_is_string(self):
         data = generate_test_data(seeds=[42], max_steps=3, encoder=self.encoder)
@@ -405,6 +418,12 @@ class TestGenerateTestData:
             assert 'gold:' in target
             assert 'depth:' in target
             assert 'alive:' in target
+
+    def test_message_hash_stable(self):
+        data = generate_test_data(seeds=[42], max_steps=1, encoder=self.encoder)
+        assert len(data) == 1
+        first = data[0]["messages"]
+        assert hash_messages(first) == hash_messages(first)
 
 
 # ===========================================================================

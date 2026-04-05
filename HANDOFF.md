@@ -22,6 +22,7 @@ Train a small model to predict what happens next given accumulated exploration m
 - src/data_generator.py -- Random policy data generation (wall avoidance)
 - scripts/generate_training_data.py -- LLM policy data generation (ZAI/OpenRouter/vLLM local)
 - scripts/start_vllm_policy_server.sh -- starts local vLLM policy server on GPUs 0,1
+- src/closed_loop_debug.py -- golden-episode debug harness for tiny saved trajectories
 - references/ -- 6 papers + 6 repos for related work
 - Multi-GPU smoke training path validated locally
 
@@ -144,7 +145,7 @@ Local vLLM policy serving:
 
 Training / evaluation loop notes:
 - Current training format is ShareGPT-style with system + user + assistant messages
-- Current evaluator should be brought into exact prompt-format alignment with training before treating accuracy numbers as authoritative
+- Current evaluator now uses the same message structure as training; keep it that way
 - The most valuable new test is not another aggregate metric; it is a single-example closed-loop replay test that can fail on the exact divergent step
 ## Ideas for Better Data (Apr 4 notes)
 
