@@ -38,7 +38,8 @@ python3 -m http.server 8080 -d output/
 An HTTP-based LLM agent that plays NetHack via NLE. Sends structured game state (HP, position, adjacent tiles, monsters, items) to a language model and receives action commands back.
 
 Supports multiple backends:
-- Local llama-server (Qwen 2.5 3B)
+- Local vLLM / OpenAI-compatible server
+- Local llama-server
 - OpenRouter API
 - Any OpenAI-compatible endpoint
 
@@ -57,6 +58,13 @@ This produces denser training signal, shorter sequences, and cleaner gradients.
 ### Evaluation + Manifest
 
 The pipeline can generate training data, fine-tune a LoRA adapter, evaluate a model on held-out seeds, and build a manifest that records the model, dataset, adapter, and scores used for a run.
+
+### Current Local Benchmarks
+
+- Machine: 4x NVIDIA H200
+- Random data generation via `cli.py generate`: 1,000 examples in about 1.35s
+- LLM-policy data generation via vLLM on GPUs `0,1`: 5,000 examples in about 30s with `Qwen/Qwen2.5-0.5B-Instruct`
+- Caveat: the 5k vLLM policy dataset is high-throughput but low-quality. It is dominated by `wait` and other weak actions, so it should be treated as a throughput baseline, not a final training corpus.
 
 ## Project Structure
 
@@ -89,6 +97,7 @@ cli.py                     CLI: generate, report, evaluate, manifest, smoke-test
 train.py                   Unsloth LoRA training (GPU required)
 pyproject.toml             uv project definition and dependency groups
 uv.lock                    Locked dependency resolution for reproducible setup
+.gitattributes             Git LFS tracking rules for datasets
 docker-compose.yml         Local Docker Compose training job with GPU access
 PLAN.md                    Full architecture document
 ```
@@ -99,6 +108,7 @@ PLAN.md                    Full architecture document
 
 - Python 3.10+
 - `uv`
+- `git-lfs` if you want dataset files to round-trip cleanly through Git
 - [NLE](https://github.com/heuritech/nle) (NetHack Learning Environment)
 - Docker (for AutoAscend traces)
 - For training: CUDA GPU, [Unsloth](https://github.com/unslothai/unsloth), TRL, PEFT
@@ -113,6 +123,9 @@ uv sync --extra train --extra test
 
 # For local GPU policy serving with vLLM:
 uv sync --extra serve
+
+# If you want training + serving tools in one env:
+uv sync --extra train --extra test --extra serve
 ```
 
 ### Smoke Test (no GPU needed)
@@ -150,7 +163,17 @@ uv run python scripts/generate_training_data.py \
 
 This setup keeps GPUs `2,3` available for other work, including training.
 
-### Train Fast on 4x H100 (GPU required)
+## Current Priorities
+
+The repo is no longer blocked on local compute. The bottleneck has moved to policy-data quality and how efficiently requests are fed to the inference server.
+
+Recommended next moves:
+- Upgrade local policy generation from `Qwen/Qwen2.5-0.5B-Instruct` to `Qwen/Qwen2.5-1.5B-Instruct` or `Qwen/Qwen2.5-3B-Instruct`
+- Move from thread-per-request generation to a true batched/offline vLLM path
+- Generate a filtered local corpus at 50k-200k examples once action quality looks sane
+- Use all 4 H200s for forward-model LoRA runs on at least Qwen 2.5 3B, and likely 7B once the dataset is no longer tiny
+
+### Train Fast on 4x H200 (GPU required)
 
 ```bash
 uv run torchrun --standalone --nproc_per_node=4 train.py \
@@ -168,7 +191,7 @@ uv run torchrun --standalone --nproc_per_node=4 train.py \
   --dataloader-num-workers 8
 ```
 
-For this host, the training script is set up for distributed `torchrun` and defaults to bf16 LoRA instead of 4-bit loading, because H100s have enough memory and bf16 is the faster path.
+For this host, the training script is set up for distributed `torchrun` and defaults to bf16 LoRA instead of 4-bit loading, because H200s have enough memory and bf16 is the faster path.
 
 ### Evaluate & Build Manifest
 
@@ -190,7 +213,7 @@ uv run python cli.py manifest \
 docker compose up
 ```
 
-The compose job installs `uv`, syncs the `train` extra from [pyproject.toml](/home/luc/rl-nethack/pyproject.toml), mounts the repo into the container, and launches distributed training with `torchrun --nproc_per_node=4`. On this 4x H100 host it exposes `CUDA_VISIBLE_DEVICES=0,1,2,3` by default.
+The compose job installs `uv`, syncs the `train` extra from [pyproject.toml](/home/luc/rl-nethack/pyproject.toml), mounts the repo into the container, and launches distributed training with `torchrun --nproc_per_node=4`. On this 4x H200 host it exposes `CUDA_VISIBLE_DEVICES=0,1,2,3` by default.
 
 ## How the Forward Model Works
 

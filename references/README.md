@@ -32,6 +32,14 @@ Collected papers and repos for NetHack LLM agent research.
 - **AutoAscend (handcrafted)**: Wins the game (ascends), NeurIPS 2021 champion
 - **NetPlay (GPT-4 zero-shot)**: Can explore, fight, pickup items but cannot win. Only works with GPT-4.
 - **Our current agent (Qwen 2.5 3B)**: ~0 reward, walks into walls, 10.6s/step on CPU
+- **Our current local vLLM policy throughput**: 5,000 samples in ~30s on 2x H200 with Qwen2.5-0.5B-Instruct
+- **Our current local vLLM policy quality**: too many `wait` / weak actions to use as final training data without filtering or a stronger model
+
+## Immediate Research Direction
+
+- NetPlay remains the most relevant prompting reference for LLM-driven action selection.
+- AutoAscend remains the strongest source of expert behavior to mine for supervised data.
+- Given current local throughput, the next project constraint is not inference speed alone; it is getting higher-quality action labels while keeping throughput high.
 
 ## Most Useful Files to Read
 

@@ -1,6 +1,19 @@
 # rl-nethack World-Model Training Pipeline — Implementation Plan
 
-> **For Hermes:** Use subagent-driven-development skill to implement this plan task-by-task.
+## Recent Status (Apr 5, 2026)
+
+- The repo now uses `uv` for environment management
+- `train.py` runs under distributed `torchrun` and has been validated with a multi-GPU smoke test
+- High-throughput local policy generation now works through vLLM on GPUs 0,1
+- The first 5k-sample local policy dataset exposed a throughput/quality tradeoff: serving is fast, but the 0.5B policy model produces too many weak actions
+- Immediate implementation priority is now data quality, not raw generation throughput
+
+## Immediate Queue
+
+1. Move local policy generation to `Qwen/Qwen2.5-1.5B-Instruct` and re-check action distributions.
+2. Add a true batched/offline vLLM generation path so the server sees larger request groups than the current threaded loop.
+3. Add dataset filters for obvious no-op trajectories and repeated `wait` behavior.
+4. Use the cleaned corpus to benchmark 3B vs 7B forward-model LoRA on all 4 H200s.
 
 **Goal:** Build a LoRA training pipeline that teaches a language model to predict NetHack game outcomes (forward model), with every component independently testable and a virgin benchmark for attested evaluation.
 

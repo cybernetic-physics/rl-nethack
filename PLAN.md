@@ -1,5 +1,12 @@
 # rl-nethack Training Plan
 
+## Recent Status
+
+- Local training path is now DDP-enabled via `torchrun`
+- Repo dependency management is now `uv`-based
+- Local policy generation now has a vLLM backend pinned to GPUs 0,1
+- A 5k local policy dataset was generated quickly, but its action quality is too weak to treat as final training data
+
 ## Concept
 
 Train a LoRA adapter on a local GPU machine and produce a manifest that records:
@@ -41,7 +48,17 @@ Phase 6: MANIFEST OUTPUT
 ```
 ## Model Selection
 
-This host has 4x H100s, so VRAM is not the immediate constraint. Start with Qwen 2.5 3B or Qwen3-4B for fast iteration, then scale sequence length, batch size, or model size as needed.
+This host has 4x H200s, so VRAM is not the immediate constraint. Start with Qwen 2.5 3B or 7B for fast iteration, then scale sequence length, batch size, or model size as needed.
+
+## Current Recommendation
+
+The old bottleneck was infrastructure. The current bottleneck is data quality.
+
+Recommended order of work:
+1. Fix local policy generation quality with a stronger small model and better prompts.
+2. Change data generation from request-by-request serving to a true batched/offline pipeline.
+3. Regenerate a materially larger corpus.
+4. Then spend the extra H200 capacity on bigger forward-model runs.
 
 ## Training Task: What's Interesting?
 
@@ -137,7 +154,7 @@ Generate arithmetic problems or simple logic puzzles at varying difficulty. Trai
 
 ## Local Machine Target
 
-Target machine: 4x H100 GPUs with enough headroom for larger models, longer sequence lengths, and faster iteration.
+Target machine: 4x H200 GPUs with enough headroom for larger models, longer sequence lengths, and faster iteration.
 
 ## Project Structure
 
@@ -159,16 +176,21 @@ rl-nethack/
 ## Local Run Steps
 
 ```bash
-# 1. Create .env with your tokens
-cp .env.example .env
-# edit .env with real tokens
+# 1. Install the local environment
+uv sync --extra train --extra test --extra serve
 
-# 2. Run locally
-docker compose up
+# 2. Optional: start local policy serving on GPUs 0,1
+CUDA_VISIBLE_DEVICES=0,1 ./scripts/start_vllm_policy_server.sh Qwen/Qwen2.5-1.5B-Instruct
+
+# 3. Generate data
+uv run python scripts/generate_training_data.py --backend vllm --model Qwen/Qwen2.5-1.5B-Instruct --server-url http://127.0.0.1:8000/v1 --num-games 200 --max-steps 50 --workers 64 --cooldown 0
+
+# 4. Train on all 4 GPUs
+uv run torchrun --standalone --nproc_per_node=4 train.py ...
 ```
 
 ## Open Questions
 
-1. Should training stay single-process or be upgraded to real multi-GPU execution on the 4x H100 host?
-2. Should evaluation metrics be expanded beyond per-field accuracy?
-3. How should the manifest represent benchmark provenance and model revisions?
+1. How much action-quality improvement do we get by moving local policy generation from 0.5B to 1.5B or 3B?
+2. Should `scripts/generate_training_data.py` grow a true batch/offline vLLM path instead of issuing one HTTP request per step?
+3. Once data quality is fixed, should the forward model move directly to Qwen 2.5 7B on all 4 H200s?

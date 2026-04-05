@@ -1,19 +1,29 @@
-# rl-nethack Handoff Notes (Apr 4, 2026)
+# rl-nethack Handoff Notes (Apr 5, 2026)
 
 ## Current State
 
 NetHack LLM agent exploring memory-augmented forward models for game dynamics prediction.
 Train a small model to predict what happens next given accumulated exploration memory.
 
+## Recent Updates (Apr 5, 2026)
+
+- Repo migrated to `uv` with [pyproject.toml](/home/luc/rl-nethack/pyproject.toml) and [uv.lock](/home/luc/rl-nethack/uv.lock)
+- Local training path upgraded to real multi-GPU DDP via `torchrun`
+- Training validated on this machine with a 2-GPU smoke run using Unsloth LoRA
+- Local high-throughput policy generation added via vLLM on GPUs `0,1`
+- Generated [data/training_pairs_5k.jsonl](/home/luc/rl-nethack/data/training_pairs_5k.jsonl) and tracked it with Git LFS
+- Machine reality check: this host is 4x H200, not 4x H100
+
 ### What is built
-- nle_agent/agent_http.py -- play via local llama-server or OpenRouter
+- nle_agent/agent_http.py -- play via local OpenAI-compatible server or OpenRouter
 - src/memory_tracker.py -- MemoryTracker, enriched training pair generation
 - src/state_encoder.py -- NLE observation to text encoding
 - src/reporter.py -- Interactive HTML replay reports
 - src/data_generator.py -- Random policy data generation (wall avoidance)
-- scripts/generate_training_data.py -- LLM policy data generation (ZAI/OpenRouter/local)
+- scripts/generate_training_data.py -- LLM policy data generation (ZAI/OpenRouter/vLLM local)
+- scripts/start_vllm_policy_server.sh -- starts local vLLM policy server on GPUs 0,1
 - references/ -- 6 papers + 6 repos for related work
-- 310 tests passing
+- Multi-GPU smoke training path validated locally
 
 ### Dataset v1 (done)
 - 20 games x 50 steps = 1,000 pairs (800 train, 200 eval)
@@ -23,6 +33,13 @@ Train a small model to predict what happens next given accumulated exploration m
 - Files: data/training_pairs.jsonl (1.1MB), data/eval_pairs.jsonl (284KB)
 - 15 distinct actions, 20% steps with visible monsters
 - Format: ShareGPT conversations with metadata per line
+
+### Dataset v2 throughput run (Apr 5)
+- 500 games x 10 steps = 5,000 pairs
+- Policy: local vLLM serving `Qwen/Qwen2.5-0.5B-Instruct` on GPUs 0,1
+- Runtime: ~30 seconds end-to-end for generation after server warmup
+- File: data/training_pairs_5k.jsonl (6.2MB, Git LFS tracked)
+- Quality warning: action distribution is poor (`wait` dominates), so this dataset is a throughput baseline and debugging artifact, not final training data
 
 ### Key Insight: Memory-Dependent Forward Model
 
@@ -38,34 +55,57 @@ Predictions requiring MEMORY are non-trivial and teach game dynamics.
 - memory_tracker.py: last_seen vs last_seen_turn key mismatch (fixed)
 - Python urllib hangs on ZAI after rate limiting -- use subprocess curl
 - glm-4.5-flash thinking model: needs max_tokens=1024, extract action from reasoning_content fallback
-- patch/write_file tools corrupt files -- use python3 heredoc str.replace()
+- train.py: LoRA target module selection and DDP cleanup fixed during local smoke validation
+
+### Closed-Loop Debugging Notes (Apr 5)
+
+Important lesson from Eric Gu's Melee training writeup: overfit a single synthetic example or tiny scripted episode until the model reproduces it perfectly in closed loop, then use that harness to debug preprocessing, prompting, parsing, and evaluation mismatches.
+
+Applied here:
+- We do not yet have a real RL loop; the repo is still mostly behavior cloning / forward-model training plus evaluation.
+- The right debugging target is therefore a single deterministic NetHack trajectory, not PPO or self-play.
+- Train/eval distribution mismatch already exists: training examples include the system prompt, but evaluator requests currently send only the user prompt.
+- Before scaling data or model size further, we should be able to overfit one tiny episode and replay it step-by-step without divergence.
 
 ## Next Steps
 
-### 1. LoRA fine-tune Qwen 2.5 3B
-- Use Unsloth for fast fine-tuning
-- Data is already sharegpt format, minimal processing needed
-- Train on 800 enriched pairs, eval on 200 held-out
-- Local llama-server on CPU port 8765 for inference
-- 800 pairs may be thin -- might need to generate more with stronger policy
-- Forward model (predict delta) is simpler than playing, so small data might work for proof of concept
+### 1. Fix policy data quality before scaling volume
+- Move local policy generation from `Qwen2.5-0.5B-Instruct` to at least `Qwen2.5-1.5B-Instruct`
+- Tighten the policy prompt to penalize `wait`/no-op behavior
+- Filter or down-weight obviously bad trajectories before training
+- Re-benchmark action distributions before generating a large corpus
 
-### 2. Evaluate forward model
+### 2. Generate a larger local corpus
+- Use vLLM on GPUs 0,1 for policy inference and keep GPUs 2,3 free for other jobs
+- Target 50k-200k high-quality pairs, not just 5k fast pairs
+- Combine policy data with counterfactual and AutoAscend-derived data where possible
+
+### 3. Scale training to the full machine
+- Use all 4 H200s for LoRA training via `torchrun`
+- Start with Qwen 2.5 3B or 7B for the forward model
+- Increase sequence length and effective batch once the dataset is no longer tiny
+
+### 4. Evaluate and plan
 - Compare predictions vs actual on held-out seeds
-- Metrics: exact match on survival, MSE on hp_delta, accuracy on pos_delta
-- Qualitative: does model predict goblin attacks from memory?
-- Held-out benchmark seeds provide a clean evaluation split
+- Add metrics for action-conditioned deltas, combat outcomes, and exploration gains
+- Once the forward model is competent, use it for look-ahead planning
 
-### 3. Use forward model for planning
-- If model predicts outcomes, use look-ahead search
-- Try multiple action sequences, pick best predicted outcome
-- Compare agent performance with vs without planning
+### 5. Build a real debug harness before more training work
+- Create a golden single-episode dataset, around 10-20 steps, with saved prompt, action, target delta, and next-state hash for every step
+- Train on only that episode until training loss is near zero
+- Add a closed-loop replay script that runs the model on that exact start state and compares prompt hash, predicted delta, and next-state hash step-by-step
+- Do not trust larger runs until the golden replay stays aligned for the full episode
 
-### 4. Generate more/better data
-- Use glm-5.1 or gpt-4o-mini for better gameplay
-- Add gameplay hints to system prompt (e.g. fight monsters, go downstairs)
-- Mix in expert traces (AutoAscend replays) for combat/examples
-- Increase to 100+ games once pipeline validated
+### 6. Fix distribution mismatches in the current loop
+- Make evaluation use the same message structure as training, including the system prompt
+- Keep separate eval suites for random-policy data, LLM-policy data, and golden closed-loop replay
+- Log raw observation hashes, formatted prompt hashes, parsed predictions, and next-state hashes so mismatches are obvious
+
+### 7. Improve the future RL / planning loop in the right order
+- First make the forward model accurate on short deterministic trajectories
+- Then test one-step planning against counterfactual rollouts from the same saved state
+- Only after that should we build deeper look-ahead or policy-improvement loops
+- If a planner is added later, debug it first on tiny synthetic scenarios with known optimal actions, not full random NetHack
 
 ## Data Generator Usage
 
@@ -75,8 +115,8 @@ Predictions requiring MEMORY are non-trivial and teach game dynamics.
   # OpenRouter
   python scripts/generate_training_data.py --api-key KEY --model openai/gpt-4o-mini --num-games 100 --max-steps 50
 
-  # Local llama-server
-  python scripts/generate_training_data.py --num-games 10 --max-steps 20
+  # Local vLLM / OpenAI-compatible server
+  python scripts/generate_training_data.py --backend vllm --model Qwen/Qwen2.5-1.5B-Instruct --server-url http://127.0.0.1:8000/v1 --num-games 10 --max-steps 20 --workers 64 --cooldown 0
 
   # Dry run
   python scripts/generate_training_data.py --dry-run --api-key KEY --model glm-4.5-flash
@@ -97,8 +137,15 @@ ZAI API:
 - Use subprocess curl (python urllib hangs after rate limiting)
 - glm-4-plus needs paid package (429 insufficient balance)
 
-File editing: patch/write_file can corrupt files. Use python3 heredoc with str.replace()
-Verify: python3 -c "import ast; ast.parse(open(file).read())"
+Local vLLM policy serving:
+- Use GPUs 0,1 for serving and leave 2,3 available for training or other work
+- `Qwen2.5-0.5B-Instruct` is fast enough for ~5k pairs in ~30s, but its policy quality is weak
+- Next local policy candidate should be `Qwen2.5-1.5B-Instruct` or `Qwen2.5-3B-Instruct`
+
+Training / evaluation loop notes:
+- Current training format is ShareGPT-style with system + user + assistant messages
+- Current evaluator should be brought into exact prompt-format alignment with training before treating accuracy numbers as authoritative
+- The most valuable new test is not another aggregate metric; it is a single-example closed-loop replay test that can fail on the exact divergent step
 ## Ideas for Better Data (Apr 4 notes)
 
 ### Counterfactual Data Generator
