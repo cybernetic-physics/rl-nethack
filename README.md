@@ -73,7 +73,8 @@ nle_agent/
 
 scripts/
   generate_counterfactual_data.py   What-if analysis at combat moments
-  generate_training_data.py         Random play -> ShareGPT JSONL
+  generate_training_data.py         LLM policy data generation -> ShareGPT JSONL
+  start_vllm_policy_server.sh       Start local vLLM policy server on GPUs 0,1
 
 src/
   state_encoder.py        NLE obs -> structured features + delta encoding
@@ -109,6 +110,9 @@ uv sync --extra test
 
 # For local GPU training:
 uv sync --extra train --extra test
+
+# For local GPU policy serving with vLLM:
+uv sync --extra serve
 ```
 
 ### Smoke Test (no GPU needed)
@@ -122,6 +126,29 @@ uv run python cli.py smoke-test
 ```bash
 uv run python cli.py generate --num-games 200 --max-steps 50 --output data/train.jsonl
 ```
+
+### Generate LLM-Policy Data at High Throughput
+
+Serve the policy model with vLLM on GPUs `0,1`:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 ./scripts/start_vllm_policy_server.sh Qwen/Qwen2.5-1.5B-Instruct
+```
+
+Then run concurrent local policy generation against that server:
+
+```bash
+uv run python scripts/generate_training_data.py \
+  --backend vllm \
+  --model Qwen/Qwen2.5-1.5B-Instruct \
+  --server-url http://127.0.0.1:8000/v1 \
+  --num-games 200 \
+  --max-steps 50 \
+  --workers 64 \
+  --cooldown 0
+```
+
+This setup keeps GPUs `2,3` available for other work, including training.
 
 ### Train Fast on 4x H100 (GPU required)
 

@@ -2,21 +2,22 @@
 """
 Generate enriched training data using an LLM policy.
 
-Supports: ZAI (Zhipu GLM), OpenRouter, or local llama-server.
+Supports: ZAI (Zhipu GLM), OpenRouter, or a local OpenAI-compatible server such
+as vLLM.
 Uses concurrent game execution for throughput.
 
 Usage:
-  python scripts/generate_training_data.py --api-key KEY --model glm-4.5-flash --num-games 5 --max-steps 30
-  python scripts/generate_training_data.py --dry-run --api-key KEY --model glm-4.5-flash
+  python scripts/generate_training_data.py --api-key KEY --backend zai --model glm-4.5-flash --num-games 5 --max-steps 30
+  python scripts/generate_training_data.py --backend vllm --model Qwen/Qwen2.5-1.5B-Instruct --server-url http://127.0.0.1:8000/v1 --workers 64
 """
 
 import argparse
 import json
 import os
-import re
 import sys
 import time
 import urllib.request
+import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -33,10 +34,8 @@ from src.memory_tracker import (
 from src.state_encoder import StateEncoder
 from nle_agent.agent_http import (
     _build_action_map,
-    query_model,
     parse_action,
     render_state,
-    SYSTEM_PROMPT,
 )
 
 SYSTEM_PROMPT_FORWARD = (
@@ -75,6 +74,8 @@ VALID_ACTIONS = [
     "wait", "pickup", "open", "search", "eat", "drink",
     "kick", "drop", "up", "down",
 ]
+
+DEFAULT_LOCAL_SERVER_URL = "http://127.0.0.1:8000/v1"
 
 
 def extract_action(text, reasoning=""):
@@ -153,6 +154,44 @@ def query_zai(state_text, history, model="glm-4.5-flash", api_key="", base_url="
         except Exception as e:
             print(f"  [ZAI ERROR] {e}", file=sys.stderr)
             return "wait"
+    return "wait"
+
+
+def query_openai_compatible(state_text, history, model, base_url, api_key="local-token"):
+    """Query a local or remote OpenAI-compatible chat completions endpoint."""
+    messages = [{"role": "system", "content": POLICY_SYSTEM_PROMPT}]
+    window = history[-4:]
+    for h in window:
+        messages.append({"role": "user", "content": h["state"]})
+        messages.append({"role": "assistant", "content": h["action"]})
+    messages.append({"role": "user", "content": state_text})
+
+    payload = json.dumps({
+        "model": model,
+        "messages": messages,
+        "max_tokens": 8,
+        "temperature": 0.0,
+    }).encode()
+
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}/chat/completions",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read())
+            content = data["choices"][0]["message"]["content"].strip()
+            return extract_action(content)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")[:300]
+        print(f"  [OPENAI-COMPAT ERROR {e.code}] {body}", file=sys.stderr)
+    except Exception as e:
+        print(f"  [LOCAL SERVER ERROR] {e}", file=sys.stderr)
     return "wait"
 
 
@@ -261,16 +300,28 @@ def main():
     parser.add_argument("--num-games", type=int, default=100)
     parser.add_argument("--max-steps", type=int, default=50)
     parser.add_argument("--seed-start", type=int, default=0)
+    parser.add_argument(
+        "--backend",
+        choices=["auto", "zai", "openrouter", "vllm", "local"],
+        default="auto",
+        help="Inference backend. 'vllm' and 'local' both use an OpenAI-compatible local server",
+    )
     parser.add_argument("--model", type=str, default="glm-4.5-flash")
     parser.add_argument("--api-key", type=str, default=None)
     parser.add_argument("--base-url", type=str, default=None)
+    parser.add_argument(
+        "--server-url",
+        type=str,
+        default=None,
+        help="OpenAI-compatible local server base URL, e.g. http://127.0.0.1:8000/v1",
+    )
     parser.add_argument("--output", type=str, default="data/training_pairs.jsonl")
     parser.add_argument("--eval-output", type=str, default="data/eval_pairs.jsonl")
     parser.add_argument("--eval-fraction", type=float, default=0.2)
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--checkpoint-every", type=int, default=5)
     parser.add_argument("--workers", type=int, default=1, help="Concurrent games (default: 1)")
-    parser.add_argument("--cooldown", type=float, default=60, help="Seconds between games (default: 60)")
+    parser.add_argument("--cooldown", type=float, default=None, help="Seconds between games (default: auto)")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -281,22 +332,33 @@ def main():
                or os.environ.get("OPENROUTER_API_KEY")
                or "")
 
-    is_openrouter = "/" in args.model
+    backend = args.backend
     base_url = args.base_url or ""
+    server_url = args.server_url or os.environ.get("LLM_SERVER_URL") or DEFAULT_LOCAL_SERVER_URL
     query_fn = None
 
-    if not is_openrouter and api_key:
+    if backend == "auto":
+        if api_key and "/" not in args.model:
+            backend = "zai"
+        elif api_key and "/" in args.model:
+            backend = "openrouter"
+        else:
+            backend = "vllm"
+
+    if backend == "zai":
         print(f"Using ZAI endpoint: model={args.model} workers={args.workers}")
         _m, _k, _u = args.model, api_key, base_url
         query_fn = lambda st, h: query_zai(st, h, model=_m, api_key=_k, base_url=_u)
-    elif is_openrouter and api_key:
+    elif backend == "openrouter":
         os.environ["OPENROUTER_API_KEY"] = api_key
         print(f"Using OpenRouter: model={args.model}")
-    elif not api_key:
-        print("Using local llama-server (no API key)")
-        args.model = None
     else:
-        print(f"Using local llama-server with model={args.model}")
+        print(f"Using local OpenAI-compatible server: model={args.model} server={server_url} workers={args.workers}")
+        _m, _u = args.model, server_url
+        query_fn = lambda st, h: query_openai_compatible(st, h, model=_m, base_url=_u)
+
+    if args.cooldown is None:
+        args.cooldown = 45.0 if backend == "zai" else 0.0
 
     # Dry run
     if args.dry_run:
