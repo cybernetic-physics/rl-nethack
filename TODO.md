@@ -2,14 +2,12 @@
 
 ## Immediate Execution Queue
 
-1. Fix train/eval prompt mismatch so evaluation uses the same message structure as training.
-2. Add a golden closed-loop replay harness for one tiny deterministic episode.
-3. Overfit that golden episode until the model reproduces it without divergence.
-4. Upgrade local policy generation from `Qwen/Qwen2.5-0.5B-Instruct` to `Qwen/Qwen2.5-1.5B-Instruct`.
-5. Measure action distribution quality before generating a larger corpus.
-6. If `1.5B` is still weak, move to `Qwen/Qwen2.5-3B-Instruct`.
-7. Once the corpus quality is acceptable, generate `50k-200k` examples on GPUs `0,1`.
-8. Then benchmark Qwen 2.5 `3B` vs `7B` forward-model LoRA on all 4 H200s.
+1. Re-run `Qwen/Qwen2.5-3B-Instruct` at `10k-50k` scale using the frontier-biased fallback and verify the action distribution stays balanced.
+2. Change local serving on GPUs `0,1` from one TP=2 `vLLM` instance to two 1-GPU replicas and compare throughput.
+3. Add a batched/offline generation path so the policy loop is not one HTTP request per env step.
+4. Overfit the golden closed-loop episode until the model reproduces it without divergence.
+5. Generate `50k-200k` examples only after the action audit still looks sane at larger scale.
+6. Benchmark Qwen 2.5 `3B` vs `7B` forward-model LoRA on all 4 H200s.
 
 ## Debugging Principles
 

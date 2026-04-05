@@ -28,6 +28,7 @@ import nle.env
 
 from src.memory_tracker import (
     MemoryTracker,
+    UNSEEN,
     format_enriched_prompt,
     format_enriched_target,
 )
@@ -246,24 +247,55 @@ def build_policy_state_text(obs, memory, history, encoder):
     return "\n".join(parts)
 
 
-def choose_fallback_move(state):
-    """Choose a simple exploration-biased movement fallback."""
-    preferred_order = ["north", "east", "west", "south"]
-    open_dirs = [
-        d for d in preferred_order
-        if state["adjacent"].get(d) in WALKABLE_TILES
-    ]
-    if open_dirs:
-        return open_dirs[0]
+def _count_unseen_neighbors(memory, y, x):
+    unseen = 0
+    for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        ny, nx = y + dy, x + dx
+        if 0 <= ny < memory.map_h and 0 <= nx < memory.map_w:
+            if int(memory.explored[ny, nx]) == UNSEEN:
+                unseen += 1
+    return unseen
+
+
+def choose_fallback_move(state, memory):
+    """Choose a movement fallback that prefers frontiers and low-visit tiles."""
+    px, py = state["position"]
+    previous_pos = memory.position_history[-2] if len(memory.position_history) >= 2 else None
+    candidates = []
+
+    for direction, (dy, dx) in {
+        "north": (-1, 0),
+        "south": (1, 0),
+        "east": (0, 1),
+        "west": (0, -1),
+    }.items():
+        if state["adjacent"].get(direction) not in WALKABLE_TILES:
+            continue
+
+        ny, nx = py + dy, px + dx
+        if not (0 <= ny < memory.map_h and 0 <= nx < memory.map_w):
+            continue
+
+        frontier_score = _count_unseen_neighbors(memory, ny, nx)
+        visit_count = int(memory.visit_counts[ny, nx])
+        backtrack_penalty = 1 if previous_pos == (ny, nx) else 0
+        tile = state["adjacent"].get(direction)
+        feature_bonus = 1 if tile in {"stairs_down", "stairs_up", "gold"} else 0
+        score = (frontier_score, feature_bonus, -visit_count, -backtrack_penalty)
+        candidates.append((score, direction))
+
+    if candidates:
+        candidates.sort(reverse=True)
+        return candidates[0][1]
     return "wait"
 
 
-def sanitize_action(action_name, obs, history, encoder):
+def sanitize_action(action_name, obs, history, encoder, memory):
     """Clamp obviously bad repeated no-op behavior into simpler exploration behavior."""
     state = encoder.encode_full(obs)
     msg = state.get("message", "").lower()
     repeated = len(history) >= 2 and history[-1]["action"] == action_name and history[-2]["action"] == action_name
-    fallback_move = choose_fallback_move(state)
+    fallback_move = choose_fallback_move(state, memory)
     adjacent_tiles = set(state["adjacent"].values())
 
     if action_name == "wait" and fallback_move != "wait":
@@ -308,7 +340,7 @@ def run_game_with_memory(seed, max_steps, model=None, verbose=True, query_fn=Non
         else:
             raw_action = query_model(state_text, history, model=model)
         action_int, action_name = parse_action(raw_action)
-        action_name = sanitize_action(action_name, obs, history, encoder)
+        action_name = sanitize_action(action_name, obs, history, encoder, memory)
         action_int = action_map.get(action_name, action_map.get("wait", action_int))
 
         prompt_text = format_enriched_prompt(obs, memory, action_name)
@@ -343,7 +375,7 @@ def run_game_with_memory(seed, max_steps, model=None, verbose=True, query_fn=Non
         }
         pairs.append(pair)
 
-        history.append({"state": state_text.split("\n")[-1], "action": action_name})
+        history.append({"state": state_text, "action": action_name})
         if len(history) > 8:
             history = history[-8:]
 

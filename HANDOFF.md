@@ -13,6 +13,8 @@ Train a small model to predict what happens next given accumulated exploration m
 - Local high-throughput policy generation added via vLLM on GPUs `0,1`
 - Generated [data/training_pairs_5k.jsonl](/home/luc/rl-nethack/data/training_pairs_5k.jsonl) and tracked it with Git LFS
 - Machine reality check: this host is 4x H200, not 4x H100
+- Closed-loop golden replay harness added and validated on a tiny saved episode
+- Local policy generator now uses structured prompts, full state history, and frontier-biased action sanitization
 
 ### What is built
 - nle_agent/agent_http.py -- play via local OpenAI-compatible server or OpenRouter
@@ -42,6 +44,24 @@ Train a small model to predict what happens next given accumulated exploration m
 - File: data/training_pairs_5k.jsonl (6.2MB, Git LFS tracked)
 - Quality warning: action distribution is poor (`wait` dominates), so this dataset is a throughput baseline and debugging artifact, not final training data
 
+### Dataset v3 policy cleanup experiments (Apr 5)
+- Benchmark A: `Qwen/Qwen2.5-1.5B-Instruct` on local vLLM, GPUs 0,1
+- Runtime: `1,000` samples in `6.06s`
+- Action mix improved substantially over `0.5B`, but still overuses movement and pickup
+
+- Benchmark B: `Qwen/Qwen2.5-3B-Instruct` with naive sanitize fallback
+- Runtime: `1,000` samples in `8.05s`
+- 10k corpus generated in `78.21s` total
+- Files: [data/training_pairs_10k_3b.jsonl](/home/luc/rl-nethack/data/training_pairs_10k_3b.jsonl), [data/eval_pairs_10k_3b.jsonl](/home/luc/rl-nethack/data/eval_pairs_10k_3b.jsonl)
+- Quality warning: movement collapse remained severe (`north` dominated), so this corpus should not be scaled further as-is
+
+- Benchmark C: `Qwen/Qwen2.5-3B-Instruct` with frontier-biased fallback + full history
+- Runtime: `1,000` samples in `8.75s`
+- Action distribution became much healthier:
+  - `west 281`, `east 263`, `north 233`, `south 206`, `search 13`
+- Average reward improved to `1.451` from the earlier `3B` sample's `1.131`
+- Conclusion: frontier-biased sanitization is worth keeping; this is the first local policy run that looks directionally sane
+
 ### Key Insight: Memory-Dependent Forward Model
 
 Nobody trains forward model for NetHack. Others do:
@@ -57,6 +77,8 @@ Predictions requiring MEMORY are non-trivial and teach game dynamics.
 - Python urllib hangs on ZAI after rate limiting -- use subprocess curl
 - glm-4.5-flash thinking model: needs max_tokens=1024, extract action from reasoning_content fallback
 - train.py: LoRA target module selection and DDP cleanup fixed during local smoke validation
+- scripts/generate_training_data.py: history context now stores the full prior policy state, not just the last line
+- scripts/generate_training_data.py: fallback exploration no longer hard-codes north/east/west/south order; it now prefers low-visit frontier tiles and avoids immediate backtracking
 
 ### Closed-Loop Debugging Notes (Apr 5)
 
@@ -70,39 +92,43 @@ Applied here:
 
 ## Next Steps
 
-### 1. Fix policy data quality before scaling volume
-- Move local policy generation from `Qwen2.5-0.5B-Instruct` to at least `Qwen2.5-1.5B-Instruct`
-- Tighten the policy prompt to penalize `wait`/no-op behavior
-- Filter or down-weight obviously bad trajectories before training
-- Re-benchmark action distributions before generating a large corpus
+### 1. Validate the improved local policy path on a larger run
+- Re-run `Qwen2.5-3B-Instruct` with the frontier fallback at `10k-50k` scale
+- Confirm the action histogram stays balanced and the average reward stays above the previous `3B` baseline
+- If the action mix collapses again at scale, stop and debug before generating more data
 
-### 2. Generate a larger local corpus
-- Use vLLM on GPUs 0,1 for policy inference and keep GPUs 2,3 free for other jobs
-- Target 50k-200k high-quality pairs, not just 5k fast pairs
+### 2. Remove remaining inference-side bottlenecks
+- Replace the current TP=2 single `vLLM` server on GPUs 0,1 with two 1-GPU replicas and load balance across them
+- Use the OpenAI batch endpoint or an offline batching path instead of one HTTP request per env step
+- Keep automatic prefix caching enabled
+
+### 3. Generate a larger local corpus
+- Once the balanced `3B` path holds up, target `50k-200k` examples on GPUs 0,1
+- Keep train/eval split by seed
 - Combine policy data with counterfactual and AutoAscend-derived data where possible
 
-### 3. Scale training to the full machine
+### 4. Scale training to the full machine
 - Use all 4 H200s for LoRA training via `torchrun`
 - Start with Qwen 2.5 3B or 7B for the forward model
 - Increase sequence length and effective batch once the dataset is no longer tiny
 
-### 4. Evaluate and plan
+### 5. Evaluate and plan
 - Compare predictions vs actual on held-out seeds
 - Add metrics for action-conditioned deltas, combat outcomes, and exploration gains
 - Once the forward model is competent, use it for look-ahead planning
 
-### 5. Build a real debug harness before more training work
+### 6. Build a real debug harness before more training work
 - Create a golden single-episode dataset, around 10-20 steps, with saved prompt, action, target delta, and next-state hash for every step
 - Train on only that episode until training loss is near zero
 - Add a closed-loop replay script that runs the model on that exact start state and compares prompt hash, predicted delta, and next-state hash step-by-step
 - Do not trust larger runs until the golden replay stays aligned for the full episode
 
-### 6. Fix distribution mismatches in the current loop
+### 7. Fix distribution mismatches in the current loop
 - Make evaluation use the same message structure as training, including the system prompt
 - Keep separate eval suites for random-policy data, LLM-policy data, and golden closed-loop replay
 - Log raw observation hashes, formatted prompt hashes, parsed predictions, and next-state hashes so mismatches are obvious
 
-### 7. Improve the future RL / planning loop in the right order
+### 8. Improve the future RL / planning loop in the right order
 - First make the forward model accurate on short deterministic trajectories
 - Then test one-step planning against counterfactual rollouts from the same saved state
 - Only after that should we build deeper look-ahead or policy-improvement loops
