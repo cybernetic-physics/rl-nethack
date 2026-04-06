@@ -98,6 +98,7 @@ def _load_actor_critic(experiment: str, train_dir: str, device: str, checkpoint_
     parser.add_argument("--teacher_prior_bc_path", type=str, default=None)
     parser.add_argument("--teacher_replay_action_boosts", type=str, default="")
     parser.add_argument("--teacher_replay_current_disagreement_boost", type=float, default=1.0)
+    parser.add_argument("--teacher_replay_confusion_pair_boosts", type=str, default="")
     parser.add_argument("--teacher_policy_logit_residual_scale", type=float, default=1.0)
     parser.add_argument("--teacher_policy_blend_coef", type=float, default=0.0)
     parser.add_argument("--teacher_policy_fallback_confidence", type=float, default=0.0)

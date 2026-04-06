@@ -797,6 +797,16 @@ More specifically:
     - best learned tied `0.9875` at `256`,
     - retained late and final both fell to `0.8875`,
   - so current-student disagreement weighting is not the right next replay lever on the tiny teacher-only replay file; it makes the branch more preservation-only and less stable late than plain replay-to-raw-student-logits,
+- an exact confusion-pair replay-weighting follow-up was better targeted but still not promotable:
+  - a new `teacher_replay_confusion_pair_boosts` path now supports exact `student_action->teacher_action=multiplier` replay weighting based on the current student argmax on replay rows,
+  - this was tested on the known weak `east->south,south->east` family with boosts `3.0`,
+  - the comparable short gate no longer preserved the exact teacher tie:
+    - warm-start stayed `0.9875`,
+    - best learned fell to `0.975` at `512`,
+  - but late stability improved relative to the corrected replay baseline:
+    - retained late improved from `0.9125` to `0.95`,
+    - final improved from `0.9125` to `0.9375`,
+  - so exact failure-family replay weighting is clearly healthier than broad disagreement replay weighting, but it is still only a stabilizer; it improves late retention at the cost of weaker early teacher matching and still does not produce a teacher-beating learned checkpoint,
 - the most plausible next frontier is a more teacher-aware and behavior-constrained online improver.
 
 ## Practical Research Rules Going Forward

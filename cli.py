@@ -421,6 +421,8 @@ def cmd_rl_train_appo(args):
                 str(args.teacher_replay_current_disagreement_boost),
             ]
         )
+    if getattr(args, "teacher_replay_confusion_pair_boosts", ""):
+        argv.extend(["--teacher-replay-confusion-pair-boosts", str(args.teacher_replay_confusion_pair_boosts)])
     if getattr(args, "teacher_policy_logit_residual_scale", 1.0) != 1.0:
         argv.extend(["--teacher-policy-logit-residual-scale", str(args.teacher_policy_logit_residual_scale)])
     if getattr(args, "teacher_policy_blend_coef", 0.0) != 0.0:
@@ -1486,6 +1488,8 @@ def main():
                       help='Optional comma-separated teacher replay action=multiplier boosts, e.g. east=2.0,south=2.0')
     p_rl.add_argument('--teacher-replay-current-disagreement-boost', type=float, default=1.0,
                       help='Optional multiplier applied to replay CE rows where the current student still disagrees with the replay teacher action')
+    p_rl.add_argument('--teacher-replay-confusion-pair-boosts', type=str, default='',
+                      help='Optional comma-separated student->teacher=multiplier replay boosts, e.g. east->south=2.0,south->east=2.0')
     p_rl.add_argument('--teacher-policy-logit-residual-scale', type=float, default=1.0,
                       help='Logit-space residual scale in teacher + s*(student-teacher); 1.0 keeps the raw student policy')
     p_rl.add_argument('--teacher-policy-blend-coef', type=float, default=0.0,

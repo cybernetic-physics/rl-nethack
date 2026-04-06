@@ -162,6 +162,33 @@ def _weight_replay_losses_by_current_disagreement(
     return weighted_loss, disagreement_fraction
 
 
+def _weight_replay_losses_by_confusion_pairs(
+    replay_loss_all: torch.Tensor,
+    student_replay_logits: torch.Tensor,
+    replay_actions: torch.Tensor,
+    confusion_pair_boosts: dict[tuple[int, int], float] | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    confusion_pair_boosts = confusion_pair_boosts or {}
+    if not confusion_pair_boosts:
+        return replay_loss_all, replay_loss_all.new_zeros(())
+
+    student_replay_actions = torch.argmax(student_replay_logits, dim=-1)
+    weighted_loss = replay_loss_all
+    confusion_pair_mask = torch.zeros_like(replay_actions, dtype=torch.bool)
+    for (student_action, teacher_action), boost in confusion_pair_boosts.items():
+        pair_mask = (student_replay_actions == int(student_action)) & (replay_actions == int(teacher_action))
+        if not pair_mask.any():
+            continue
+        pair_weight = replay_loss_all.new_full(replay_loss_all.shape, float(boost))
+        weighted_loss = torch.where(pair_mask, weighted_loss * pair_weight, weighted_loss)
+        confusion_pair_mask = confusion_pair_mask | pair_mask
+
+    confusion_pair_fraction = (
+        confusion_pair_mask.float().mean() if confusion_pair_mask.numel() > 0 else replay_loss_all.new_zeros(())
+    )
+    return weighted_loss, confusion_pair_fraction
+
+
 def _teacher_enabled(cfg: Any) -> bool:
     return bool(_parse_teacher_bc_paths(getattr(cfg, "teacher_bc_path", None))) and float(getattr(cfg, "teacher_loss_coef", 0.0) or 0.0) > 0.0
 
@@ -288,6 +315,27 @@ def _parse_teacher_action_boosts(raw: str) -> dict[int, float]:
         if key not in action_names:
             raise ValueError(f"Unknown teacher action in boost spec: {name!r}")
         boosts[action_names[key]] = float(value.strip())
+    return boosts
+
+
+def _parse_teacher_confusion_pair_boosts(raw: str | None) -> dict[tuple[int, int], float]:
+    boosts: dict[tuple[int, int], float] = {}
+    if not raw:
+        return boosts
+
+    for raw_item in str(raw).split(","):
+        item = raw_item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(f"Invalid teacher_confusion_pair_boost entry: {item!r}")
+        pair_spec, value = item.split("=", 1)
+        if "->" not in pair_spec:
+            raise ValueError(f"Invalid teacher_confusion_pair_boost pair: {pair_spec!r}")
+        student_action, teacher_action = pair_spec.split("->", 1)
+        student_key = student_action.strip().lower()
+        teacher_key = teacher_action.strip().lower()
+        boosts[(action_name_to_index(student_key), action_name_to_index(teacher_key))] = float(value.strip())
     return boosts
 
 
@@ -507,6 +555,9 @@ def patch_sample_factory_teacher_reg() -> None:
         self.teacher_replay_current_disagreement_boost = float(
             getattr(self.cfg, "teacher_replay_current_disagreement_boost", 1.0) or 1.0
         )
+        self.teacher_replay_confusion_pair_boosts = _parse_teacher_confusion_pair_boosts(
+            str(getattr(self.cfg, "teacher_replay_confusion_pair_boosts", "") or "")
+        )
         self.param_anchor_coef = float(getattr(self.cfg, "param_anchor_coef", 0.0) or 0.0)
         self.actor_loss_scale = float(getattr(self.cfg, "actor_loss_scale", 1.0) or 1.0)
         self.actor_loss_final_scale = float(getattr(self.cfg, "actor_loss_final_scale", 1.0) or 1.0)
@@ -553,6 +604,7 @@ def patch_sample_factory_teacher_reg() -> None:
         teacher_policy_disagreement_fraction = torch.zeros((), device=self.device)
         teacher_policy_weak_override_fraction = torch.zeros((), device=self.device)
         teacher_replay_current_disagreement_fraction = torch.zeros((), device=self.device)
+        teacher_replay_confusion_pair_fraction = torch.zeros((), device=self.device)
         actor_loss_scale = policy_loss.new_tensor(_scheduled_actor_loss_scale(self))
 
         if self.teacher_policies and self.teacher_loss_enabled:
@@ -633,6 +685,12 @@ def patch_sample_factory_teacher_reg() -> None:
                     self.teacher_replay_current_disagreement_boost,
                 )
             )
+            teacher_replay_loss_all, teacher_replay_confusion_pair_fraction = _weight_replay_losses_by_confusion_pairs(
+                teacher_replay_loss_all,
+                student_replay_logits,
+                replay_actions,
+                self.teacher_replay_confusion_pair_boosts,
+            )
             teacher_replay_coef = teacher_replay_loss.new_tensor(_scheduled_teacher_replay_coef(self))
             teacher_replay_loss = teacher_replay_loss_all.mean() * teacher_replay_coef
             loss_summaries["teacher_replay_disagreement_fraction"] = replay_disagreement_flags.mean()
@@ -666,6 +724,7 @@ def patch_sample_factory_teacher_reg() -> None:
         loss_summaries["teacher_policy_disagreement_fraction"] = teacher_policy_disagreement_fraction
         loss_summaries["teacher_policy_weak_override_fraction"] = teacher_policy_weak_override_fraction
         loss_summaries["teacher_replay_current_disagreement_fraction"] = teacher_replay_current_disagreement_fraction
+        loss_summaries["teacher_replay_confusion_pair_fraction"] = teacher_replay_confusion_pair_fraction
         result[1] = actor_loss_scale * policy_loss + teacher_loss + teacher_replay_loss + param_anchor_loss
         result[6] = loss_summaries
         return tuple(result)
@@ -695,6 +754,10 @@ def patch_sample_factory_teacher_reg() -> None:
         if hasattr(train_loop_vars, "teacher_replay_current_disagreement_fraction"):
             stats.teacher_replay_current_disagreement_fraction = float(
                 train_loop_vars.teacher_replay_current_disagreement_fraction.item()
+            )
+        if hasattr(train_loop_vars, "teacher_replay_confusion_pair_fraction"):
+            stats.teacher_replay_confusion_pair_fraction = float(
+                train_loop_vars.teacher_replay_confusion_pair_fraction.item()
             )
         if hasattr(train_loop_vars, "param_anchor_loss"):
             stats.param_anchor_loss = float(train_loop_vars.param_anchor_loss.item())

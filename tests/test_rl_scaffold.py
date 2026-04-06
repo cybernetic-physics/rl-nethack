@@ -45,6 +45,7 @@ from rl.teacher_reg import (
     _mask_logits_with_action_mask,
     _parse_teacher_bc_paths,
     _parse_teacher_action_boosts,
+    _parse_teacher_confusion_pair_boosts,
     _resolve_teacher_prior_bc_paths,
     _teacher_policy_blend,
     _teacher_policy_logit_residual,
@@ -54,6 +55,7 @@ from rl.teacher_reg import (
     _scheduled_teacher_replay_coef,
     _row_replay_flags,
     _replay_priority_weights,
+    _weight_replay_losses_by_confusion_pairs,
     _weight_replay_losses_by_current_disagreement,
 )
 from rl.env_adapter import SkillEnvAdapter, EpisodeContext
@@ -408,6 +410,7 @@ def test_cli_rl_train_appo_forwards_teacher_prior_controls(monkeypatch):
         teacher_replay_source_mode="uniform",
         teacher_replay_action_boosts="east=2.0,south=2.0",
         teacher_replay_current_disagreement_boost=2.5,
+        teacher_replay_confusion_pair_boosts="east->south=3.0,south->east=3.0",
         teacher_policy_logit_residual_scale=0.3,
         teacher_policy_blend_coef=0.2,
         teacher_policy_fallback_confidence=0.6,
@@ -438,6 +441,8 @@ def test_cli_rl_train_appo_forwards_teacher_prior_controls(monkeypatch):
     assert argv[argv.index("--teacher-replay-action-boosts") + 1] == "east=2.0,south=2.0"
     assert "--teacher-replay-current-disagreement-boost" in argv
     assert argv[argv.index("--teacher-replay-current-disagreement-boost") + 1] == "2.5"
+    assert "--teacher-replay-confusion-pair-boosts" in argv
+    assert argv[argv.index("--teacher-replay-confusion-pair-boosts") + 1] == "east->south=3.0,south->east=3.0"
     assert "--teacher-policy-blend-coef" in argv
     assert argv[argv.index("--teacher-policy-blend-coef") + 1] == "0.2"
     assert "--teacher-policy-fallback-confidence" in argv
@@ -469,6 +474,7 @@ def test_trainer_scaffold_includes_teacher_reg_args():
     config.appo.teacher_loss_decay_env_steps = 4096
     config.appo.teacher_replay_action_boosts = "east=2.0,south=2.0"
     config.appo.teacher_replay_current_disagreement_boost = 2.0
+    config.appo.teacher_replay_confusion_pair_boosts = "east->south=3.0,south->east=3.0"
     config.appo.teacher_policy_logit_residual_scale = 0.3
     config.appo.teacher_policy_blend_coef = 0.15
     config.appo.teacher_policy_fallback_confidence = 0.55
@@ -494,6 +500,7 @@ def test_trainer_scaffold_includes_teacher_reg_args():
     assert "--teacher_loss_decay_env_steps=4096" in argv
     assert "--teacher_replay_action_boosts=east=2.0,south=2.0" in argv
     assert "--teacher_replay_current_disagreement_boost=2.0" in argv
+    assert "--teacher_replay_confusion_pair_boosts=east->south=3.0,south->east=3.0" in argv
     assert "--teacher_policy_logit_residual_scale=0.3" in argv
     assert "--teacher_policy_blend_coef=0.15" in argv
     assert "--teacher_policy_fallback_confidence=0.55" in argv
@@ -568,6 +575,7 @@ def test_build_appo_config_respects_value_stability_args():
             "teacher_replay_source_mode": "disagreement",
             "teacher_replay_action_boosts": "east=2.0,south=2.0",
             "teacher_replay_current_disagreement_boost": 2.5,
+            "teacher_replay_confusion_pair_boosts": "east->south=3.0,south->east=3.0",
             "teacher_policy_logit_residual_scale": 0.3,
             "teacher_policy_blend_coef": 0.2,
             "teacher_policy_fallback_confidence": 0.6,
@@ -598,6 +606,7 @@ def test_build_appo_config_respects_value_stability_args():
     assert config.appo.teacher_replay_source_mode == "disagreement"
     assert config.appo.teacher_replay_action_boosts == "east=2.0,south=2.0"
     assert config.appo.teacher_replay_current_disagreement_boost == 2.5
+    assert config.appo.teacher_replay_confusion_pair_boosts == "east->south=3.0,south->east=3.0"
     assert config.appo.teacher_prior_bc_path == "/tmp/prior.pt"
     assert config.appo.teacher_policy_logit_residual_scale == 0.3
     assert config.appo.teacher_policy_blend_coef == 0.2
@@ -935,6 +944,14 @@ def test_parse_teacher_action_boosts():
     assert boosts == {3: 2.0, 1: 1.5}
 
 
+def test_parse_teacher_confusion_pair_boosts():
+    boosts = _parse_teacher_confusion_pair_boosts("east->south=3.0,south->east=2.5")
+    assert boosts == {
+        (ACTION_SET.index("east"), ACTION_SET.index("south")): 3.0,
+        (ACTION_SET.index("south"), ACTION_SET.index("east")): 2.5,
+    }
+
+
 def test_trainer_scaffold_includes_episodic_bonus_args():
     config = RLConfig()
     config.reward.episodic_explore_bonus_enabled = True
@@ -961,6 +978,7 @@ def test_trainer_scaffold_includes_trace_eval_args():
     config.appo.teacher_replay_source_mode = "mixed"
     config.appo.teacher_replay_action_boosts = "east=2.0,south=2.0"
     config.appo.teacher_replay_current_disagreement_boost = 2.0
+    config.appo.teacher_replay_confusion_pair_boosts = "east->south=3.0,south->east=3.0"
     config.appo.actor_loss_scale = 0.0
     config.appo.actor_loss_final_scale = 1.0
     config.appo.actor_loss_warmup_env_steps = 64
@@ -984,6 +1002,7 @@ def test_trainer_scaffold_includes_trace_eval_args():
     assert "--teacher_replay_source_mode=mixed" in argv
     assert "--teacher_replay_action_boosts=east=2.0,south=2.0" in argv
     assert "--teacher_replay_current_disagreement_boost=2.0" in argv
+    assert "--teacher_replay_confusion_pair_boosts=east->south=3.0,south->east=3.0" in argv
     assert "--actor_loss_scale=0.0" in argv
     assert "--actor_loss_warmup_env_steps=64" in argv
     assert "--actor_loss_decay_env_steps=256" in argv
@@ -1205,6 +1224,7 @@ def test_improver_report_links_teacher_and_best_trace_metadata():
         cfg.appo.teacher_prior_bc_path = "/tmp/prior.pt"
         cfg.appo.teacher_replay_action_boosts = "east=2.0,south=2.0"
         cfg.appo.teacher_replay_current_disagreement_boost = 2.0
+        cfg.appo.teacher_replay_confusion_pair_boosts = "east->south=3.0,south->east=3.0"
         cfg.appo.teacher_policy_logit_residual_scale = 0.3
         cfg.appo.teacher_policy_blend_coef = 0.25
         cfg.appo.teacher_policy_fallback_confidence = 0.55
@@ -1235,6 +1255,7 @@ def test_improver_report_links_teacher_and_best_trace_metadata():
         assert report["final_trace_metadata"]["match_rate"] == 0.9
         assert report["teacher_policy"]["prior_checkpoint_path"] == "/tmp/prior.pt"
         assert report["replay_source"]["current_disagreement_boost"] == 2.0
+        assert report["replay_source"]["confusion_pair_boosts"] == "east->south=3.0,south->east=3.0"
         assert report["teacher_policy"]["logit_residual_scale"] == 0.3
         assert report["replay_source"]["action_boosts"] == "east=2.0,south=2.0"
         assert report["teacher_policy"]["blend_coef"] == 0.25
@@ -1353,6 +1374,37 @@ def test_weight_replay_losses_by_current_disagreement_boosts_mismatched_rows():
     )
     assert torch.allclose(weighted, torch.tensor([1.0, 5.0, 3.0]))
     assert round(disagreement_fraction.item(), 6) == round(1.0 / 3.0, 6)
+
+
+def test_weight_replay_losses_by_confusion_pairs_boosts_exact_pairs():
+    replay_loss_all = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
+    student_replay_logits = torch.tensor(
+        [
+            [0.0, 1.0, 4.0, 0.0],
+            [0.0, 4.0, 1.0, 0.0],
+            [5.0, 0.0, 1.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    replay_actions = torch.tensor(
+        [
+            ACTION_SET.index("south"),
+            ACTION_SET.index("east"),
+            ACTION_SET.index("south"),
+        ],
+        dtype=torch.long,
+    )
+    weighted, confusion_pair_fraction = _weight_replay_losses_by_confusion_pairs(
+        replay_loss_all,
+        student_replay_logits,
+        replay_actions,
+        confusion_pair_boosts={
+            (ACTION_SET.index("east"), ACTION_SET.index("south")): 3.0,
+            (ACTION_SET.index("south"), ACTION_SET.index("east")): 2.0,
+        },
+    )
+    assert torch.allclose(weighted, torch.tensor([3.0, 4.0, 3.0]))
+    assert round(confusion_pair_fraction.item(), 6) == round(2.0 / 3.0, 6)
 
 
 def test_forward_replay_action_logits_bypasses_teacher_prior_path_for_shared_weights():
