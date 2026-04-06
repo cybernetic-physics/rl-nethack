@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from rl.config import RLConfig
-from rl.feature_encoder import ACTION_SET, observation_dim, encode_observation
+from rl.feature_encoder import ACTION_SET, action_mask_slice, observation_dim, encode_observation
 from rl.reward_model import reward_feature_dim
 from rl.scheduler_model import scheduler_feature_dim
 from rl.sf_env import NethackSkillEnv
@@ -39,6 +39,9 @@ from rl.timestep import build_policy_timestep
 from rl.io_utils import experiment_lock
 from rl.teacher_reg import (
     patch_sample_factory_teacher_reg,
+    _action_mask_from_raw_obs,
+    _invalid_preference_fraction,
+    _mask_logits_with_action_mask,
     _parse_teacher_bc_paths,
     _parse_teacher_action_boosts,
     _scheduled_actor_loss_scale,
@@ -107,6 +110,75 @@ def test_parse_action_weight_boosts_supports_csv():
         ACTION_SET.index("east"): 2.0,
         ACTION_SET.index("west"): 1.5,
     }
+
+
+def test_action_mask_slice_extracts_allowed_actions_prefix():
+    timestep = {
+        "state": {
+            "hp": 10,
+            "hp_max": 10,
+            "gold": 0,
+            "depth": 1,
+            "turn": 1,
+            "ac": 4,
+            "strength": 10,
+            "dexterity": 10,
+            "visible_monsters": [],
+            "visible_items": [],
+            "adjacent": {"north": "floor", "south": "wall", "east": "floor", "west": "wall"},
+            "position": (10, 10),
+            "message": "",
+        },
+        "active_skill": "explore",
+        "allowed_actions": ["north", "east", "search"],
+        "memory_total_explored": 0,
+        "rooms_discovered": 0,
+        "steps_in_skill": 0,
+        "repeated_state_count": 0,
+        "revisited_recent_tile_count": 0,
+        "repeated_action_count": 0,
+        "standing_on_down_stairs": False,
+        "standing_on_up_stairs": False,
+        "recent_actions": [],
+        "recent_positions": [],
+        "obs": {"chars": np.zeros((21, 79), dtype=np.int16)},
+    }
+    features = encode_observation(timestep, version="v4")
+    mask = features[action_mask_slice()]
+    assert mask.shape == (len(ACTION_SET),)
+    assert mask[ACTION_SET.index("north")] == 1.0
+    assert mask[ACTION_SET.index("east")] == 1.0
+    assert mask[ACTION_SET.index("search")] == 1.0
+    assert mask[ACTION_SET.index("south")] == 0.0
+    assert mask[ACTION_SET.index("west")] == 0.0
+
+
+def test_teacher_reg_masks_invalid_teacher_and_student_preferences():
+    raw_obs = torch.zeros((2, observation_dim("v4")), dtype=torch.float32)
+    mask = torch.tensor(
+        [
+            [1.0, 0.0, 0.0, 1.0] + [0.0] * (len(ACTION_SET) - 4),
+            [0.0, 1.0, 1.0, 0.0] + [0.0] * (len(ACTION_SET) - 4),
+        ],
+        dtype=torch.float32,
+    )
+    raw_obs[:, action_mask_slice()] = mask
+    extracted = _action_mask_from_raw_obs(raw_obs)
+    assert torch.allclose(extracted, mask)
+
+    logits = torch.tensor(
+        [
+            [0.0, 5.0, 1.0, 4.0] + [0.0] * (len(ACTION_SET) - 4),
+            [6.0, 2.0, 1.0, 0.0] + [0.0] * (len(ACTION_SET) - 4),
+        ],
+        dtype=torch.float32,
+    )
+    assert round(float(_invalid_preference_fraction(logits, extracted).item()), 6) == 1.0
+
+    masked_logits = _mask_logits_with_action_mask(logits, extracted)
+    masked_actions = torch.argmax(masked_logits, dim=-1)
+    assert ACTION_SET[int(masked_actions[0].item())] == "west"
+    assert ACTION_SET[int(masked_actions[1].item())] == "south"
 
 
 def test_cli_mine_reset_slice_forwards_signature(monkeypatch):

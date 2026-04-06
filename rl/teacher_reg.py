@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 
 from rl.bc_model import BCPolicyMLP
-from rl.feature_encoder import ACTION_SET, action_name_to_index
+from rl.feature_encoder import ACTION_SET, action_mask_slice, action_name_to_index
 from rl.feature_encoder import observation_dim
 
 
@@ -211,6 +211,23 @@ def _parse_teacher_action_boosts(raw: str) -> dict[int, float]:
     return boosts
 
 
+def _action_mask_from_raw_obs(raw_obs: torch.Tensor) -> torch.Tensor:
+    mask = raw_obs[..., action_mask_slice()]
+    if mask.shape[-1] != len(ACTION_SET):
+        raise ValueError(f"Expected action mask width {len(ACTION_SET)}, got {mask.shape[-1]}")
+    return mask
+
+
+def _mask_logits_with_action_mask(logits: torch.Tensor, action_mask: torch.Tensor) -> torch.Tensor:
+    return logits.masked_fill(action_mask <= 0, -1e9)
+
+
+def _invalid_preference_fraction(logits: torch.Tensor, action_mask: torch.Tensor) -> torch.Tensor:
+    preferred_actions = torch.argmax(logits, dim=-1)
+    invalid = action_mask.gather(1, preferred_actions.unsqueeze(1)).squeeze(1) <= 0
+    return invalid.float().mean()
+
+
 def patch_sample_factory_teacher_reg() -> None:
     global _PATCHED, _ORIG_PREPARE_BATCH, _ORIG_INIT, _ORIG_CALC_LOSSES, _ORIG_RECORD_SUMMARIES
     if _PATCHED:
@@ -303,17 +320,24 @@ def patch_sample_factory_teacher_reg() -> None:
         teacher_replay_loss = torch.zeros((), device=self.device)
         teacher_replay_coef = torch.zeros((), device=self.device)
         param_anchor_loss = torch.zeros((), device=self.device)
+        teacher_invalid_preference_fraction = torch.zeros((), device=self.device)
+        student_invalid_preference_fraction = torch.zeros((), device=self.device)
         actor_loss_scale = policy_loss.new_tensor(_scheduled_actor_loss_scale(self))
 
         if self.teacher_policies:
             raw_obs = mb.get("raw_obs")
             if raw_obs is None:
                 raise RuntimeError("Teacher regularization requires raw_obs in the minibatch")
+            allowed_action_mask = _action_mask_from_raw_obs(raw_obs).to(self.device)
             with torch.no_grad():
-                teacher_logits = torch.stack([teacher(raw_obs.float()) for teacher in self.teacher_policies], dim=0).mean(dim=0)
+                teacher_logits_raw = torch.stack([teacher(raw_obs.float()) for teacher in self.teacher_policies], dim=0).mean(dim=0)
+                teacher_invalid_preference_fraction = _invalid_preference_fraction(teacher_logits_raw, allowed_action_mask)
+                teacher_logits = _mask_logits_with_action_mask(teacher_logits_raw, allowed_action_mask)
                 teacher_actions = torch.argmax(teacher_logits, dim=-1)
 
-            student_logits = action_distribution.raw_logits
+            student_logits_raw = action_distribution.raw_logits
+            student_invalid_preference_fraction = _invalid_preference_fraction(student_logits_raw, allowed_action_mask)
+            student_logits = _mask_logits_with_action_mask(student_logits_raw, allowed_action_mask)
             if self.teacher_loss_type == "ce":
                 teacher_loss_all = F.cross_entropy(student_logits, teacher_actions, reduction="none")
             else:
@@ -384,6 +408,8 @@ def patch_sample_factory_teacher_reg() -> None:
         )
         loss_summaries["actor_loss_scale"] = actor_loss_scale
         loss_summaries["param_anchor_loss"] = param_anchor_loss
+        loss_summaries["teacher_invalid_preference_fraction"] = teacher_invalid_preference_fraction
+        loss_summaries["student_invalid_preference_fraction"] = student_invalid_preference_fraction
         result[1] = actor_loss_scale * policy_loss + teacher_loss + teacher_replay_loss + param_anchor_loss
         result[6] = loss_summaries
         return tuple(result)
@@ -412,6 +438,10 @@ def patch_sample_factory_teacher_reg() -> None:
             stats.teacher_replay_failure_fraction = float(train_loop_vars.teacher_replay_failure_fraction.item())
         if hasattr(train_loop_vars, "param_anchor_loss"):
             stats.param_anchor_loss = float(train_loop_vars.param_anchor_loss.item())
+        if hasattr(train_loop_vars, "teacher_invalid_preference_fraction"):
+            stats.teacher_invalid_preference_fraction = float(train_loop_vars.teacher_invalid_preference_fraction.item())
+        if hasattr(train_loop_vars, "student_invalid_preference_fraction"):
+            stats.student_invalid_preference_fraction = float(train_loop_vars.student_invalid_preference_fraction.item())
         return stats
 
     Learner._prepare_batch = _prepare_batch_with_raw_obs

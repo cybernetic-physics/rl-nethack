@@ -713,6 +713,11 @@ More specifically:
   - held-out-selected teachers trained on that broader slice, including mixed distill variants, all regressed to `0.975`,
   - the exact held-out species pair `north=monster_f`, `east=monster_o` appeared only once in `30k` fresh seeds, and even oversampling that exact off-heldout `east` row still regressed to `0.975`,
   - so the last `0.9875 -> 1.0` gap is now best understood as too thin and too branch-specific for simple hard-case oversampling to be a reliable mainline teacher-improvement strategy,
+- a later audit found a real improver bug in the online branch:
+  - teacher CE / KL had been using unmasked teacher and student logits, even though this repo’s low-level control is action-mask-sensitive,
+  - after making teacher regularization mask-aware, the comparable short APPO probe improved from a best learned checkpoint of `0.975` back up to `0.9875`,
+  - but a longer `4k`-step cheap gate still tied the teacher only briefly and then drifted to `0.8875`,
+  - so the mask-aware fix is a real stabilizer, not yet a teacher-beating improver,
 - the most plausible next frontier is a more teacher-aware and behavior-constrained online improver.
 
 ## Practical Research Rules Going Forward

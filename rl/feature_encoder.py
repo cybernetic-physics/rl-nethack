@@ -49,6 +49,13 @@ _TILE_TO_IDX = {name: i for i, name in enumerate(ADJ_TILES)}
 _SKILL_TO_IDX = {name: i for i, name in enumerate(SKILL_SET)}
 _ACTION_TO_IDX = {name: i for i, name in enumerate(ACTION_SET)}
 _OBS_VERSION_TO_DIM = {"v1": 106, "v2": 160, "v3": 244, "v4": 302}
+_BASE_SCALAR_DIM = 12
+_ADJACENT_DIM = 4 * len(ADJ_TILES)
+_SKILL_DIM = len(SKILL_SET)
+_ACTION_MASK_SLICE = slice(
+    _BASE_SCALAR_DIM + _ADJACENT_DIM + _SKILL_DIM,
+    _BASE_SCALAR_DIM + _ADJACENT_DIM + _SKILL_DIM + len(ACTION_SET),
+)
 
 _LOCAL_PATCH_CATEGORIES = [
     "unseen",
@@ -83,6 +90,10 @@ def index_to_action_name(index: int) -> str:
     if 0 <= index < len(ACTION_SET):
         return ACTION_SET[index]
     return "wait"
+
+
+def action_mask_slice() -> slice:
+    return _ACTION_MASK_SLICE
 
 
 def _encode_tile_one_hot(tile_name: str) -> np.ndarray:
