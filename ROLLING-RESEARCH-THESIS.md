@@ -807,6 +807,19 @@ More specifically:
     - retained late improved from `0.9125` to `0.95`,
     - final improved from `0.9125` to `0.9375`,
   - so exact failure-family replay weighting is clearly healthier than broad disagreement replay weighting, but it is still only a stabilizer; it improves late retention at the cost of weaker early teacher matching and still does not produce a teacher-beating learned checkpoint,
+- a delayed-start follow-up clarified that this replay-weighting family is not being held back by simple schedule timing:
+  - a new `teacher_replay_confusion_pair_start_env_steps` control now lets exact replay confusion-pair boosts stay off until a chosen env-step threshold,
+  - this was tested conservatively with the same `east->south,south->east` boosts `3.0`, but delayed until `768` env steps to preserve the corrected replay branch's prior best-learned point,
+  - that restored the exact early teacher tie:
+    - warm-start stayed `0.9875`,
+    - best learned recovered to `0.9875` at `768`,
+  - but the late-stability effect disappeared completely:
+    - retained late collapsed to `0.725`,
+    - final collapsed to `0.7125`,
+  - so the exact replay weighting family now has a clear tradeoff surface:
+    - active from the start, it improves late retention but hurts early teacher matching,
+    - delayed to preserve early teacher matching, it turns back into ordinary preservation followed by hard drift,
+  - the practical conclusion is that simple schedule tuning is no longer the right lever here; if exact failure-family replay signals matter, they likely need a different online improver or a richer replay source rather than more activation-shift probes,
 - the most plausible next frontier is a more teacher-aware and behavior-constrained online improver.
 
 ## Practical Research Rules Going Forward

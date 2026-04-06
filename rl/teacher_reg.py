@@ -189,6 +189,18 @@ def _weight_replay_losses_by_confusion_pairs(
     return weighted_loss, confusion_pair_fraction
 
 
+def _active_replay_confusion_pair_boosts(
+    confusion_pair_boosts: dict[tuple[int, int], float] | None,
+    *,
+    env_steps: int,
+    start_env_steps: int,
+) -> dict[tuple[int, int], float]:
+    confusion_pair_boosts = confusion_pair_boosts or {}
+    if int(env_steps) < int(start_env_steps):
+        return {}
+    return confusion_pair_boosts
+
+
 def _teacher_enabled(cfg: Any) -> bool:
     return bool(_parse_teacher_bc_paths(getattr(cfg, "teacher_bc_path", None))) and float(getattr(cfg, "teacher_loss_coef", 0.0) or 0.0) > 0.0
 
@@ -558,6 +570,9 @@ def patch_sample_factory_teacher_reg() -> None:
         self.teacher_replay_confusion_pair_boosts = _parse_teacher_confusion_pair_boosts(
             str(getattr(self.cfg, "teacher_replay_confusion_pair_boosts", "") or "")
         )
+        self.teacher_replay_confusion_pair_start_env_steps = int(
+            getattr(self.cfg, "teacher_replay_confusion_pair_start_env_steps", 0) or 0
+        )
         self.param_anchor_coef = float(getattr(self.cfg, "param_anchor_coef", 0.0) or 0.0)
         self.actor_loss_scale = float(getattr(self.cfg, "actor_loss_scale", 1.0) or 1.0)
         self.actor_loss_final_scale = float(getattr(self.cfg, "actor_loss_final_scale", 1.0) or 1.0)
@@ -685,11 +700,16 @@ def patch_sample_factory_teacher_reg() -> None:
                     self.teacher_replay_current_disagreement_boost,
                 )
             )
+            active_confusion_pair_boosts = _active_replay_confusion_pair_boosts(
+                self.teacher_replay_confusion_pair_boosts,
+                env_steps=int(getattr(self, "env_steps", 0) or 0),
+                start_env_steps=self.teacher_replay_confusion_pair_start_env_steps,
+            )
             teacher_replay_loss_all, teacher_replay_confusion_pair_fraction = _weight_replay_losses_by_confusion_pairs(
                 teacher_replay_loss_all,
                 student_replay_logits,
                 replay_actions,
-                self.teacher_replay_confusion_pair_boosts,
+                active_confusion_pair_boosts,
             )
             teacher_replay_coef = teacher_replay_loss.new_tensor(_scheduled_teacher_replay_coef(self))
             teacher_replay_loss = teacher_replay_loss_all.mean() * teacher_replay_coef

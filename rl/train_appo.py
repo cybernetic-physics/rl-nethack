@@ -71,6 +71,7 @@ def parse_args(argv=None):
     parser.add_argument("--teacher-replay-action-boosts", type=str, default="")
     parser.add_argument("--teacher-replay-current-disagreement-boost", type=float, default=1.0)
     parser.add_argument("--teacher-replay-confusion-pair-boosts", type=str, default="")
+    parser.add_argument("--teacher-replay-confusion-pair-start-env-steps", type=int, default=0)
     parser.add_argument("--teacher-policy-logit-residual-scale", type=float, default=1.0)
     parser.add_argument("--teacher-policy-blend-coef", type=float, default=0.0)
     parser.add_argument("--teacher-policy-fallback-confidence", type=float, default=0.0)
@@ -227,6 +228,13 @@ def build_config(args) -> RLConfig:
     )
     config.appo.teacher_replay_confusion_pair_boosts = str(
         getattr(args, "teacher_replay_confusion_pair_boosts", config.appo.teacher_replay_confusion_pair_boosts) or ""
+    )
+    config.appo.teacher_replay_confusion_pair_start_env_steps = int(
+        getattr(
+            args,
+            "teacher_replay_confusion_pair_start_env_steps",
+            config.appo.teacher_replay_confusion_pair_start_env_steps,
+        )
     )
     config.appo.teacher_policy_logit_residual_scale = float(
         getattr(args, "teacher_policy_logit_residual_scale", config.appo.teacher_policy_logit_residual_scale)

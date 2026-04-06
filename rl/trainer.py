@@ -69,6 +69,7 @@ class APPOTrainerScaffold:
             "teacher_replay_action_boosts": self.config.appo.teacher_replay_action_boosts,
             "teacher_replay_current_disagreement_boost": self.config.appo.teacher_replay_current_disagreement_boost,
             "teacher_replay_confusion_pair_boosts": self.config.appo.teacher_replay_confusion_pair_boosts,
+            "teacher_replay_confusion_pair_start_env_steps": self.config.appo.teacher_replay_confusion_pair_start_env_steps,
             "teacher_policy_logit_residual_scale": self.config.appo.teacher_policy_logit_residual_scale,
             "teacher_policy_blend_coef": self.config.appo.teacher_policy_blend_coef,
             "teacher_policy_fallback_confidence": self.config.appo.teacher_policy_fallback_confidence,
@@ -155,6 +156,7 @@ class APPOTrainerScaffold:
             f"--teacher_replay_action_boosts={cfg.appo.teacher_replay_action_boosts}",
             f"--teacher_replay_current_disagreement_boost={cfg.appo.teacher_replay_current_disagreement_boost}",
             f"--teacher_replay_confusion_pair_boosts={cfg.appo.teacher_replay_confusion_pair_boosts}",
+            f"--teacher_replay_confusion_pair_start_env_steps={cfg.appo.teacher_replay_confusion_pair_start_env_steps}",
             f"--teacher_policy_logit_residual_scale={cfg.appo.teacher_policy_logit_residual_scale}",
             f"--teacher_policy_blend_coef={cfg.appo.teacher_policy_blend_coef}",
             f"--teacher_policy_fallback_confidence={cfg.appo.teacher_policy_fallback_confidence}",
@@ -376,6 +378,11 @@ class APPOTrainerScaffold:
             "--teacher_replay_confusion_pair_boosts",
             type=str,
             default=self.config.appo.teacher_replay_confusion_pair_boosts,
+        )
+        parser.add_argument(
+            "--teacher_replay_confusion_pair_start_env_steps",
+            type=int,
+            default=self.config.appo.teacher_replay_confusion_pair_start_env_steps,
         )
         parser.add_argument(
             "--teacher_policy_logit_residual_scale",
