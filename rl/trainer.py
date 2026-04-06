@@ -66,6 +66,7 @@ class APPOTrainerScaffold:
             "teacher_replay_batch_size": self.config.appo.teacher_replay_batch_size,
             "teacher_replay_priority_power": self.config.appo.teacher_replay_priority_power,
             "teacher_replay_source_mode": self.config.appo.teacher_replay_source_mode,
+            "teacher_policy_logit_residual_scale": self.config.appo.teacher_policy_logit_residual_scale,
             "teacher_policy_blend_coef": self.config.appo.teacher_policy_blend_coef,
             "teacher_policy_fallback_confidence": self.config.appo.teacher_policy_fallback_confidence,
             "teacher_policy_disagreement_margin": self.config.appo.teacher_policy_disagreement_margin,
@@ -148,6 +149,7 @@ class APPOTrainerScaffold:
             f"--teacher_replay_batch_size={cfg.appo.teacher_replay_batch_size}",
             f"--teacher_replay_priority_power={cfg.appo.teacher_replay_priority_power}",
             f"--teacher_replay_source_mode={cfg.appo.teacher_replay_source_mode}",
+            f"--teacher_policy_logit_residual_scale={cfg.appo.teacher_policy_logit_residual_scale}",
             f"--teacher_policy_blend_coef={cfg.appo.teacher_policy_blend_coef}",
             f"--teacher_policy_fallback_confidence={cfg.appo.teacher_policy_fallback_confidence}",
             f"--teacher_policy_disagreement_margin={cfg.appo.teacher_policy_disagreement_margin}",
@@ -358,6 +360,11 @@ class APPOTrainerScaffold:
         parser.add_argument("--teacher_replay_batch_size", type=int, default=self.config.appo.teacher_replay_batch_size)
         parser.add_argument("--teacher_replay_priority_power", type=float, default=self.config.appo.teacher_replay_priority_power)
         parser.add_argument("--teacher_replay_source_mode", type=str, default=self.config.appo.teacher_replay_source_mode)
+        parser.add_argument(
+            "--teacher_policy_logit_residual_scale",
+            type=float,
+            default=self.config.appo.teacher_policy_logit_residual_scale,
+        )
         parser.add_argument("--teacher_policy_blend_coef", type=float, default=self.config.appo.teacher_policy_blend_coef)
         parser.add_argument(
             "--teacher_policy_fallback_confidence",

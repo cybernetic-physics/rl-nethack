@@ -741,6 +741,11 @@ More specifically:
   - using that path, a split-base blend probe with `teacher_policy_blend_coef=0.15` and confidence fallback `0.55` still tied `0.9875` at `512`,
   - but retained late checkpoints fell to `0.8125` and `0.7875`,
   - so simple probability blending is not the right residual parameterization either; it is materially worse than the plain split-base confidence-fallback branch,
+- a follow-up logit-residual probe also fell short:
+  - a new `teacher_policy_logit_residual_scale` path now supports true logit-space interpolation `teacher + s * (student - teacher)`, which is a cleaner teacher-base residual than probability blending,
+  - using `s=0.3` with the same split-base confidence fallback still tied `0.9875`, but only at `256`,
+  - retained late and final checkpoints both settled at `0.9625`,
+  - so logit-space residual mixing is substantially healthier than probability blending, but it is still weaker than the plain split-base confidence-fallback baseline and is not yet a real improver,
 - the most plausible next frontier is a more teacher-aware and behavior-constrained online improver.
 
 ## Practical Research Rules Going Forward

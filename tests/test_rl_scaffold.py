@@ -46,6 +46,7 @@ from rl.teacher_reg import (
     _parse_teacher_action_boosts,
     _resolve_teacher_prior_bc_paths,
     _teacher_policy_blend,
+    _teacher_policy_logit_residual,
     _teacher_policy_fallback_details,
     _teacher_policy_fallback_mask,
     _scheduled_actor_loss_scale,
@@ -193,6 +194,11 @@ def test_teacher_reg_masks_invalid_teacher_and_student_preferences():
 
 
 def test_teacher_policy_blend_and_fallback_helpers():
+    student_logits = torch.tensor([[2.0, 1.0, 0.0]], dtype=torch.float32)
+    teacher_logits = torch.tensor([[0.0, 2.0, 1.0]], dtype=torch.float32)
+    residual_logits = _teacher_policy_logit_residual(student_logits, teacher_logits, 0.25)
+    assert torch.allclose(residual_logits, torch.tensor([[0.5, 1.75, 0.75]], dtype=torch.float32))
+
     student_probs = torch.tensor(
         [
             [0.70, 0.20, 0.10],
@@ -398,6 +404,7 @@ def test_cli_rl_train_appo_forwards_teacher_prior_controls(monkeypatch):
         teacher_replay_batch_size=128,
         teacher_replay_priority_power=1.0,
         teacher_replay_source_mode="uniform",
+        teacher_policy_logit_residual_scale=0.3,
         teacher_policy_blend_coef=0.2,
         teacher_policy_fallback_confidence=0.6,
         teacher_policy_disagreement_margin=0.1,
@@ -421,6 +428,8 @@ def test_cli_rl_train_appo_forwards_teacher_prior_controls(monkeypatch):
     rc = cli_module.cmd_rl_train_appo(args)
     assert rc == 0
     argv = captured["argv"]
+    assert "--teacher-policy-logit-residual-scale" in argv
+    assert argv[argv.index("--teacher-policy-logit-residual-scale") + 1] == "0.3"
     assert "--teacher-policy-blend-coef" in argv
     assert argv[argv.index("--teacher-policy-blend-coef") + 1] == "0.2"
     assert "--teacher-policy-fallback-confidence" in argv
@@ -450,6 +459,7 @@ def test_trainer_scaffold_includes_teacher_reg_args():
     config.appo.teacher_loss_final_coef = 0.002
     config.appo.teacher_loss_warmup_env_steps = 1024
     config.appo.teacher_loss_decay_env_steps = 4096
+    config.appo.teacher_policy_logit_residual_scale = 0.3
     config.appo.teacher_policy_blend_coef = 0.15
     config.appo.teacher_policy_fallback_confidence = 0.55
     config.appo.teacher_policy_disagreement_margin = 0.1
@@ -472,6 +482,7 @@ def test_trainer_scaffold_includes_teacher_reg_args():
     assert "--teacher_loss_final_coef=0.002" in argv
     assert "--teacher_loss_warmup_env_steps=1024" in argv
     assert "--teacher_loss_decay_env_steps=4096" in argv
+    assert "--teacher_policy_logit_residual_scale=0.3" in argv
     assert "--teacher_policy_blend_coef=0.15" in argv
     assert "--teacher_policy_fallback_confidence=0.55" in argv
     assert "--teacher_policy_disagreement_margin=0.1" in argv
@@ -543,6 +554,7 @@ def test_build_appo_config_respects_value_stability_args():
             "teacher_replay_batch_size": 128,
             "teacher_replay_priority_power": 1.7,
             "teacher_replay_source_mode": "disagreement",
+            "teacher_policy_logit_residual_scale": 0.3,
             "teacher_policy_blend_coef": 0.2,
             "teacher_policy_fallback_confidence": 0.6,
             "teacher_policy_disagreement_margin": 0.1,
@@ -571,6 +583,7 @@ def test_build_appo_config_respects_value_stability_args():
     assert config.appo.teacher_replay_priority_power == 1.7
     assert config.appo.teacher_replay_source_mode == "disagreement"
     assert config.appo.teacher_prior_bc_path == "/tmp/prior.pt"
+    assert config.appo.teacher_policy_logit_residual_scale == 0.3
     assert config.appo.teacher_policy_blend_coef == 0.2
     assert config.appo.teacher_policy_fallback_confidence == 0.6
     assert config.appo.teacher_policy_disagreement_margin == 0.1
@@ -1170,6 +1183,7 @@ def test_improver_report_links_teacher_and_best_trace_metadata():
         cfg.appo.teacher_replay_trace_input = "/tmp/replay.jsonl"
         cfg.appo.trace_eval_input = "/tmp/heldout.jsonl"
         cfg.appo.teacher_prior_bc_path = "/tmp/prior.pt"
+        cfg.appo.teacher_policy_logit_residual_scale = 0.3
         cfg.appo.teacher_policy_blend_coef = 0.25
         cfg.appo.teacher_policy_fallback_confidence = 0.55
 
@@ -1198,6 +1212,7 @@ def test_improver_report_links_teacher_and_best_trace_metadata():
         assert report["best_trace_metadata"]["match_rate"] == 0.9375
         assert report["final_trace_metadata"]["match_rate"] == 0.9
         assert report["teacher_policy"]["prior_checkpoint_path"] == "/tmp/prior.pt"
+        assert report["teacher_policy"]["logit_residual_scale"] == 0.3
         assert report["teacher_policy"]["blend_coef"] == 0.25
         assert report["teacher_policy"]["fallback_confidence"] == 0.55
         assert report["trace_gate"]["best_checkpoint_path"].endswith("checkpoint_000000010_80.pth")

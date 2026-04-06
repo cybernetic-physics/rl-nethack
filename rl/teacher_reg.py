@@ -121,6 +121,8 @@ def _resolve_teacher_prior_bc_paths(cfg: Any) -> list[str]:
 
 def _teacher_policy_prior_enabled(cfg: Any) -> bool:
     return bool(_resolve_teacher_prior_bc_paths(cfg)) and (
+        float(getattr(cfg, "teacher_policy_logit_residual_scale", 1.0) or 1.0) != 1.0
+        or
         float(getattr(cfg, "teacher_policy_blend_coef", 0.0) or 0.0) > 0.0
         or float(getattr(cfg, "teacher_policy_fallback_confidence", 0.0) or 0.0) > 0.0
         or float(getattr(cfg, "teacher_policy_disagreement_margin", 0.0) or 0.0) > 0.0
@@ -274,6 +276,19 @@ def _teacher_policy_blend(student_probs: torch.Tensor, teacher_probs: torch.Tens
     return (1.0 - blend) * student_probs + blend * teacher_probs
 
 
+def _teacher_policy_logit_residual(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    residual_scale: float,
+) -> torch.Tensor:
+    scale = float(min(max(residual_scale, 0.0), 1.0))
+    if scale >= 1.0:
+        return student_logits
+    if scale <= 0.0:
+        return teacher_logits
+    return teacher_logits + scale * (student_logits - teacher_logits)
+
+
 def _teacher_policy_fallback_details(
     student_probs: torch.Tensor,
     confidence_threshold: float,
@@ -321,6 +336,9 @@ def _ensure_teacher_prior_models(module: Any, device: torch.device) -> None:
     cfg = getattr(module, "cfg", None)
     module._teacher_prior_initialized = True
     module._teacher_prior_policies = []
+    module._teacher_policy_logit_residual_scale = float(
+        getattr(cfg, "teacher_policy_logit_residual_scale", 1.0) or 1.0
+    )
     module._teacher_policy_blend_coef = float(getattr(cfg, "teacher_policy_blend_coef", 0.0) or 0.0)
     module._teacher_policy_fallback_confidence = float(
         getattr(cfg, "teacher_policy_fallback_confidence", 0.0) or 0.0
@@ -352,7 +370,12 @@ def _apply_teacher_policy_prior(module: Any, action_logits: torch.Tensor) -> tup
         teacher_logits_raw = torch.stack([teacher(raw_obs.float()) for teacher in teacher_policies], dim=0).mean(dim=0)
     student_logits = _mask_logits_with_action_mask(action_logits, allowed_action_mask)
     teacher_logits = _mask_logits_with_action_mask(teacher_logits_raw, allowed_action_mask)
-    student_probs = torch.softmax(student_logits, dim=-1)
+    residual_logits = _teacher_policy_logit_residual(
+        student_logits,
+        teacher_logits,
+        getattr(module, "_teacher_policy_logit_residual_scale", 1.0),
+    )
+    student_probs = torch.softmax(residual_logits, dim=-1)
     teacher_probs = torch.softmax(teacher_logits, dim=-1)
     blended_probs = _teacher_policy_blend(
         student_probs,
