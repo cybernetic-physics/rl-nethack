@@ -18,6 +18,7 @@ Subcommands:
   rl-train-world-model -- Train a short-horizon latent world model on traces
   rl-evaluate-world-model -- Evaluate a short-horizon latent world model
   rl-transform-traces-world-model -- Rewrite trace features using a trained world model encoder
+  rl-relabel-traces-bc -- Relabel trace actions with a BC teacher
   rl-build-proxy-dataset -- Build teacher-derived proxy labels from traces
   rl-train-proxy -- Train a teacher-derived proxy reward model
   rl-evaluate-proxy -- Evaluate a teacher-derived proxy reward model
@@ -534,6 +535,10 @@ def cmd_rl_train_bc(args):
         argv.extend(["--world-model-path", args.world_model_path])
     if args.world_model_feature_mode:
         argv.extend(["--world-model-feature-mode", args.world_model_feature_mode])
+    if args.distill_teacher_bc_path:
+        argv.extend(["--distill-teacher-bc-path", args.distill_teacher_bc_path])
+        argv.extend(["--distill-loss-coef", str(args.distill_loss_coef)])
+        argv.extend(["--distill-temperature", str(args.distill_temperature)])
     if args.heldout_input:
         argv.extend(["--heldout-input", args.heldout_input])
     if args.teacher_report_output:
@@ -585,6 +590,8 @@ def cmd_rl_train_world_model(args):
         done_loss_coef=args.done_loss_coef,
         reconstruction_loss_coef=args.reconstruction_loss_coef,
         action_loss_coef=args.action_loss_coef,
+        action_class_balance=args.action_class_balance,
+        action_class_balance_power=args.action_class_balance_power,
         text_encoder_backend=args.text_encoder_backend,
         text_model_name=args.text_model_name,
         text_max_length=args.text_max_length,
@@ -615,6 +622,18 @@ def cmd_rl_evaluate_world_model(args):
     )
     if args.report_output:
         atomic_write_json(args.report_output, result)
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_rl_relabel_traces_bc(args):
+    from rl.relabel_traces import relabel_trace_actions
+
+    result = relabel_trace_actions(
+        args.input,
+        args.output,
+        bc_model_path=args.bc_model_path,
+    )
     print(json.dumps(result, indent=2))
     return 0
 
@@ -1650,6 +1669,9 @@ def main():
     p_bc.add_argument('--world-model-path', type=str, default=None)
     p_bc.add_argument('--world-model-feature-mode', type=str, default=None,
                       choices=['replace', 'concat', 'concat_aux'])
+    p_bc.add_argument('--distill-teacher-bc-path', type=str, default=None)
+    p_bc.add_argument('--distill-loss-coef', type=float, default=0.0)
+    p_bc.add_argument('--distill-temperature', type=float, default=1.0)
     p_bc.add_argument('--heldout-input', type=str, default=None)
     p_bc.add_argument('--teacher-report-output', type=str, default=None)
     p_bc.add_argument('--weak-action-input', type=str, default=None)
@@ -1677,6 +1699,8 @@ def main():
     p_wm.add_argument('--done-loss-coef', type=float, default=0.5)
     p_wm.add_argument('--reconstruction-loss-coef', type=float, default=1.0)
     p_wm.add_argument('--action-loss-coef', type=float, default=0.25)
+    p_wm.add_argument('--action-class-balance', action='store_true')
+    p_wm.add_argument('--action-class-balance-power', type=float, default=0.5)
     p_wm.add_argument('--text-encoder-backend', type=str, default='none', choices=['none', 'hash', 'transformer'])
     p_wm.add_argument('--text-model-name', type=str, default=None)
     p_wm.add_argument('--text-max-length', type=int, default=128)
@@ -1703,6 +1727,11 @@ def main():
     p_wm_xform.add_argument('--output', type=str, required=True)
     p_wm_xform.add_argument('--version-suffix', type=str, default='wm')
     p_wm_xform.add_argument('--mode', type=str, default='replace', choices=['replace', 'concat', 'concat_aux'])
+
+    p_relabel = subparsers.add_parser('rl-relabel-traces-bc', help='Relabel trace actions with a BC teacher')
+    p_relabel.add_argument('--input', type=str, required=True)
+    p_relabel.add_argument('--output', type=str, required=True)
+    p_relabel.add_argument('--bc-model-path', type=str, required=True)
 
     p_proxy_build = subparsers.add_parser('rl-build-proxy-dataset', help='Build teacher-derived proxy labels from traces')
     p_proxy_build.add_argument('--input', type=str, required=True)
@@ -1828,6 +1857,8 @@ def main():
             return cmd_rl_evaluate_world_model(args)
         elif args.command == 'rl-transform-traces-world-model':
             return cmd_rl_transform_traces_world_model(args)
+        elif args.command == 'rl-relabel-traces-bc':
+            return cmd_rl_relabel_traces_bc(args)
         elif args.command == 'rl-build-proxy-dataset':
             return cmd_rl_build_proxy_dataset(args)
         elif args.command == 'rl-train-proxy':

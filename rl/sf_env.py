@@ -14,6 +14,7 @@ from rl.rewards import RewardInputs, build_reward_source
 from rl.timestep import build_policy_timestep
 from rl.world_model import load_world_model
 from rl.world_model_features import augment_feature_vector, world_model_augmented_dim
+from src.state_encoder import StateEncoder
 from src.task_rewards import observation_hash
 
 
@@ -49,6 +50,7 @@ class NethackSkillEnv(gym.Env):
         self.world_model_inference = (
             load_world_model(self.world_model_path) if self.world_model_path and self.world_model_feature_mode else None
         )
+        self.state_encoder = StateEncoder()
         self.observation_space = spaces.Box(
             low=-10.0,
             high=10.0,
@@ -164,7 +166,13 @@ class NethackSkillEnv(gym.Env):
         features = encode_observation(timestep, version=self.observation_version)
         if self.world_model_inference is None or not self.world_model_feature_mode:
             return features
-        return augment_feature_vector(features, self.world_model_inference, mode=self.world_model_feature_mode)
+        prompt_text = self.state_encoder.format_state_prompt(timestep["state"])
+        return augment_feature_vector(
+            features,
+            self.world_model_inference,
+            mode=self.world_model_feature_mode,
+            prompt_text=prompt_text,
+        )
 
     def close(self):
         self.adapter.close()

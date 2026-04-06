@@ -11,6 +11,19 @@ from rl.train_bc import load_trace_rows
 from rl.world_model import load_world_model
 
 
+def strip_action_from_prompt(prompt: str | None) -> str:
+    if not prompt:
+        return ""
+    lines = [line for line in str(prompt).splitlines() if not line.startswith("Action:")]
+    return "\n".join(lines)
+
+
+def state_prompt_from_row(row: dict) -> str:
+    if row.get("state_prompt"):
+        return str(row["state_prompt"])
+    return strip_action_from_prompt(row.get("prompt"))
+
+
 def coerce_world_model_feature_vector(
     feature_vector: np.ndarray | list[float],
     expected_dim: int,
@@ -80,22 +93,35 @@ def transform_trace_with_world_model(
     latent_dim = None
     feature_dim = None
     action_dim = None
-    for row in rows:
-        encoded = inference.encode_with_aux(row["feature_vector"], prompt_text=row.get("prompt"))
-        latent = encoded["latent"].tolist()
-        action_logits = encoded["action_logits"].tolist()
-        latent_dim = latent_dim or len(latent)
-        feature_dim = feature_dim or len(row["feature_vector"])
-        action_dim = action_dim or len(action_logits)
-        transformed = dict(row)
-        transformed["feature_vector"] = augment_feature_vector(
-            row["feature_vector"],
-            inference,
-            mode=mode,
-            prompt_text=row.get("prompt"),
-        ).tolist()
-        transformed["observation_version"] = f"{row.get('observation_version', 'unknown')}+{observation_version_suffix}_{mode}"
-        transformed_rows.append(transformed)
+    if rows:
+        prompts = [state_prompt_from_row(row) for row in rows]
+        base_features = [
+            coerce_world_model_feature_vector(row["feature_vector"], int(getattr(inference.model, "_metadata", {}).get("input_dim", 0)))
+            if int(getattr(inference.model, "_metadata", {}).get("input_dim", 0))
+            else np.asarray(row["feature_vector"], dtype=np.float32)
+            for row in rows
+        ]
+        encoded = inference.encode_with_aux_batch(base_features, prompt_texts=prompts)
+        latents = encoded["latent"]
+        action_logits_batch = encoded["action_logits"]
+        feature_dim = len(base_features[0])
+        latent_dim = int(latents.shape[1])
+        action_dim = int(action_logits_batch.shape[1])
+        for row, base_feature, latent, action_logits in zip(rows, base_features, latents, action_logits_batch):
+            transformed = dict(row)
+            if mode == "replace":
+                transformed_feature = latent.astype(np.float32)
+            elif mode == "concat":
+                transformed_feature = np.concatenate([base_feature, latent]).astype(np.float32)
+            elif mode == "concat_aux":
+                transformed_feature = np.concatenate([base_feature, latent, action_logits]).astype(np.float32)
+            else:
+                raise ValueError(f"Unsupported world-model transform mode: {mode}")
+            transformed["feature_vector"] = transformed_feature.tolist()
+            transformed["observation_version"] = (
+                f"{row.get('observation_version', 'unknown')}+{observation_version_suffix}_{mode}"
+            )
+            transformed_rows.append(transformed)
 
     payload = "".join(json.dumps(row) + "\n" for row in transformed_rows)
     atomic_write_text(output_path, payload)

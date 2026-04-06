@@ -191,14 +191,21 @@ class WorldModelInference:
     model: TraceWorldModel
     device: torch.device
 
+    def _feature_tensor(self, features: np.ndarray | list[float] | list[list[float]]) -> torch.Tensor:
+        feature_array = np.asarray(features, dtype=np.float32)
+        if feature_array.ndim == 1:
+            feature_array = feature_array.reshape(1, -1)
+        return torch.from_numpy(feature_array).to(self.device)
+
+    def _normalized_prompt_texts(self, prompt_texts: list[str] | None, batch_size: int) -> list[str]:
+        if prompt_texts is None:
+            return [""] * batch_size
+        if len(prompt_texts) != batch_size:
+            raise ValueError(f"Expected {batch_size} prompt_texts, got {len(prompt_texts)}")
+        return [text or "" for text in prompt_texts]
+
     def encode(self, features: np.ndarray, *, prompt_text: str | None = None) -> np.ndarray:
-        features = np.asarray(features, dtype=np.float32)
-        with torch.no_grad():
-            latent = self._encode_tensor(
-                torch.from_numpy(features).unsqueeze(0).to(self.device),
-                prompt_texts=[prompt_text or ""],
-            )
-        return latent.squeeze(0).cpu().numpy()
+        return self.encode_batch([features], prompt_texts=[prompt_text]).squeeze(0)
 
     def _encode_tensor(
         self,
@@ -217,18 +224,42 @@ class WorldModelInference:
             latent = (latent - mean_t.unsqueeze(0)) / std_t.unsqueeze(0)
         return latent
 
-    def encode_with_aux(self, features: np.ndarray, *, prompt_text: str | None = None) -> dict[str, np.ndarray]:
-        features = np.asarray(features, dtype=np.float32)
-        feature_tensor = torch.from_numpy(features).unsqueeze(0).to(self.device)
+    def encode_batch(
+        self,
+        features: np.ndarray | list[list[float]],
+        *,
+        prompt_texts: list[str] | None = None,
+    ) -> np.ndarray:
+        feature_tensor = self._feature_tensor(features)
+        prompt_batch = self._normalized_prompt_texts(prompt_texts, feature_tensor.shape[0])
         with torch.no_grad():
-            latent = self._encode_tensor(feature_tensor, prompt_texts=[prompt_text or ""])
+            latent = self._encode_tensor(feature_tensor, prompt_texts=prompt_batch)
+        return latent.cpu().numpy()
+
+    def encode_with_aux(self, features: np.ndarray, *, prompt_text: str | None = None) -> dict[str, np.ndarray]:
+        return self.encode_with_aux_batch([features], prompt_texts=[prompt_text], squeeze_single=True)
+
+    def encode_with_aux_batch(
+        self,
+        features: np.ndarray | list[list[float]],
+        *,
+        prompt_texts: list[str] | None = None,
+        squeeze_single: bool = False,
+    ) -> dict[str, np.ndarray]:
+        feature_tensor = self._feature_tensor(features)
+        prompt_batch = self._normalized_prompt_texts(prompt_texts, feature_tensor.shape[0])
+        with torch.no_grad():
+            latent = self._encode_tensor(feature_tensor, prompt_texts=prompt_batch)
             action_logits = self.model.action_head(latent)
             current_features = self.model.current_feature_head(latent)
-        return {
-            "latent": latent.squeeze(0).cpu().numpy(),
-            "action_logits": action_logits.squeeze(0).cpu().numpy(),
-            "current_features": current_features.squeeze(0).cpu().numpy(),
+        result = {
+            "latent": latent.cpu().numpy(),
+            "action_logits": action_logits.cpu().numpy(),
+            "current_features": current_features.cpu().numpy(),
         }
+        if squeeze_single:
+            return {key: value.squeeze(0) for key, value in result.items()}
+        return result
 
 
 def save_world_model(model: TraceWorldModel, path: str, metadata: dict | None = None) -> None:

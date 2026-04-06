@@ -5,6 +5,7 @@ from collections import defaultdict
 import numpy as np
 
 from rl.feature_encoder import ACTION_SET, SKILL_SET
+from rl.world_model_features import state_prompt_from_row
 
 
 _ACTION_TO_IDX = {name: idx for idx, name in enumerate(ACTION_SET)}
@@ -60,7 +61,7 @@ def build_world_model_examples(
                     "task_index": _SKILL_TO_IDX.get(row.get("task", "explore"), 0),
                     "action": row.get("action", "wait"),
                     "action_index": _ACTION_TO_IDX.get(row.get("action", "wait"), _ACTION_TO_IDX["wait"]),
-                    "prompt": row.get("prompt", ""),
+                    "prompt": state_prompt_from_row(row),
                     "feature_vector": feature_vector,
                     "target_feature_vector": target_feature_vector,
                     "cumulative_reward": float(sum(step_row.get("reward", 0.0) for step_row in window)),

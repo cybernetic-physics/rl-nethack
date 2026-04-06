@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -28,6 +29,8 @@ def train_world_model(
     done_loss_coef: float = 0.5,
     reconstruction_loss_coef: float = 1.0,
     action_loss_coef: float = 0.25,
+    action_class_balance: bool = False,
+    action_class_balance_power: float = 0.5,
     text_encoder_backend: str = "none",
     text_model_name: str | None = None,
     text_max_length: int = 128,
@@ -55,6 +58,13 @@ def train_world_model(
     tasks = torch.tensor(arrays["tasks"], dtype=torch.long, device=device)
     rewards = torch.tensor(arrays["rewards"], dtype=torch.float32, device=device)
     dones = torch.tensor(arrays["dones"], dtype=torch.float32, device=device)
+    action_loss_weights = None
+    action_counts = np.bincount(arrays["actions"], minlength=len(ACTION_SET)).astype(np.float32)
+    if action_class_balance:
+        safe_counts = np.clip(action_counts, 1.0, None)
+        weights = np.power(safe_counts, -float(action_class_balance_power))
+        weights *= len(weights) / weights.sum()
+        action_loss_weights = torch.tensor(weights, dtype=torch.float32, device=device)
     prompt_texts = arrays.get("prompts")
     cached_text_context = None
     if prompt_texts and text_encoder_backend != "none" and not text_trainable:
@@ -66,7 +76,7 @@ def train_world_model(
         optimizer.zero_grad()
         outputs = model(x, actions, tasks, prompt_texts=prompt_texts, text_context=cached_text_context)
         reconstruction_loss = F.mse_loss(outputs["current_features"], x)
-        action_loss = F.cross_entropy(outputs["action_logits"], actions)
+        action_loss = F.cross_entropy(outputs["action_logits"], actions, weight=action_loss_weights)
         feature_loss = F.mse_loss(outputs["future_features"], target_x)
         reward_loss = F.mse_loss(outputs["reward"], rewards)
         done_loss = F.binary_cross_entropy_with_logits(outputs["done_logit"], dones)
@@ -116,6 +126,10 @@ def train_world_model(
         "done_loss_coef": done_loss_coef,
         "reconstruction_loss_coef": reconstruction_loss_coef,
         "action_loss_coef": action_loss_coef,
+        "action_class_balance": action_class_balance,
+        "action_class_balance_power": action_class_balance_power,
+        "action_counts": action_counts.astype(int).tolist(),
+        "action_loss_weights": action_loss_weights.detach().cpu().tolist() if action_loss_weights is not None else None,
         "text_encoder_backend": text_encoder_backend,
         "text_model_name": text_model_name,
         "text_max_length": text_max_length,
@@ -145,6 +159,8 @@ def parse_args(argv=None):
     parser.add_argument("--done-loss-coef", type=float, default=0.5)
     parser.add_argument("--reconstruction-loss-coef", type=float, default=1.0)
     parser.add_argument("--action-loss-coef", type=float, default=0.25)
+    parser.add_argument("--action-class-balance", action="store_true")
+    parser.add_argument("--action-class-balance-power", type=float, default=0.5)
     parser.add_argument("--text-encoder-backend", type=str, default="none", choices=["none", "hash", "transformer"])
     parser.add_argument("--text-model-name", type=str, default=None)
     parser.add_argument("--text-max-length", type=int, default=128)
@@ -169,6 +185,8 @@ def main(argv=None):
         done_loss_coef=args.done_loss_coef,
         reconstruction_loss_coef=args.reconstruction_loss_coef,
         action_loss_coef=args.action_loss_coef,
+        action_class_balance=args.action_class_balance,
+        action_class_balance_power=args.action_class_balance_power,
         text_encoder_backend=args.text_encoder_backend,
         text_model_name=args.text_model_name,
         text_max_length=args.text_max_length,

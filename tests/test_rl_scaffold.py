@@ -43,9 +43,12 @@ from rl.train_appo import build_config as build_appo_config
 from rl.teacher_report import build_teacher_report
 from rl.improver_report import build_improver_report
 from rl.train_world_model import train_world_model
+from rl.world_model import load_world_model
 from rl.world_model_dataset import build_world_model_examples, examples_to_arrays
 from rl.world_model_eval import evaluate_world_model
 from rl.world_model_features import (
+    strip_action_from_prompt,
+    state_prompt_from_row,
     transform_trace_with_world_model,
     world_model_augmented_dim,
 )
@@ -53,8 +56,10 @@ from rl.proxy_dataset import build_proxy_rows, summarize_proxy_rows, write_proxy
 from rl.proxy_eval import evaluate_proxy_model
 from rl.proxy_labels import search_context_label, teacher_margin
 from rl.proxy_model import load_proxy_model
+from rl.relabel_traces import relabel_trace_actions
 from rl.rewards import RewardInputs, build_reward_source
 from rl.train_proxy_model import train_proxy_model
+from src.state_encoder import StateEncoder
 
 
 def test_skill_registry_contains_expected_skills():
@@ -880,6 +885,30 @@ def test_world_model_examples_build_k_step_windows():
     assert arrays["prompts"][0].startswith("obs")
 
 
+def test_world_model_uses_state_only_prompt_text():
+    encoder = StateEncoder()
+    state = {
+        "hp": 10,
+        "hp_max": 12,
+        "ac": 4,
+        "strength": 12,
+        "dexterity": 9,
+        "position": (4, 5),
+        "gold": 0,
+        "depth": 1,
+        "turn": 7,
+        "adjacent": {"north": "wall", "south": "floor", "east": "door", "west": "corridor"},
+        "visible_monsters": [],
+        "visible_items": [],
+    }
+    full_prompt = encoder.format_prompt(state, "west")
+    assert "Action: west" in full_prompt
+    stripped = strip_action_from_prompt(full_prompt)
+    assert "Action:" not in stripped
+    row = {"prompt": full_prompt}
+    assert state_prompt_from_row(row) == stripped
+
+
 def test_world_model_train_and_eval_smoke():
     rows = []
     for step in range(6):
@@ -911,6 +940,7 @@ def test_world_model_train_and_eval_smoke():
             hidden_size=32,
             latent_dim=16,
             observation_version="v4",
+            action_class_balance=True,
             text_encoder_backend="hash",
             text_embedding_dim=16,
         )
@@ -918,6 +948,16 @@ def test_world_model_train_and_eval_smoke():
         assert "action_accuracy" in train_result
         assert "feature_cosine_mean" in train_result
         assert train_result["text_encoder_backend"] == "hash"
+        assert train_result["action_class_balance"] is True
+        assert train_result["action_loss_weights"] is not None
+        inference = load_world_model(model_path)
+        single = inference.encode_with_aux(rows[0]["feature_vector"], prompt_text=rows[0]["prompt"])
+        batch = inference.encode_with_aux_batch(
+            [rows[0]["feature_vector"], rows[1]["feature_vector"]],
+            prompt_texts=[rows[0]["prompt"], rows[1]["prompt"]],
+        )
+        assert batch["latent"].shape == (2, len(single["latent"]))
+        assert np.allclose(batch["latent"][0], single["latent"], atol=1e-5, rtol=1e-5)
         eval_result = evaluate_world_model(model_path, trace_path, horizon=2, observation_version="v4")
         assert eval_result["num_examples"] == train_result["num_examples"]
         assert eval_result["feature_mse"] >= 0.0
@@ -956,6 +996,92 @@ def test_world_model_train_and_eval_smoke():
         )
         assert "downstream_bc" in downstream_eval
         assert downstream_eval["downstream_bc"]["trace_eval_summary"]["match_rate"] >= 0.0
+
+
+def test_relabel_traces_with_bc_teacher():
+    rows = [
+        {
+            "episode_id": "ep0",
+            "step": 0,
+            "seed": 1,
+            "task": "explore",
+            "action": "west",
+            "allowed_actions": ["east", "west"],
+            "observation_version": "v2",
+            "feature_vector": [1.0, 0.0, 0.0, 0.0],
+        },
+        {
+            "episode_id": "ep0",
+            "step": 1,
+            "seed": 1,
+            "task": "explore",
+            "action": "west",
+            "allowed_actions": ["east", "west"],
+            "observation_version": "v2",
+            "feature_vector": [0.0, 1.0, 0.0, 0.0],
+        },
+    ]
+    teacher_rows = [
+        dict(rows[0], action="east"),
+        dict(rows[1], action="east"),
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        teacher_path = os.path.join(tmpdir, "teacher.pt")
+        trace_path = os.path.join(tmpdir, "trace.jsonl")
+        out_path = os.path.join(tmpdir, "relabeled.jsonl")
+        train_bc_model(teacher_rows, teacher_path, epochs=20, lr=1e-3, hidden_size=32, observation_version="v2")
+        with open(trace_path, "w") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+        result = relabel_trace_actions(trace_path, out_path, bc_model_path=teacher_path)
+        relabeled_rows = load_trace_rows(out_path)
+        assert result["rows"] == 2
+        assert result["changed_rows"] == 2
+        assert all(row["action"] == "east" for row in relabeled_rows)
+        assert all(row["original_action"] == "west" for row in relabeled_rows)
+
+
+def test_train_bc_with_teacher_distillation_metadata():
+    base_rows = [
+        {
+            "episode_id": "ep0",
+            "step": 0,
+            "seed": 1,
+            "task": "explore",
+            "action": "east",
+            "allowed_actions": ["east", "west"],
+            "observation_version": "v2",
+            "feature_vector": [1.0, 0.0, 0.0, 0.0],
+        },
+        {
+            "episode_id": "ep0",
+            "step": 1,
+            "seed": 1,
+            "task": "explore",
+            "action": "west",
+            "allowed_actions": ["east", "west"],
+            "observation_version": "v2",
+            "feature_vector": [0.0, 1.0, 0.0, 0.0],
+        },
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        teacher_path = os.path.join(tmpdir, "teacher.pt")
+        student_path = os.path.join(tmpdir, "student.pt")
+        train_bc_model(base_rows, teacher_path, epochs=10, lr=1e-3, hidden_size=32, observation_version="v2")
+        result = train_bc_model(
+            base_rows,
+            student_path,
+            epochs=5,
+            lr=1e-3,
+            hidden_size=32,
+            observation_version="v2",
+            distill_teacher_bc_path=teacher_path,
+            distill_loss_coef=0.5,
+            distill_temperature=2.0,
+        )
+        assert result["distill_teacher_bc_path"] == teacher_path
+        assert result["distill_loss_coef"] == 0.5
+        assert result["distill_temperature"] == 2.0
 
 
 def test_skill_env_masks_invalid_action_requests():

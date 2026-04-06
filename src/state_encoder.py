@@ -261,28 +261,18 @@ class StateEncoder:
             'survived': survived,
         }
 
-    def format_prompt(self, state: dict, action: str) -> str:
-        """Format state + action as a compact text prompt for the LLM.
-
-        Args:
-            state: Output of encode_full().
-            action: The action name being considered/taken.
-
-        Returns:
-            Multi-line string prompt.
-        """
+    def format_state_prompt(self, state: dict) -> str:
+        """Format state as a compact text prompt without action leakage."""
         pos = state['position']
         adjacent_parts = []
         for d in ('north', 'south', 'east', 'west'):
             adjacent_parts.append(f"{d}={state['adjacent'].get(d, 'unknown')}")
 
-        # Monsters: compact format like "f@(4,3)"
         monster_parts = []
         for m in state.get('visible_monsters', []):
             monster_parts.append(f"{m['char']}@{m['pos']}")
         monsters_str = ' '.join(monster_parts) if monster_parts else 'none'
 
-        # Items: compact format like "gold@(5,6) scroll@(3,1)"
         item_parts = []
         for it in state.get('visible_items', []):
             item_parts.append(f"{it['type']}@{it['pos']}")
@@ -296,8 +286,21 @@ class StateEncoder:
             f"Adjacent: {' '.join(adjacent_parts)}",
             f"Monsters: {monsters_str}",
             f"Items: {items_str}",
-            f"Action: {action}",
         ]
+        return '\n'.join(lines)
+
+    def format_prompt(self, state: dict, action: str) -> str:
+        """Format state + action as a compact text prompt for the LLM.
+
+        Args:
+            state: Output of encode_full().
+            action: The action name being considered/taken.
+
+        Returns:
+            Multi-line string prompt.
+        """
+        lines = self.format_state_prompt(state).splitlines()
+        lines.append(f"Action: {action}")
         return '\n'.join(lines)
 
     def format_target(self, delta: dict) -> str:

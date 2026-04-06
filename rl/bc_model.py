@@ -30,17 +30,67 @@ class BCPolicyInference:
     model: BCPolicyMLP
     device: torch.device
 
-    def act(self, features: np.ndarray, allowed_actions: list[str] | None = None) -> str:
-        features = np.asarray(features, dtype=np.float32)
-        with torch.no_grad():
-            logits = self.model(torch.from_numpy(features).to(self.device).unsqueeze(0)).squeeze(0)
-            if allowed_actions:
+    def _masked_logits(
+        self,
+        feature_tensor: torch.Tensor,
+        *,
+        allowed_actions_list: list[list[str] | None] | None = None,
+    ) -> torch.Tensor:
+        logits = self.model(feature_tensor)
+        if allowed_actions_list:
+            for row_idx, allowed_actions in enumerate(allowed_actions_list):
+                if not allowed_actions:
+                    continue
                 allowed = set(allowed_actions)
                 for idx, name in enumerate(ACTION_SET):
                     if name not in allowed:
-                        logits[idx] = -1e9
-            action_idx = int(torch.argmax(logits).item())
+                        logits[row_idx, idx] = -1e9
+        return logits
+
+    def act(self, features: np.ndarray, allowed_actions: list[str] | None = None) -> str:
+        action_idx = self.act_batch([features], allowed_actions_list=[allowed_actions])[0]
         return ACTION_SET[action_idx]
+
+    def logits_batch(
+        self,
+        features: np.ndarray | list[list[float]],
+        *,
+        allowed_actions_list: list[list[str] | None] | None = None,
+    ) -> np.ndarray:
+        feature_array = np.asarray(features, dtype=np.float32)
+        if feature_array.ndim == 1:
+            feature_array = feature_array.reshape(1, -1)
+        with torch.no_grad():
+            logits = self._masked_logits(
+                torch.from_numpy(feature_array).to(self.device),
+                allowed_actions_list=allowed_actions_list,
+            )
+        return logits.cpu().numpy()
+
+    def act_batch(
+        self,
+        features: np.ndarray | list[list[float]],
+        *,
+        allowed_actions_list: list[list[str] | None] | None = None,
+    ) -> list[int]:
+        feature_array = np.asarray(features, dtype=np.float32)
+        if feature_array.ndim == 1:
+            feature_array = feature_array.reshape(1, -1)
+        with torch.no_grad():
+            logits = self._masked_logits(
+                torch.from_numpy(feature_array).to(self.device),
+                allowed_actions_list=allowed_actions_list,
+            )
+            action_indices = torch.argmax(logits, dim=1).tolist()
+        return [int(idx) for idx in action_indices]
+
+    def act_names_batch(
+        self,
+        features: np.ndarray | list[list[float]],
+        *,
+        allowed_actions_list: list[list[str] | None] | None = None,
+    ) -> list[str]:
+        return [ACTION_SET[idx] for idx in self.act_batch(features, allowed_actions_list=allowed_actions_list)]
 
 
 def save_bc_model(model: BCPolicyMLP, path: str, metadata: dict | None = None) -> None:

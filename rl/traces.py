@@ -83,6 +83,8 @@ def _select_trace_policy_action(
     observation_version: str,
     bc_policy=None,
     bc_observation_version: str = "v1",
+    bc_world_model_inference=None,
+    bc_world_model_feature_mode: str | None = None,
     appo_eval: dict | None = None,
     appo_rnn_states=None,
     forward_model_server_url: str | None = None,
@@ -144,7 +146,15 @@ def _select_trace_policy_action(
         return action_name, [], appo_rnn_states, timestep
 
     if policy == "bc":
-        features = encode_observation(timestep, version=bc_observation_version)
+        base_version = bc_observation_version.split("+", 1)[0]
+        features = encode_observation(timestep, version=base_version)
+        if bc_world_model_inference is not None and bc_world_model_feature_mode:
+            features = augment_feature_vector(
+                features,
+                bc_world_model_inference,
+                mode=bc_world_model_feature_mode,
+                prompt_text=encoder.format_state_prompt(state),
+            )
         action_name = bc_policy.act(features, allowed_actions=allowed_actions)
         return action_name, [], appo_rnn_states, timestep
 
@@ -350,12 +360,18 @@ def generate_multi_turn_traces(
 
     bc_policy = None
     bc_observation_version = "v1"
+    bc_world_model_inference = None
+    bc_world_model_feature_mode = None
     if policy == "bc":
         bc_policy = load_bc_model(bc_model_path)
         import torch
 
         payload = torch.load(bc_model_path, map_location="cpu")
         bc_observation_version = payload.get("metadata", {}).get("observation_version", "v1")
+        bc_world_model_path = payload.get("metadata", {}).get("world_model_path")
+        bc_world_model_feature_mode = payload.get("metadata", {}).get("world_model_feature_mode")
+        if bc_world_model_path and bc_world_model_feature_mode:
+            bc_world_model_inference = load_world_model(bc_world_model_path)
 
     total_rows = 0
     episode_lengths = []
@@ -413,6 +429,8 @@ def generate_multi_turn_traces(
                     observation_version=observation_version,
                     bc_policy=bc_policy,
                     bc_observation_version=bc_observation_version,
+                    bc_world_model_inference=bc_world_model_inference,
+                    bc_world_model_feature_mode=bc_world_model_feature_mode,
                     appo_eval=appo_eval,
                     appo_rnn_states=rnn_states,
                     forward_model_server_url=forward_model_server_url,
@@ -422,6 +440,7 @@ def generate_multi_turn_traces(
                 if action_name not in action_map:
                     action_name = "wait"
                 prompt_text = encoder.format_prompt(state, action_name)
+                state_prompt_text = encoder.format_state_prompt(state)
                 obs_before = obs if policy != "appo" else env.adapter.obs
                 if policy == "appo":
                     obs_after, reward, terminated, truncated, info_after = env.step(ACTION_SET.index(action_name))
@@ -447,6 +466,7 @@ def generate_multi_turn_traces(
                     "action": action_name,
                     "allowed_actions": allowed_actions,
                     "prompt": prompt_text,
+                    "state_prompt": state_prompt_text,
                     "delta": delta,
                     "reward": float(reward),
                     "done": bool(terminated or truncated),
