@@ -11,10 +11,78 @@ from rl.traces import generate_dagger_traces, verify_trace_file
 
 
 MERGE_POLICIES = {"base_only", "uniform_merge", "weighted_recent"}
+ROW_SELECTION_POLICIES = {"all", "disagreement", "loop_risk", "failure_slice", "weak_action", "hard_only"}
 
 
 def _normalize_merge_ratio(merge_ratio: float) -> float:
     return max(0.0, min(1.0, merge_ratio))
+
+
+def _normalize_keep_ratio(keep_ratio: float) -> float:
+    return max(0.0, min(1.0, keep_ratio))
+
+
+def _matches_row_selection_policy(row: dict, row_selection_policy: str) -> bool:
+    if row_selection_policy not in ROW_SELECTION_POLICIES:
+        raise ValueError(f"Unknown row_selection_policy: {row_selection_policy}")
+    if row_selection_policy == "all":
+        return True
+    if row_selection_policy == "disagreement":
+        return bool(row.get("is_disagreement_candidate", False))
+    if row_selection_policy == "loop_risk":
+        return bool(row.get("is_loop_risk", False))
+    if row_selection_policy == "failure_slice":
+        return bool(row.get("is_failure_slice", False))
+    if row_selection_policy == "weak_action":
+        return bool(row.get("is_weak_action", False))
+    return any(
+        bool(row.get(key, False))
+        for key in ("is_disagreement_candidate", "is_loop_risk", "is_failure_slice", "is_weak_action")
+    )
+
+
+def summarize_dagger_rows(rows: list[dict]) -> dict:
+    return {
+        "rows": len(rows),
+        "disagreement_rows": sum(int(bool(row.get("is_disagreement_candidate", False))) for row in rows),
+        "loop_risk_rows": sum(int(bool(row.get("is_loop_risk", False))) for row in rows),
+        "failure_slice_rows": sum(int(bool(row.get("is_failure_slice", False))) for row in rows),
+        "weak_action_rows": sum(int(bool(row.get("is_weak_action", False))) for row in rows),
+        "match_rows": sum(int(row.get("behavior_action") == row.get("teacher_action")) for row in rows),
+    }
+
+
+def select_dagger_rows(
+    *,
+    rows: list[dict],
+    row_selection_policy: str,
+    keep_match_ratio: float,
+    rng: random.Random,
+) -> list[dict]:
+    keep_match_ratio = _normalize_keep_ratio(keep_match_ratio)
+    if row_selection_policy == "all" and keep_match_ratio >= 1.0:
+        return list(rows)
+
+    selected = []
+    anchor_rows = []
+    for row in rows:
+        if _matches_row_selection_policy(row, row_selection_policy):
+            selected.append(row)
+        else:
+            anchor_rows.append(row)
+
+    if keep_match_ratio <= 0.0 or not anchor_rows:
+        return selected
+
+    keep_anchor = max(1, int(round(len(anchor_rows) * keep_match_ratio)))
+    if keep_anchor <= 0:
+        return selected
+    if keep_anchor >= len(anchor_rows):
+        return selected + anchor_rows
+
+    sampled = rng.sample(anchor_rows, keep_anchor)
+    sampled.sort(key=lambda row: (row.get("episode_id", ""), row.get("step", 0)))
+    return selected + sampled
 
 
 def build_merged_trace_rows(
@@ -97,6 +165,8 @@ def run_dagger_iteration(
     observation_version: str = "v1",
     merge_ratio: float = 0.5,
     merge_policy: str = "uniform_merge",
+    dagger_row_policy: str = "all",
+    dagger_keep_match_ratio: float = 0.0,
     epochs: int = 20,
     lr: float = 1e-3,
     hidden_size: int = 256,
@@ -129,9 +199,15 @@ def run_dagger_iteration(
 
     base_rows = load_trace_rows(base_trace_input)
     dagger_rows = load_trace_rows(dagger_trace_output)
+    selected_dagger_rows = select_dagger_rows(
+        rows=dagger_rows,
+        row_selection_policy=dagger_row_policy,
+        keep_match_ratio=dagger_keep_match_ratio,
+        rng=random.Random(random_seed + 100_003),
+    )
     merged_rows = build_merged_trace_rows(
         base_rows=base_rows,
-        relabeled_rows=dagger_rows,
+        relabeled_rows=selected_dagger_rows,
         merge_policy=merge_policy,
         merge_ratio=merge_ratio,
         rng=random.Random(random_seed),
@@ -175,6 +251,11 @@ def run_dagger_iteration(
         "distill_temperature": distill_temperature,
         "base_rows": len(base_rows),
         "dagger_rows": len(dagger_rows),
+        "selected_dagger_rows": len(selected_dagger_rows),
+        "dagger_row_policy": dagger_row_policy,
+        "dagger_keep_match_ratio": dagger_keep_match_ratio,
+        "dagger_row_summary": summarize_dagger_rows(dagger_rows),
+        "selected_dagger_row_summary": summarize_dagger_rows(selected_dagger_rows),
         "merged_rows": len(merged_rows),
         "dagger_trace_verify": verify_trace_file(dagger_trace_output),
         "dagger_trace_summary": dagger_summary,
@@ -202,6 +283,8 @@ def run_dagger_schedule(
     observation_version: str = "v1",
     merge_ratio: float = 0.5,
     merge_policy: str = "uniform_merge",
+    dagger_row_policy: str = "all",
+    dagger_keep_match_ratio: float = 0.0,
     epochs: int = 20,
     lr: float = 1e-3,
     hidden_size: int = 256,
@@ -244,6 +327,8 @@ def run_dagger_schedule(
             observation_version=observation_version,
             merge_ratio=merge_ratio,
             merge_policy=merge_policy,
+            dagger_row_policy=dagger_row_policy,
+            dagger_keep_match_ratio=dagger_keep_match_ratio,
             epochs=epochs,
             lr=lr,
             hidden_size=hidden_size,
@@ -286,6 +371,8 @@ def run_dagger_schedule(
         "iterations": iterations,
         "merge_policy": merge_policy,
         "merge_ratio": merge_ratio,
+        "dagger_row_policy": dagger_row_policy,
+        "dagger_keep_match_ratio": dagger_keep_match_ratio,
         "distill_teacher_bc_path": distill_teacher_bc_path or teacher_bc_model_path,
         "distill_loss_coef": distill_loss_coef,
         "distill_temperature": distill_temperature,

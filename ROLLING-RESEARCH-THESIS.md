@@ -752,6 +752,12 @@ More specifically:
   - a new `teacher_replay_action_boosts` path was added and tested with `east=2.0,south=2.0`, because the best split-base fallback branch only drifts on a tiny held-out `east <-> south` confusion pair,
   - that branch still only tied `0.9875`, now at `1280`, and then fell to `0.9625` on both retained late checkpoints,
   - so static teacher-action replay weighting is not enough; the next replay / DAgger gains need richer relabeled student-state data, not just different weights on the small teacher-only replay file,
+- selective DAgger infrastructure is now in place, but the first probes were strongly negative:
+  - `dagger_row_policy` and `dagger_keep_match_ratio` now let the repo filter relabeled student rows before merging them back into BC retraining,
+  - relabeling `32 x 40` student steps from the drifted split-base final checkpoint and retraining against the trusted teacher did not help,
+  - `hard_only` collapsed back to full-state DAgger because every harvested row was flagged as loop-risk, then fell to `0.8625`,
+  - `disagreement` kept only `221 / 1280` rows and still fell to `0.85`,
+  - so targeted DAgger remains a live direction in principle, but the current row flags are not yet selective enough to support it; future DAgger work needs stricter failure-family triggers rather than broad student-rollout relabeling,
 - the most plausible next frontier is a more teacher-aware and behavior-constrained online improver.
 
 ## Practical Research Rules Going Forward

@@ -55,7 +55,7 @@ from rl.teacher_reg import (
     _replay_priority_weights,
 )
 from rl.env_adapter import SkillEnvAdapter, EpisodeContext
-from rl.dagger import build_merged_trace_rows, run_dagger_iteration, run_dagger_schedule
+from rl.dagger import build_merged_trace_rows, run_dagger_iteration, run_dagger_schedule, select_dagger_rows
 from rl.train_behavior_reg import train_behavior_regularized_policy, _masked_behavior_targets
 from rl.train_appo import build_config as build_appo_config
 from rl.teacher_report import build_teacher_report
@@ -2732,6 +2732,108 @@ def test_run_dagger_iteration_passes_teacher_bc_and_distill(monkeypatch):
         assert report["dagger_trace_summary"]["teacher_policy"] == "bc"
 
 
+def test_run_dagger_iteration_filters_dagger_rows_before_merge(monkeypatch):
+    captured = {}
+
+    def fake_generate_dagger_traces(**kwargs):
+        with open(kwargs["output_path"], "w") as f:
+            rows = [
+                {
+                    "episode_id": "dagger:appo:0",
+                    "step": 0,
+                    "observation_version": "v4",
+                    "feature_vector": [0.0] * 302,
+                    "action": "east",
+                    "allowed_actions": ["east", "west"],
+                    "behavior_action": "east",
+                    "teacher_action": "east",
+                },
+                {
+                    "episode_id": "dagger:appo:0",
+                    "step": 1,
+                    "observation_version": "v4",
+                    "feature_vector": [0.0] * 302,
+                    "action": "south",
+                    "allowed_actions": ["south", "north"],
+                    "behavior_action": "east",
+                    "teacher_action": "south",
+                    "is_disagreement_candidate": True,
+                },
+            ]
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+        return {"episodes": 1}
+
+    def fake_load_trace_rows(path):
+        if path.endswith("base.jsonl"):
+            return [
+                {
+                    "episode_id": "base",
+                    "step": 0,
+                    "observation_version": "v4",
+                    "feature_vector": [0.0] * 302,
+                    "action": "east",
+                    "allowed_actions": ["east", "west"],
+                }
+            ]
+        return [
+            {
+                "episode_id": "dagger:appo:0",
+                "step": 0,
+                "observation_version": "v4",
+                "feature_vector": [0.0] * 302,
+                "action": "east",
+                "allowed_actions": ["east", "west"],
+                "behavior_action": "east",
+                "teacher_action": "east",
+            },
+            {
+                "episode_id": "dagger:appo:0",
+                "step": 1,
+                "observation_version": "v4",
+                "feature_vector": [0.0] * 302,
+                "action": "south",
+                "allowed_actions": ["south", "north"],
+                "behavior_action": "east",
+                "teacher_action": "south",
+                "is_disagreement_candidate": True,
+            },
+        ]
+
+    def fake_build_merged_trace_rows(**kwargs):
+        captured["relabeled_rows"] = kwargs["relabeled_rows"]
+        return kwargs["base_rows"] + kwargs["relabeled_rows"]
+
+    def fake_train_bc_model(rows, bc_output, **kwargs):
+        return {"rows": len(rows), "bc_output": bc_output}
+
+    def fake_evaluate_trace_policy(*args, **kwargs):
+        return {"summary": {"match_rate": 0.5}}
+
+    monkeypatch.setattr(dagger_module, "generate_dagger_traces", fake_generate_dagger_traces)
+    monkeypatch.setattr(dagger_module, "load_trace_rows", fake_load_trace_rows)
+    monkeypatch.setattr(dagger_module, "build_merged_trace_rows", fake_build_merged_trace_rows)
+    monkeypatch.setattr(dagger_module, "train_bc_model", fake_train_bc_model)
+    monkeypatch.setattr(dagger_module, "evaluate_trace_policy", fake_evaluate_trace_policy)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        report = run_dagger_iteration(
+            base_trace_input=os.path.join(tmpdir, "base.jsonl"),
+            dagger_trace_output=os.path.join(tmpdir, "dagger.jsonl"),
+            bc_output=os.path.join(tmpdir, "bc.pt"),
+            student_policy="appo",
+            appo_checkpoint_path=os.path.join(tmpdir, "checkpoint.pth"),
+            observation_version="v4",
+            dagger_row_policy="disagreement",
+            dagger_keep_match_ratio=0.0,
+        )
+
+    assert len(captured["relabeled_rows"]) == 1
+    assert captured["relabeled_rows"][0]["teacher_action"] == "south"
+    assert report["selected_dagger_rows"] == 1
+    assert report["selected_dagger_row_summary"]["disagreement_rows"] == 1
+
+
 def test_rank_checkpoints_skips_unreadable_checkpoint(monkeypatch):
     checkpoints = [Path("/tmp/valid.pth"), Path("/tmp/broken.pth")]
 
@@ -2818,6 +2920,34 @@ def test_build_merged_trace_rows_policies():
         rng=random.Random(0),
     )
     assert len(merged_weighted) == 4
+
+
+def test_select_dagger_rows_targets_hard_cases_and_keeps_match_anchor():
+    import random
+
+    rows = [
+        {"episode_id": "a", "step": 0, "behavior_action": "east", "teacher_action": "east"},
+        {"episode_id": "a", "step": 1, "behavior_action": "north", "teacher_action": "south", "is_disagreement_candidate": True},
+        {"episode_id": "a", "step": 2, "behavior_action": "west", "teacher_action": "west", "is_loop_risk": True},
+        {"episode_id": "a", "step": 3, "behavior_action": "search", "teacher_action": "search", "is_weak_action": True},
+    ]
+    selected = select_dagger_rows(
+        rows=rows,
+        row_selection_policy="hard_only",
+        keep_match_ratio=0.5,
+        rng=random.Random(7),
+    )
+    assert len(selected) == 4
+    assert sum(int(row.get("behavior_action") == row.get("teacher_action")) for row in selected) == 3
+
+    disagreement_only = select_dagger_rows(
+        rows=rows,
+        row_selection_policy="disagreement",
+        keep_match_ratio=0.0,
+        rng=random.Random(7),
+    )
+    assert len(disagreement_only) == 1
+    assert disagreement_only[0]["teacher_action"] == "south"
 
 
 def test_trace_checkpoint_monitor_writes_best_metadata(monkeypatch):

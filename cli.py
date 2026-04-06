@@ -1042,6 +1042,8 @@ def cmd_rl_run_dagger(args):
         observation_version=args.observation_version,
         merge_ratio=args.merge_ratio,
         merge_policy=args.merge_policy,
+        dagger_row_policy=args.dagger_row_policy,
+        dagger_keep_match_ratio=args.dagger_keep_match_ratio,
         epochs=args.epochs,
         lr=args.lr,
         hidden_size=args.hidden_size,
@@ -1074,6 +1076,8 @@ def cmd_rl_dagger_iterate(args):
         observation_version=args.observation_version,
         merge_ratio=args.merge_ratio,
         merge_policy=args.merge_policy,
+        dagger_row_policy=args.dagger_row_policy,
+        dagger_keep_match_ratio=args.dagger_keep_match_ratio,
         epochs=args.epochs,
         lr=args.lr,
         hidden_size=args.hidden_size,
@@ -1664,6 +1668,10 @@ def main():
                              help='Fraction of the base trace dataset to keep when merging with new relabeled traces')
     p_rl_dagger.add_argument('--merge-policy', type=str, default='uniform_merge',
                              choices=['base_only', 'uniform_merge', 'weighted_recent'])
+    p_rl_dagger.add_argument('--dagger-row-policy', type=str, default='all',
+                             choices=['all', 'disagreement', 'loop_risk', 'failure_slice', 'weak_action', 'hard_only'])
+    p_rl_dagger.add_argument('--dagger-keep-match-ratio', type=float, default=0.0,
+                             help='Keep a small fraction of on-support DAgger rows as anchors after filtering')
     p_rl_dagger.add_argument('--heldout-input', type=str, default=None,
                              help='Optional held-out trace JSONL for post-iteration evaluation')
     p_rl_dagger.add_argument('--epochs', type=int, default=20)
@@ -1694,6 +1702,9 @@ def main():
     p_rl_dagger_sched.add_argument('--merge-ratio', type=float, default=0.5)
     p_rl_dagger_sched.add_argument('--merge-policy', type=str, default='uniform_merge',
                                    choices=['base_only', 'uniform_merge', 'weighted_recent'])
+    p_rl_dagger_sched.add_argument('--dagger-row-policy', type=str, default='all',
+                                   choices=['all', 'disagreement', 'loop_risk', 'failure_slice', 'weak_action', 'hard_only'])
+    p_rl_dagger_sched.add_argument('--dagger-keep-match-ratio', type=float, default=0.0)
     p_rl_dagger_sched.add_argument('--heldout-input', type=str, default=None)
     p_rl_dagger_sched.add_argument('--epochs', type=int, default=20)
     p_rl_dagger_sched.add_argument('--lr', type=float, default=1e-3)
