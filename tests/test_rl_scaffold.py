@@ -21,7 +21,14 @@ from rl.bc_model import load_bc_model
 from rl.debug_tools import check_policy_determinism, compare_actions_on_teacher_states
 from rl.trace_eval import evaluate_trace_policy, trace_disagreement_report
 from rl.evaluate import _load_checkpoint_payload
-from rl.traces import shard_trace_file, generate_dagger_traces, generate_multi_turn_traces, verify_trace_file
+from rl.traces import (
+    shard_trace_file,
+    generate_dagger_traces,
+    generate_multi_turn_traces,
+    verify_trace_file,
+    parse_adjacent_from_prompt_text,
+    matches_adjacent_signature,
+)
 from rl.checkpoint_tools import TraceCheckpointMonitor, write_trace_best_alias, rank_appo_checkpoints_by_trace
 import rl.checkpoint_tools as checkpoint_tools
 import rl.dagger as dagger_module
@@ -100,6 +107,63 @@ def test_parse_action_weight_boosts_supports_csv():
         ACTION_SET.index("east"): 2.0,
         ACTION_SET.index("west"): 1.5,
     }
+
+
+def test_cli_mine_reset_slice_forwards_signature(monkeypatch):
+    captured = {}
+
+    def fake_mine(**kwargs):
+        captured["kwargs"] = kwargs
+        return {"rows": 0}
+
+    monkeypatch.setattr("rl.traces.mine_reset_teacher_slice", fake_mine)
+    args = argparse.Namespace(
+        output="/tmp/mine.jsonl",
+        seed_start=300,
+        num_seeds=100,
+        task="explore",
+        observation_version="v4",
+        adjacent_signature="north=monster_*,south=floor,east=monster_*,west=floor",
+        recreate_every=123,
+        max_rows=7,
+    )
+    rc = cli_module.cmd_rl_mine_reset_slice(args)
+    assert rc == 0
+    assert captured["kwargs"]["adjacent_signature"] == {
+        "north": "monster_*",
+        "south": "floor",
+        "east": "monster_*",
+        "west": "floor",
+    }
+    assert captured["kwargs"]["recreate_every"] == 123
+    assert captured["kwargs"]["max_rows"] == 7
+
+
+def test_parse_adjacent_from_prompt_text_and_match_signature():
+    prompt = "\n".join(
+        [
+            "HP:14/14 AC:4",
+            "Adjacent: north=monster_f south=floor east=monster_F west=floor",
+            "Action: east",
+        ]
+    )
+    adjacent = parse_adjacent_from_prompt_text(prompt)
+    assert adjacent == {
+        "north": "monster_f",
+        "south": "floor",
+        "east": "monster_F",
+        "west": "floor",
+    }
+    assert matches_adjacent_signature(
+        adjacent,
+        {
+            "north": "monster_*",
+            "south": "floor",
+            "east": "monster_*",
+            "west": "floor",
+        },
+    )
+    assert not matches_adjacent_signature(adjacent, {"east": "wall"})
 
 
 def test_cli_train_bc_forwards_explicit_device(monkeypatch):

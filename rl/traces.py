@@ -235,6 +235,38 @@ def verify_trace_file(path: str) -> dict:
     }
 
 
+def parse_adjacent_from_prompt_text(prompt_text: str) -> dict[str, str]:
+    adjacent_line = None
+    for line in str(prompt_text or "").splitlines():
+        if line.startswith("Adjacent:"):
+            adjacent_line = line[len("Adjacent:"):].strip()
+            break
+    if not adjacent_line:
+        return {}
+    parsed: dict[str, str] = {}
+    for token in adjacent_line.split():
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        parsed[key.strip()] = value.strip()
+    return parsed
+
+
+def matches_adjacent_signature(adjacent: dict[str, str], signature: dict[str, str]) -> bool:
+    if not signature:
+        return True
+    for direction, expected in signature.items():
+        actual = adjacent.get(direction)
+        if actual is None:
+            return False
+        if expected.endswith("*"):
+            if not actual.startswith(expected[:-1]):
+                return False
+        elif actual != expected:
+            return False
+    return True
+
+
 def shard_trace_file(
     input_path: str,
     output_path: str,
@@ -258,32 +290,8 @@ def shard_trace_file(
     current_episode_id: str | None = None
 
     def row_matches_adjacent_signature(row: dict) -> bool:
-        if not adjacent_filter:
-            return True
         prompt_text = str(row.get("state_prompt") or row.get("prompt") or "")
-        adjacent_line = None
-        for line in prompt_text.splitlines():
-            if line.startswith("Adjacent:"):
-                adjacent_line = line[len("Adjacent:"):].strip()
-                break
-        if not adjacent_line:
-            return False
-        parsed: dict[str, str] = {}
-        for token in adjacent_line.split():
-            if "=" not in token:
-                continue
-            key, value = token.split("=", 1)
-            parsed[key.strip()] = value.strip()
-        for direction, expected in adjacent_filter.items():
-            actual = parsed.get(direction)
-            if actual is None:
-                return False
-            if expected.endswith("*"):
-                if not actual.startswith(expected[:-1]):
-                    return False
-            elif actual != expected:
-                return False
-        return True
+        return matches_adjacent_signature(parse_adjacent_from_prompt_text(prompt_text), adjacent_filter)
 
     def flush_episode() -> bool:
         if not current_episode_rows:
@@ -330,6 +338,129 @@ def shard_trace_file(
     summary["selected_teacher_actions"] = sorted(action_filter)
     summary["selected_adjacent_signature"] = adjacent_filter
     return summary
+
+
+def mine_reset_teacher_slice(
+    output_path: str,
+    *,
+    seed_start: int,
+    num_seeds: int,
+    task: str = "explore",
+    observation_version: str = "v1",
+    adjacent_signature: dict[str, str] | None = None,
+    recreate_every: int = 250,
+    max_rows: int | None = None,
+) -> dict:
+    os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
+    encoder = StateEncoder()
+    registry = build_skill_registry()
+    scheduler = build_scheduler("rule_based")
+    signature = dict(adjacent_signature or {})
+
+    rows: list[dict] = []
+    action_counts: Counter[str] = Counter()
+    reset_errors: list[dict] = []
+
+    def make_env():
+        return nle.env.NLE()
+
+    env = make_env()
+    try:
+        for offset in range(num_seeds):
+            seed = seed_start + offset
+            if offset and recreate_every > 0 and offset % recreate_every == 0:
+                env.close()
+                env = make_env()
+            try:
+                obs, _ = env.reset(seed=seed)
+            except Exception as exc:
+                reset_errors.append({"seed": seed, "error": str(exc)})
+                try:
+                    env.close()
+                except Exception:
+                    pass
+                env = make_env()
+                continue
+
+            state = encoder.encode_full(obs)
+            if signature and not matches_adjacent_signature(state.get("adjacent", {}), signature):
+                continue
+
+            memory = MemoryTracker()
+            memory.update(obs)
+            memory.detect_rooms()
+            recent_state_hashes = [observation_hash(obs)]
+            recent_positions = [state["position"]]
+            available_skills = [name for name, option in registry.items() if option.can_start(state, memory)] or [task]
+            active_skill = task if task in available_skills else scheduler.select_skill(
+                SchedulerContext(
+                    state=state,
+                    memory=memory,
+                    active_skill=task,
+                    steps_in_skill=0,
+                    available_skills=available_skills,
+                )
+            )
+            allowed_actions = registry[active_skill].allowed_actions(state, memory)
+            teacher_action, planner_trace = select_task_action(
+                env=env,
+                obs_before=obs,
+                state_before=state,
+                memory_before=memory,
+                task=active_skill,
+                prev_action=None,
+                recent_state_hashes=recent_state_hashes,
+                recent_positions=recent_positions,
+                encoder=encoder,
+            )
+            timestep = build_policy_timestep(
+                state=state,
+                task=active_skill,
+                allowed_actions=allowed_actions,
+                memory=memory,
+                step=0,
+                recent_positions=recent_positions,
+                recent_actions=[],
+                recent_state_hashes=recent_state_hashes,
+                obs_hash=observation_hash(obs),
+                obs=obs,
+            )
+            row = {
+                "episode_id": f"mined:{task}:{seed}",
+                "seed": seed,
+                "step": 0,
+                "policy": "task_greedy",
+                "task": active_skill,
+                "action": teacher_action,
+                "allowed_actions": allowed_actions,
+                "prompt": encoder.format_prompt(state, teacher_action),
+                "state_prompt": encoder.format_state_prompt(state),
+                "feature_vector": encode_observation(timestep, version=observation_version).tolist(),
+                "observation_version": observation_version,
+                "teacher_action_index": ACTION_SET.index(teacher_action) if teacher_action in ACTION_SET else ACTION_SET.index("wait"),
+                "is_weak_action": teacher_action in {"south", "west", "search"},
+                "planner_trace": planner_trace,
+            }
+            rows.append(row)
+            action_counts[teacher_action] += 1
+            if max_rows is not None and len(rows) >= max_rows:
+                break
+    finally:
+        env.close()
+
+    atomic_write_text(output_path, "".join(json.dumps(row) + "\n" for row in rows))
+    return {
+        "output_path": output_path,
+        "seed_start": seed_start,
+        "num_seeds": num_seeds,
+        "task": task,
+        "observation_version": observation_version,
+        "selected_adjacent_signature": signature,
+        "rows": len(rows),
+        "action_counts": dict(action_counts),
+        "reset_errors": len(reset_errors),
+        "reset_error_samples": reset_errors[:5],
+    }
 
 
 def _query_forward_model(server_url: str, model_name: str, prompt_text: str) -> dict:

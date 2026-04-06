@@ -516,6 +516,33 @@ def cmd_rl_generate_traces(args):
     return 0
 
 
+def cmd_rl_mine_reset_slice(args):
+    from rl.traces import mine_reset_teacher_slice
+
+    adjacent_signature = {}
+    for token in str(args.adjacent_signature or "").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if "=" not in token:
+            raise ValueError(f"Invalid adjacent signature token: {token!r}")
+        key, value = token.split("=", 1)
+        adjacent_signature[key.strip()] = value.strip()
+
+    result = mine_reset_teacher_slice(
+        output_path=args.output,
+        seed_start=args.seed_start,
+        num_seeds=args.num_seeds,
+        task=args.task,
+        observation_version=args.observation_version,
+        adjacent_signature=adjacent_signature,
+        recreate_every=args.recreate_every,
+        max_rows=args.max_rows,
+    )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
 def cmd_rl_verify_traces(args):
     from rl.traces import verify_trace_file
 
@@ -1722,6 +1749,20 @@ def main():
     p_trace.add_argument('--observation-version', type=str, default='v1',
                          help='Feature encoder version stored in trace rows')
 
+    p_mine = subparsers.add_parser('rl-mine-reset-slice', help='Mine step-0 task_greedy traces from reset states matching a local geometry')
+    p_mine.add_argument('--output', type=str, required=True)
+    p_mine.add_argument('--seed-start', type=int, default=42)
+    p_mine.add_argument('--num-seeds', type=int, default=1000)
+    p_mine.add_argument('--task', type=str, default='explore',
+                        choices=['explore', 'survive', 'combat', 'descend', 'resource'])
+    p_mine.add_argument('--observation-version', type=str, default='v1')
+    p_mine.add_argument('--adjacent-signature', type=str, required=True,
+                        help='Comma-separated local geometry filter, e.g. north=monster_*,south=floor,east=monster_*,west=floor')
+    p_mine.add_argument('--recreate-every', type=int, default=250,
+                        help='Recreate the raw NLE env every N resets to reduce reset-instability')
+    p_mine.add_argument('--max-rows', type=int, default=None,
+                        help='Optional early stop after collecting this many matching rows')
+
     p_trace_verify = subparsers.add_parser('rl-verify-traces', help='Verify a trace file is multi-turn')
     p_trace_verify.add_argument('--input', type=str, required=True)
 
@@ -1923,6 +1964,8 @@ def main():
             return cmd_rl_train_scheduler(args)
         elif args.command == 'rl-generate-traces':
             return cmd_rl_generate_traces(args)
+        elif args.command == 'rl-mine-reset-slice':
+            return cmd_rl_mine_reset_slice(args)
         elif args.command == 'rl-verify-traces':
             return cmd_rl_verify_traces(args)
         elif args.command == 'rl-train-bc':

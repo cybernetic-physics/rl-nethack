@@ -707,6 +707,12 @@ More specifically:
   - augmenting the base train set with the single off-heldout `east` example was enough to fix the original held-out `east` miss,
   - but every such augmentation simply moved the lone benchmark error to a different row, yielding `0.9875` again,
   - so the current best explanation is not “the model cannot represent the fix,” but “the repo lacks enough breadth in that failure-family slice,”
+- broader reset-slice mining strengthened and then narrowed that diagnosis,
+  - a new reset-slice miner over `30k` fresh seeds found `25` off-heldout rows for the looser geometry `north=monster_*`, `south=floor`, `east=monster_*`, `west=floor`,
+  - but their teacher-action mix was `north=13`, `east=7`, `south=5`, which already showed that adjacency alone was not enough context,
+  - held-out-selected teachers trained on that broader slice, including mixed distill variants, all regressed to `0.975`,
+  - the exact held-out species pair `north=monster_f`, `east=monster_o` appeared only once in `30k` fresh seeds, and even oversampling that exact off-heldout `east` row still regressed to `0.975`,
+  - so the last `0.9875 -> 1.0` gap is now best understood as too thin and too branch-specific for simple hard-case oversampling to be a reliable mainline teacher-improvement strategy,
 - the most plausible next frontier is a more teacher-aware and behavior-constrained online improver.
 
 ## Practical Research Rules Going Forward
