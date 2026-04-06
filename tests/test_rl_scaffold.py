@@ -1134,6 +1134,8 @@ def test_improver_report_links_teacher_and_best_trace_metadata():
         experiment_dir = Path(tmpdir) / "exp"
         checkpoint_dir = experiment_dir / "checkpoint_p0"
         checkpoint_dir.mkdir(parents=True)
+        final_ckpt = checkpoint_dir / "checkpoint_000000012_96.pth"
+        torch.save({"model": {"weight": torch.tensor([1.0])}}, final_ckpt)
         teacher_report_path = Path(tmpdir) / "teacher_report.json"
         teacher_report_path.write_text(
             json.dumps(
@@ -1167,6 +1169,20 @@ def test_improver_report_links_teacher_and_best_trace_metadata():
         cfg.model.bc_init_path = "/tmp/teacher.pt"
         cfg.appo.teacher_replay_trace_input = "/tmp/replay.jsonl"
         cfg.appo.trace_eval_input = "/tmp/heldout.jsonl"
+        cfg.appo.teacher_prior_bc_path = "/tmp/prior.pt"
+        cfg.appo.teacher_policy_blend_coef = 0.25
+        cfg.appo.teacher_policy_fallback_confidence = 0.55
+
+        original_eval = build_improver_report.__globals__["evaluate_checkpoint_trace_match"]
+        original_list = build_improver_report.__globals__["list_checkpoint_paths"]
+        build_improver_report.__globals__["list_checkpoint_paths"] = lambda experiment, train_dir: [final_ckpt]
+        build_improver_report.__globals__["evaluate_checkpoint_trace_match"] = lambda **kwargs: {
+            "checkpoint_path": str(final_ckpt),
+            "env_steps": 96,
+            "match_rate": 0.9,
+            "invalid_action_rate": 0.0,
+            "action_counts": {"east": 4},
+        }
         report = build_improver_report(
             config=cfg,
             plan={"experiment": "exp"},
@@ -1174,10 +1190,18 @@ def test_improver_report_links_teacher_and_best_trace_metadata():
             warmstart_checkpoint="/tmp/warmstart.pth",
             status="SUCCESS",
         )
+        build_improver_report.__globals__["evaluate_checkpoint_trace_match"] = original_eval
+        build_improver_report.__globals__["list_checkpoint_paths"] = original_list
         assert report["teacher_checkpoint_path"] == "/tmp/teacher.pt"
         assert report["teacher_report_summary"]["heldout_match_rate"] == 0.95
         assert report["warmstart_trace_metadata"]["match_rate"] == 0.975
+        assert report["best_trace_metadata"]["match_rate"] == 0.9375
+        assert report["final_trace_metadata"]["match_rate"] == 0.9
+        assert report["teacher_policy"]["prior_checkpoint_path"] == "/tmp/prior.pt"
+        assert report["teacher_policy"]["blend_coef"] == 0.25
+        assert report["teacher_policy"]["fallback_confidence"] == 0.55
         assert report["trace_gate"]["best_checkpoint_path"].endswith("checkpoint_000000010_80.pth")
+        assert report["trace_gate"]["final_checkpoint_path"].endswith("checkpoint_000000012_96.pth")
 
 
 def test_teacher_patch_is_idempotent():

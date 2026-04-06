@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 
 from rl.config import RLConfig
+from rl.checkpoint_tools import checkpoint_env_steps, evaluate_checkpoint_trace_match
+from rl.evaluate import list_checkpoint_paths
 from rl.io_utils import atomic_write_json
 
 
@@ -23,6 +25,40 @@ def _load_json_if_exists(path: str | None) -> dict | None:
         return None
 
 
+def _latest_retained_checkpoint_path(experiment: str, train_dir: str) -> str | None:
+    try:
+        checkpoints = list_checkpoint_paths(experiment, train_dir)
+    except FileNotFoundError:
+        return None
+    retained = [path for path in checkpoints if checkpoint_env_steps(path) > 0]
+    if not retained:
+        return None
+    retained.sort(key=checkpoint_env_steps)
+    return str(retained[-1])
+
+
+def _evaluate_trace_checkpoint_if_possible(
+    *,
+    experiment: str,
+    train_dir: str,
+    trace_input: str | None,
+    checkpoint_path: str | None,
+) -> dict | None:
+    if not trace_input or not checkpoint_path:
+        return None
+    if not Path(checkpoint_path).exists():
+        return None
+    try:
+        return evaluate_checkpoint_trace_match(
+            experiment=experiment,
+            train_dir=train_dir,
+            trace_input=trace_input,
+            checkpoint_path=checkpoint_path,
+        )
+    except Exception:
+        return None
+
+
 def build_improver_report(
     *,
     config: RLConfig,
@@ -35,6 +71,13 @@ def build_improver_report(
     teacher_report = _load_json_if_exists(config.model.teacher_report_path)
     best_trace_metadata = _load_json_if_exists(str(experiment_dir / "checkpoint_p0" / "best_trace_match.json"))
     warmstart_trace_metadata = _load_json_if_exists(str(experiment_dir / "checkpoint_p0" / "warmstart_trace_match.json"))
+    final_checkpoint_path = _latest_retained_checkpoint_path(config.experiment, config.train_dir)
+    final_trace_metadata = _evaluate_trace_checkpoint_if_possible(
+        experiment=config.experiment,
+        train_dir=config.train_dir,
+        trace_input=config.appo.trace_eval_input,
+        checkpoint_path=final_checkpoint_path,
+    )
 
     teacher_checkpoint = (
         config.appo.teacher_bc_path
@@ -62,6 +105,14 @@ def build_improver_report(
         else None,
         "warmstart_checkpoint": warmstart_checkpoint,
         "warmstart_trace_metadata": warmstart_trace_metadata,
+        "best_trace_metadata": best_trace_metadata,
+        "final_trace_metadata": final_trace_metadata,
+        "teacher_policy": {
+            "prior_checkpoint_path": config.appo.teacher_prior_bc_path or config.appo.teacher_bc_path,
+            "blend_coef": config.appo.teacher_policy_blend_coef,
+            "fallback_confidence": config.appo.teacher_policy_fallback_confidence,
+            "disagreement_margin": config.appo.teacher_policy_disagreement_margin,
+        },
         "replay_source": {
             "trace_input": config.appo.teacher_replay_trace_input,
             "source_mode": config.appo.teacher_replay_source_mode,
@@ -82,6 +133,8 @@ def build_improver_report(
             "trace_eval_interval_env_steps": config.appo.trace_eval_interval_env_steps,
             "best_checkpoint_path": best_learned_checkpoint,
             "best_trace_metadata": best_trace_metadata,
+            "final_checkpoint_path": final_checkpoint_path,
+            "final_trace_metadata": final_trace_metadata,
         },
         "observation": {
             "version": config.env.observation_version,

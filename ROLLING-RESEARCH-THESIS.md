@@ -736,6 +736,11 @@ More specifically:
   - with confidence fallback disabled and disagreement-margin gating alone enabled, the short split-base probe still tied `0.9875`, but only at `1024`,
   - retained late checkpoints then collapsed to `0.7875` and `0.7625`,
   - so disagreement-only gating is strong negative evidence: the confidence-based teacher anchor was doing essential stabilization work, and replacing it with a weaker disagreement-only rule makes the branch much worse,
+- a direct teacher-base blend probe also failed:
+  - the improver-report path now records top-level best/final trace metadata and explicit teacher-policy config, which closes a real reporting gap for constrained improver branches,
+  - using that path, a split-base blend probe with `teacher_policy_blend_coef=0.15` and confidence fallback `0.55` still tied `0.9875` at `512`,
+  - but retained late checkpoints fell to `0.8125` and `0.7875`,
+  - so simple probability blending is not the right residual parameterization either; it is materially worse than the plain split-base confidence-fallback branch,
 - the most plausible next frontier is a more teacher-aware and behavior-constrained online improver.
 
 ## Practical Research Rules Going Forward
