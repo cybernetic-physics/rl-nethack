@@ -95,6 +95,7 @@ def _load_actor_critic(experiment: str, train_dir: str, device: str, checkpoint_
     parser.add_argument("--teacher_loss_coef", type=float, default=0.0)
     parser.add_argument("--teacher_loss_type", type=str, default="ce")
     parser.add_argument("--teacher_bc_path", type=str, default=None)
+    parser.add_argument("--teacher_prior_bc_path", type=str, default=None)
     parser.add_argument("--teacher_policy_blend_coef", type=float, default=0.0)
     parser.add_argument("--teacher_policy_fallback_confidence", type=float, default=0.0)
     parser.add_argument("--trace_eval_input", type=str, default=None)

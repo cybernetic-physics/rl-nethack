@@ -50,6 +50,7 @@ class APPOTrainerScaffold:
             "proxy_reward_path": self.config.reward.proxy_reward_path,
             "proxy_reward_weight": self.config.reward.proxy_reward_weight,
             "teacher_bc_path": self.config.appo.teacher_bc_path,
+            "teacher_prior_bc_path": self.config.appo.teacher_prior_bc_path,
             "teacher_report_path": self.config.model.teacher_report_path,
             "teacher_loss_coef": self.config.appo.teacher_loss_coef,
             "teacher_loss_type": self.config.appo.teacher_loss_type,
@@ -132,6 +133,7 @@ class APPOTrainerScaffold:
             f"--teacher_loss_coef={cfg.appo.teacher_loss_coef}",
             f"--teacher_loss_type={cfg.appo.teacher_loss_type}",
             f"--teacher_bc_path={cfg.appo.teacher_bc_path or ''}",
+            f"--teacher_prior_bc_path={cfg.appo.teacher_prior_bc_path or ''}",
             f"--teacher_report_path={cfg.model.teacher_report_path or ''}",
             f"--teacher_action_boosts={cfg.appo.teacher_action_boosts}",
             f"--teacher_loss_final_coef={cfg.appo.teacher_loss_final_coef}",
@@ -338,6 +340,7 @@ class APPOTrainerScaffold:
         parser.add_argument("--bc_init_path", type=str, default=self.config.model.bc_init_path)
         parser.add_argument("--appo_init_checkpoint_path", type=str, default=self.config.model.appo_init_checkpoint_path)
         parser.add_argument("--teacher_bc_path", type=str, default=self.config.appo.teacher_bc_path)
+        parser.add_argument("--teacher_prior_bc_path", type=str, default=self.config.appo.teacher_prior_bc_path)
         parser.add_argument("--teacher_report_path", type=str, default=self.config.model.teacher_report_path)
         parser.add_argument("--teacher_loss_coef", type=float, default=self.config.appo.teacher_loss_coef)
         parser.add_argument("--teacher_loss_type", type=str, default=self.config.appo.teacher_loss_type)

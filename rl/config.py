@@ -42,6 +42,7 @@ class APPOConfig:
     teacher_loss_coef: float = 0.0
     teacher_loss_type: str = "ce"
     teacher_bc_path: str | None = None
+    teacher_prior_bc_path: str | None = None
     teacher_action_boosts: str = ""
     teacher_loss_final_coef: float = 0.0
     teacher_loss_warmup_env_steps: int = 0

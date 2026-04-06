@@ -725,6 +725,12 @@ More specifically:
   - but it substantially improved late stability, with retained late checkpoints at `0.9625` and `0.95` instead of the previous `0.8875` / `0.8875`,
   - this means "teacher as rollout-time base" is a real stabilizer only when the fallback base is the exact trusted teacher artifact,
   - but raw confidence fallback alone is still preservation-oriented and not yet a real improver,
+- splitting the rollout fallback base from the supervision teacher sharpened that conclusion:
+  - a new `teacher_prior_bc_path` now allows the exact trusted `0.9875` teacher to remain the rollout fallback base while separate auxiliary teachers drive replay / CE supervision,
+  - under that split-base configuration, the short `4k` probe recovered a best learned checkpoint of `0.9875` at `512`,
+  - more importantly, a retained late checkpoint at `4352` also matched `0.9875`, which is better than both the no-fallback mask-aware branch and the single-teacher fallback branch,
+  - but the final retained checkpoint still fell to `0.975`, and no learned checkpoint exceeded the trusted teacher,
+  - so decoupled teacher base plus auxiliary supervision is the strongest stabilizer variant yet, but it is still not a teacher-beating improver,
 - the most plausible next frontier is a more teacher-aware and behavior-constrained online improver.
 
 ## Practical Research Rules Going Forward

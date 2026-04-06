@@ -380,6 +380,8 @@ def cmd_rl_train_appo(args):
         argv.extend(["--appo-init-checkpoint-path", args.appo_init_checkpoint_path])
     if args.teacher_bc_path:
         argv.extend(["--teacher-bc-path", args.teacher_bc_path])
+    if getattr(args, "teacher_prior_bc_path", None):
+        argv.extend(["--teacher-prior-bc-path", args.teacher_prior_bc_path])
     if getattr(args, "teacher_report_path", None):
         argv.extend(["--teacher-report-path", args.teacher_report_path])
     if getattr(args, "teacher_loss_coef", None) is not None:
@@ -1429,6 +1431,8 @@ def main():
                       help='Optional APPO checkpoint used to warm start a fresh APPO experiment')
     p_rl.add_argument('--teacher-bc-path', type=str, default=None,
                       help='Optional frozen BC teacher checkpoint used for auxiliary teacher regularization')
+    p_rl.add_argument('--teacher-prior-bc-path', type=str, default=None,
+                      help='Optional BC teacher checkpoint used only for rollout-time teacher prior / fallback')
     p_rl.add_argument('--teacher-report-path', type=str, default=None,
                       help='Optional canonical teacher report JSON used to link this improver run back to its teacher artifact')
     p_rl.add_argument('--teacher-loss-coef', type=float, default=0.01,

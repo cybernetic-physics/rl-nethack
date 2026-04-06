@@ -112,8 +112,15 @@ def _teacher_enabled(cfg: Any) -> bool:
     return bool(_parse_teacher_bc_paths(getattr(cfg, "teacher_bc_path", None))) and float(getattr(cfg, "teacher_loss_coef", 0.0) or 0.0) > 0.0
 
 
+def _resolve_teacher_prior_bc_paths(cfg: Any) -> list[str]:
+    prior_raw = getattr(cfg, "teacher_prior_bc_path", None)
+    if prior_raw:
+        return _parse_teacher_bc_paths(prior_raw)
+    return _parse_teacher_bc_paths(getattr(cfg, "teacher_bc_path", None))
+
+
 def _teacher_policy_prior_enabled(cfg: Any) -> bool:
-    return bool(_parse_teacher_bc_paths(getattr(cfg, "teacher_bc_path", None))) and (
+    return bool(_resolve_teacher_prior_bc_paths(cfg)) and (
         float(getattr(cfg, "teacher_policy_blend_coef", 0.0) or 0.0) > 0.0
         or float(getattr(cfg, "teacher_policy_fallback_confidence", 0.0) or 0.0) > 0.0
     )
@@ -287,7 +294,7 @@ def _ensure_teacher_prior_models(module: Any, device: torch.device) -> None:
         return
     if bool(getattr(cfg, "normalize_input", False)):
         raise ValueError("Teacher policy prior requires normalize_input=False")
-    teacher_paths = _parse_teacher_bc_paths(getattr(cfg, "teacher_bc_path", None))
+    teacher_paths = _resolve_teacher_prior_bc_paths(cfg)
     module._teacher_prior_policies = [_load_bc_teacher_model(path, device) for path in teacher_paths]
 
 

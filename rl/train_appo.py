@@ -52,6 +52,7 @@ def parse_args(argv=None):
     parser.add_argument("--bc-init-path", type=str, default=None)
     parser.add_argument("--appo-init-checkpoint-path", type=str, default=None)
     parser.add_argument("--teacher-bc-path", type=str, default=None)
+    parser.add_argument("--teacher-prior-bc-path", type=str, default=None)
     parser.add_argument("--teacher-report-path", type=str, default=None)
     parser.add_argument("--teacher-loss-coef", type=float, default=0.01)
     parser.add_argument("--teacher-loss-type", type=str, default="ce", choices=["ce", "kl"])
@@ -182,6 +183,7 @@ def build_config(args) -> RLConfig:
     if args.bc_init_path and not disable_input_normalization:
         config.model.normalize_input = False
     config.appo.teacher_bc_path = args.teacher_bc_path or args.bc_init_path
+    config.appo.teacher_prior_bc_path = getattr(args, "teacher_prior_bc_path", None)
     config.appo.teacher_loss_coef = args.teacher_loss_coef
     config.appo.teacher_loss_type = args.teacher_loss_type
     config.appo.teacher_action_boosts = args.teacher_action_boosts

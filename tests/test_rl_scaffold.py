@@ -44,6 +44,7 @@ from rl.teacher_reg import (
     _mask_logits_with_action_mask,
     _parse_teacher_bc_paths,
     _parse_teacher_action_boosts,
+    _resolve_teacher_prior_bc_paths,
     _teacher_policy_blend,
     _teacher_policy_fallback_mask,
     _scheduled_actor_loss_scale,
@@ -103,6 +104,13 @@ def test_parse_teacher_bc_paths_supports_csv():
     assert _parse_teacher_bc_paths("") == []
     assert _parse_teacher_bc_paths("/tmp/a.pt") == ["/tmp/a.pt"]
     assert _parse_teacher_bc_paths("/tmp/a.pt, /tmp/b.pt") == ["/tmp/a.pt", "/tmp/b.pt"]
+
+
+def test_resolve_teacher_prior_bc_paths_prefers_explicit_prior():
+    cfg = argparse.Namespace(teacher_bc_path="/tmp/a.pt,/tmp/b.pt", teacher_prior_bc_path="/tmp/c.pt")
+    assert _resolve_teacher_prior_bc_paths(cfg) == ["/tmp/c.pt"]
+    cfg = argparse.Namespace(teacher_bc_path="/tmp/a.pt,/tmp/b.pt", teacher_prior_bc_path=None)
+    assert _resolve_teacher_prior_bc_paths(cfg) == ["/tmp/a.pt", "/tmp/b.pt"]
 
 
 def test_parse_action_weight_boosts_supports_csv():
@@ -364,6 +372,7 @@ def test_cli_rl_train_appo_forwards_teacher_prior_controls(monkeypatch):
         bc_init_path="/tmp/teacher.pt",
         appo_init_checkpoint_path=None,
         teacher_bc_path="/tmp/teacher.pt",
+        teacher_prior_bc_path="/tmp/prior.pt",
         teacher_report_path=None,
         teacher_loss_coef=0.01,
         teacher_loss_type="ce",
@@ -405,6 +414,8 @@ def test_cli_rl_train_appo_forwards_teacher_prior_controls(monkeypatch):
     assert argv[argv.index("--teacher-policy-blend-coef") + 1] == "0.2"
     assert "--teacher-policy-fallback-confidence" in argv
     assert argv[argv.index("--teacher-policy-fallback-confidence") + 1] == "0.6"
+    assert "--teacher-prior-bc-path" in argv
+    assert argv[argv.index("--teacher-prior-bc-path") + 1] == "/tmp/prior.pt"
 
 
 def test_trainer_scaffold_renders_plan():
@@ -419,6 +430,7 @@ def test_trainer_scaffold_renders_plan():
 def test_trainer_scaffold_includes_teacher_reg_args():
     config = RLConfig()
     config.appo.teacher_bc_path = "/tmp/teacher.pt"
+    config.appo.teacher_prior_bc_path = "/tmp/prior.pt"
     config.appo.teacher_loss_coef = 0.25
     config.appo.teacher_loss_type = "ce"
     config.appo.teacher_action_boosts = "west=2.0,south=1.5"
@@ -441,6 +453,7 @@ def test_trainer_scaffold_includes_teacher_reg_args():
     assert "--teacher_loss_coef=0.25" in argv
     assert "--teacher_loss_type=ce" in argv
     assert "--teacher_bc_path=/tmp/teacher.pt" in argv
+    assert "--teacher_prior_bc_path=/tmp/prior.pt" in argv
     assert "--teacher_action_boosts=west=2.0,south=1.5" in argv
     assert "--teacher_loss_final_coef=0.002" in argv
     assert "--teacher_loss_warmup_env_steps=1024" in argv
@@ -499,6 +512,7 @@ def test_build_appo_config_respects_value_stability_args():
             "nonlinearity": None,
             "bc_init_path": None,
             "teacher_bc_path": None,
+            "teacher_prior_bc_path": "/tmp/prior.pt",
             "teacher_report_path": "/tmp/teacher_report.json",
             "teacher_loss_coef": 0.01,
             "teacher_loss_type": "ce",
@@ -540,6 +554,7 @@ def test_build_appo_config_respects_value_stability_args():
     assert config.appo.teacher_replay_decay_env_steps == 256
     assert config.appo.teacher_replay_priority_power == 1.7
     assert config.appo.teacher_replay_source_mode == "disagreement"
+    assert config.appo.teacher_prior_bc_path == "/tmp/prior.pt"
     assert config.appo.teacher_policy_blend_coef == 0.2
     assert config.appo.teacher_policy_fallback_confidence == 0.6
     assert config.model.teacher_report_path == "/tmp/teacher_report.json"
