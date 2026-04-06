@@ -764,6 +764,15 @@ More specifically:
   - harvesting `128 x 40` student steps and keeping only exact `east->south,south->east` disagreement rows produced `144` selected rows and recovered to `0.975` held-out trace match,
   - that is much safer than broad DAgger, but it still does not beat the trusted `0.9875` teacher and the remaining held-out errors are still `east -> south`,
   - so exact student-harvested failure-family relabeling is a better selector than broad disagreement, but still not sufficient by itself; the next data-refinement step likely needs offline hard-case teacher data rather than more generic online-rollout relabeling,
+- a correctness audit exposed an important replay confound in the split-base improver:
+  - replay forward passes were able to inherit stale `_teacher_prior_raw_obs` from the on-policy teacher-prior path,
+  - that meant replay CE could be computed through the wrong teacher-prior / fallback context instead of on replay features alone,
+  - fixing that leak is the correct behavior, but the unchanged split-base short gate then regressed badly:
+    - warm-start stayed `0.9875`,
+    - best learned only tied `0.9875` at `256`,
+    - retained late fell to `0.8625`,
+    - final fell to `0.8375`,
+  - so the earlier split-base late-stability result was at least partly propped up by an invalid replay-prior coupling, which means that branch is cleaner now but weaker than previously believed,
 - the most plausible next frontier is a more teacher-aware and behavior-constrained online improver.
 
 ## Practical Research Rules Going Forward

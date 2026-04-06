@@ -129,6 +129,27 @@ def _load_teacher_replay_tensors(
     }
 
 
+def _forward_replay_action_logits(
+    actor_critic: Any,
+    replay_features: torch.Tensor,
+    replay_allowed_masks: torch.Tensor,
+) -> torch.Tensor:
+    sentinel = object()
+    prior_raw_obs = getattr(actor_critic, "_teacher_prior_raw_obs", sentinel)
+    if prior_raw_obs is not sentinel:
+        actor_critic._teacher_prior_raw_obs = None
+    try:
+        replay_logits = actor_critic.forward_head({"obs": replay_features})["x"]
+        replay_logits = actor_critic.forward_core(replay_logits, None, values_only=False)["x"]
+        replay_logits = actor_critic.forward_tail(
+            replay_logits, values_only=False, sample_actions=False
+        )["action_logits"]
+    finally:
+        if prior_raw_obs is not sentinel:
+            actor_critic._teacher_prior_raw_obs = prior_raw_obs
+    return replay_logits.masked_fill(replay_allowed_masks <= 0, -1e9)
+
+
 def _teacher_enabled(cfg: Any) -> bool:
     return bool(_parse_teacher_bc_paths(getattr(cfg, "teacher_bc_path", None))) and float(getattr(cfg, "teacher_loss_coef", 0.0) or 0.0) > 0.0
 
@@ -582,12 +603,11 @@ def patch_sample_factory_teacher_reg() -> None:
             replay_weak_action_flags = self.teacher_replay["weak_action_flags"][replay_indices]
             replay_loop_risk_flags = self.teacher_replay["loop_risk_flags"][replay_indices]
             replay_failure_flags = self.teacher_replay["failure_flags"][replay_indices]
-            student_replay_logits = self.actor_critic.forward_head({"obs": replay_features})["x"]
-            student_replay_logits = self.actor_critic.forward_core(student_replay_logits, None, values_only=False)["x"]
-            student_replay_logits = self.actor_critic.forward_tail(
-                student_replay_logits, values_only=False, sample_actions=False
-            )["action_logits"]
-            student_replay_logits = student_replay_logits.masked_fill(replay_allowed_masks <= 0, -1e9)
+            student_replay_logits = _forward_replay_action_logits(
+                self.actor_critic,
+                replay_features,
+                replay_allowed_masks,
+            )
             teacher_replay_coef = teacher_replay_loss.new_tensor(_scheduled_teacher_replay_coef(self))
             teacher_replay_loss = F.cross_entropy(student_replay_logits, replay_actions) * teacher_replay_coef
             loss_summaries["teacher_replay_disagreement_fraction"] = replay_disagreement_flags.mean()

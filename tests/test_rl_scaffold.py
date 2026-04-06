@@ -40,6 +40,7 @@ from rl.io_utils import experiment_lock
 from rl.teacher_reg import (
     patch_sample_factory_teacher_reg,
     _action_mask_from_raw_obs,
+    _forward_replay_action_logits,
     _invalid_preference_fraction,
     _mask_logits_with_action_mask,
     _parse_teacher_bc_paths,
@@ -1319,6 +1320,35 @@ def test_replay_priority_weights_target_requested_rows():
     )
     assert boosted[0] > boosted[2]
     assert boosted[1] > boosted[0]
+
+
+def test_forward_replay_action_logits_ignores_stale_teacher_prior_raw_obs():
+    class FakeActorCritic:
+        def __init__(self):
+            self._teacher_prior_raw_obs = "stale"
+
+        def forward_head(self, obs):
+            return {"x": obs["obs"] + 1.0}
+
+        def forward_core(self, x, *_args, **_kwargs):
+            return {"x": x + 1.0}
+
+        def forward_tail(self, x, **_kwargs):
+            bonus = 100.0 if self._teacher_prior_raw_obs is not None else 10.0
+            return {"action_logits": x + bonus}
+
+    actor_critic = FakeActorCritic()
+    features = torch.zeros((2, len(ACTION_SET)), dtype=torch.float32)
+    allowed_masks = torch.tensor(
+        [
+            [1.0] * len(ACTION_SET),
+            [1.0] * len(ACTION_SET),
+        ],
+        dtype=torch.float32,
+    )
+    logits = _forward_replay_action_logits(actor_critic, features, allowed_masks)
+    assert torch.allclose(logits, torch.full_like(logits, 12.0))
+    assert actor_critic._teacher_prior_raw_obs == "stale"
 
 
 def test_skill_env_reset_and_step():
