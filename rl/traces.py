@@ -168,13 +168,16 @@ def _select_trace_policy_action(
         base_version = bc_observation_version.split("+", 1)[0]
         features = encode_observation(timestep, version=base_version)
         if bc_world_model_inference is not None and bc_world_model_feature_mode:
+            state_prompt = encoder.format_state_prompt(state)
             features = augment_feature_vector(
                 features,
                 bc_world_model_inference,
                 mode=bc_world_model_feature_mode,
-                prompt_text=encoder.format_state_prompt(state),
+                prompt_text=state_prompt,
             )
-        action_name = bc_policy.act(features, allowed_actions=allowed_actions)
+        else:
+            state_prompt = encoder.format_state_prompt(state)
+        action_name = bc_policy.act(features, allowed_actions=allowed_actions, prompt_text=state_prompt)
         return action_name, [], appo_rnn_states, timestep
 
     if policy == "appo":

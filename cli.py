@@ -553,6 +553,18 @@ def cmd_rl_train_bc(args):
         argv.extend(["--supervised-loss-coef", str(args.supervised_loss_coef)])
     if getattr(args, "action_weight_boosts", None):
         argv.extend(["--action-weight-boosts", args.action_weight_boosts])
+    if getattr(args, "text_encoder_backend", "none") != "none":
+        argv.extend(["--text-encoder-backend", args.text_encoder_backend])
+    if int(getattr(args, "text_vocab_size", 4096)) != 4096:
+        argv.extend(["--text-vocab-size", str(args.text_vocab_size)])
+    if int(getattr(args, "text_embedding_dim", 128)) != 128:
+        argv.extend(["--text-embedding-dim", str(args.text_embedding_dim)])
+    if getattr(args, "text_model_name", None):
+        argv.extend(["--text-model-name", args.text_model_name])
+    if int(getattr(args, "text_max_length", 128)) != 128:
+        argv.extend(["--text-max-length", str(args.text_max_length)])
+    if bool(getattr(args, "text_trainable", False)):
+        argv.append("--text-trainable")
     if args.heldout_input:
         argv.extend(["--heldout-input", args.heldout_input])
     if args.teacher_report_output:
@@ -1712,6 +1724,12 @@ def main():
     p_bc.add_argument('--distill-temperature', type=float, default=1.0)
     p_bc.add_argument('--supervised-loss-coef', type=float, default=1.0)
     p_bc.add_argument('--action-weight-boosts', type=str, default=None)
+    p_bc.add_argument('--text-encoder-backend', type=str, default='none', choices=['none', 'hash', 'transformer'])
+    p_bc.add_argument('--text-vocab-size', type=int, default=4096)
+    p_bc.add_argument('--text-embedding-dim', type=int, default=128)
+    p_bc.add_argument('--text-model-name', type=str, default=None)
+    p_bc.add_argument('--text-max-length', type=int, default=128)
+    p_bc.add_argument('--text-trainable', action='store_true')
     p_bc.add_argument('--heldout-input', type=str, default=None)
     p_bc.add_argument('--teacher-report-output', type=str, default=None)
     p_bc.add_argument('--weak-action-input', type=str, default=None)

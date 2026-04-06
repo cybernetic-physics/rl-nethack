@@ -62,9 +62,15 @@ def evaluate_bc_policy(model_path: str, task: str, seeds: list[int], max_steps: 
                 obs=obs,
             )
             features = encode_observation(timestep, version=observation_version)
+            state_prompt = encoder.format_state_prompt(state)
             if world_model_inference is not None and world_model_feature_mode:
-                features = augment_feature_vector(features, world_model_inference, mode=world_model_feature_mode)
-            action_name = policy.act(features, allowed_actions=allowed_actions)
+                features = augment_feature_vector(
+                    features,
+                    world_model_inference,
+                    mode=world_model_feature_mode,
+                    prompt_text=state_prompt,
+                )
+            action_name = policy.act(features, allowed_actions=allowed_actions, prompt_text=state_prompt)
             obs, reward, terminated, truncated, _ = env.step(action_map.get(action_name, action_map["wait"]))
             memory.update(obs)
             memory.detect_rooms()

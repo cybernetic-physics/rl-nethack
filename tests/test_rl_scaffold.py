@@ -1669,6 +1669,61 @@ def test_bc_model_round_trips_with_metadata():
         assert action in {"east", "west"}
 
 
+def test_text_conditioned_bc_uses_prompt_text_in_trace_eval():
+    train_rows = [
+        {
+            "episode_id": "ep0",
+            "seed": 10,
+            "step": 0,
+            "action": "east",
+            "allowed_actions": ["east", "west"],
+            "feature_vector": [0.0] * 160,
+            "observation_version": "v2",
+            "state_prompt": "Adjacent: east=floor west=wall\nGoal: move east",
+        },
+        {
+            "episode_id": "ep1",
+            "seed": 11,
+            "step": 0,
+            "action": "west",
+            "allowed_actions": ["east", "west"],
+            "feature_vector": [0.0] * 160,
+            "observation_version": "v2",
+            "state_prompt": "Adjacent: east=wall west=floor\nGoal: move west",
+        },
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        trace_path = os.path.join(tmpdir, "trace.jsonl")
+        out = os.path.join(tmpdir, "bc_text.pt")
+        with open(trace_path, "w") as f:
+            for row in train_rows:
+                f.write(json.dumps(row) + "\n")
+        meta = train_bc_model(
+            train_rows,
+            out,
+            epochs=80,
+            lr=1e-3,
+            hidden_size=64,
+            observation_version="v2",
+            text_encoder_backend="hash",
+            text_embedding_dim=32,
+        )
+        assert meta["text_encoder_backend"] == "hash"
+        policy = load_bc_model(out)
+        assert policy.act(
+            train_rows[0]["feature_vector"],
+            allowed_actions=["east", "west"],
+            prompt_text=train_rows[0]["state_prompt"],
+        ) == "east"
+        assert policy.act(
+            train_rows[1]["feature_vector"],
+            allowed_actions=["east", "west"],
+            prompt_text=train_rows[1]["state_prompt"],
+        ) == "west"
+        result = evaluate_trace_policy(trace_path=trace_path, policy="bc", bc_model_path=out)
+        assert result["summary"]["match_rate"] == 1.0
+
+
 def test_determinism_check_runs_for_wall_avoidance():
     result = check_policy_determinism(
         policy="wall_avoidance",

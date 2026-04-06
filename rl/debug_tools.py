@@ -136,7 +136,11 @@ def rollout_policy_episode(
                 obs_hash=observation_hash(obs),
                 obs=obs,
             )
-            action_name = bc_policy.act(encode_observation(timestep, version=version), allowed_actions=allowed_actions)
+            action_name = bc_policy.act(
+                encode_observation(timestep, version=version),
+                allowed_actions=allowed_actions,
+                prompt_text=encoder.format_state_prompt(state),
+            )
         else:
             raise ValueError(f"Unsupported policy for rollout: {policy}")
 
@@ -329,7 +333,11 @@ def compare_actions_on_teacher_states(
                 obs=obs,
             )
             if bc_policy:
-                bc_action = bc_policy.act(encode_observation(timestep, version=bc_version), allowed_actions=allowed_actions)
+                bc_action = bc_policy.act(
+                    encode_observation(timestep, version=bc_version),
+                    allowed_actions=allowed_actions,
+                    prompt_text=encoder.format_state_prompt(state),
+                )
                 row["bc_action"] = bc_action
                 row["bc_matches"] = bc_action == teacher_action
                 aggregate["teacher_vs_bc_total"] += 1

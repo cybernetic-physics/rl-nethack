@@ -690,6 +690,11 @@ More specifically:
   - that means the current teacher CE/replay settings are not the main reason the short bridge reaches `0.975`,
   - small offline attempts to improve the `0.9875` teacher with a supervised term, east-weighted supervision, or a wider pure-distill student all regressed below the baseline,
 - the proxy-reward branch is implemented but not mature enough to replace the current best teacher-replay branch,
+- prompt-conditioned BC teachers are now implemented with both stable-hash and frozen-transformer text encoders,
+  - under teacher distillation, both tied the current best numeric teacher at `0.9875`,
+  - neither fixed the remaining held-out `east -> south` miss,
+  - a prompt-conditioned frozen-`distilbert` teacher trained directly on supervised trace labels regressed to `0.95`,
+  - so missing prompt text is not the leading explanation for the last gap in the current teacher family,
 - the most plausible next frontier is a more teacher-aware and behavior-constrained online improver.
 
 ## Practical Research Rules Going Forward

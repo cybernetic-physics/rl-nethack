@@ -47,6 +47,7 @@ def _teacher_logits_for_rows(rows: list[dict], teacher_bc_paths: list[str]) -> n
     from rl.world_model_features import coerce_world_model_feature_vector, state_prompt_from_row
 
     allowed_actions_list = [row.get("allowed_actions") for row in rows]
+    prompt_texts = [state_prompt_from_row(row) for row in rows]
     ensembled_logits = None
     for teacher_bc_path in teacher_bc_paths:
         teacher_policy = load_bc_model(teacher_bc_path)
@@ -79,7 +80,11 @@ def _teacher_logits_for_rows(rows: list[dict], teacher_bc_paths: list[str]) -> n
         else:
             teacher_features = [np.asarray(row["feature_vector"], dtype=np.float32) for row in rows]
 
-        teacher_logits = teacher_policy.logits_batch(teacher_features, allowed_actions_list=allowed_actions_list)
+        teacher_logits = teacher_policy.logits_batch(
+            teacher_features,
+            allowed_actions_list=allowed_actions_list,
+            prompt_texts=prompt_texts,
+        )
         ensembled_logits = teacher_logits if ensembled_logits is None else (ensembled_logits + teacher_logits)
 
     if ensembled_logits is None:
@@ -124,9 +129,16 @@ def train_bc_model(
     distill_temperature: float = 1.0,
     supervised_loss_coef: float = 1.0,
     action_weight_boosts: str | None = None,
+    text_encoder_backend: str = "none",
+    text_vocab_size: int = 4096,
+    text_embedding_dim: int = 128,
+    text_model_name: str | None = None,
+    text_max_length: int = 128,
+    text_trainable: bool = False,
 ) -> dict:
     if not rows:
         raise ValueError("No trace rows to train on")
+    from rl.world_model_features import state_prompt_from_row
 
     versions = {row.get("observation_version", observation_version) for row in rows}
     if len(versions) != 1:
@@ -142,12 +154,23 @@ def train_bc_model(
         raise ValueError(f"Mixed feature dimensions in trace rows: {sorted(input_dims)}")
     input_dim = len(rows[0]["feature_vector"])
     device = torch.device("cpu")
-    model = BCPolicyMLP(input_dim=input_dim, hidden_size=hidden_size, num_layers=num_layers)
+    model = BCPolicyMLP(
+        input_dim=input_dim,
+        hidden_size=hidden_size,
+        num_layers=num_layers,
+        text_encoder_backend=text_encoder_backend,
+        text_vocab_size=text_vocab_size,
+        text_embedding_dim=text_embedding_dim,
+        text_model_name=text_model_name,
+        text_max_length=text_max_length,
+        text_trainable=text_trainable,
+    )
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     x = torch.tensor([row["feature_vector"] for row in rows], dtype=torch.float32, device=device)
     y = torch.tensor([ACTION_SET.index(row["action"]) for row in rows], dtype=torch.long, device=device)
+    prompt_texts = [state_prompt_from_row(row) for row in rows]
     action_masks = torch.tensor(
         [[1.0 if name in row.get("allowed_actions", ACTION_SET) else 0.0 for name in ACTION_SET] for row in rows],
         dtype=torch.float32,
@@ -161,11 +184,15 @@ def train_bc_model(
     example_weights = torch.ones(len(rows), dtype=torch.float32, device=device)
     for action_idx, weight in _parse_action_weight_boosts(action_weight_boosts).items():
         example_weights = torch.where(y == action_idx, torch.full_like(example_weights, weight), example_weights)
+    cached_text_context = None
+    if text_encoder_backend == "transformer" and not text_trainable:
+        with torch.no_grad():
+            cached_text_context = model.encode_text_context(prompt_texts, device=device)
 
     losses = []
     for _ in range(epochs):
         optimizer.zero_grad()
-        logits = model(x)
+        logits = model(x, prompt_texts=prompt_texts, text_context=cached_text_context)
         logits = logits.masked_fill(action_masks <= 0, -1e9)
         supervised_loss = F.cross_entropy(logits, y, reduction="none")
         supervised_loss = (supervised_loss * example_weights).mean()
@@ -180,7 +207,10 @@ def train_bc_model(
         optimizer.step()
         losses.append(float(loss.item()))
 
-    preds = torch.argmax(model(x).masked_fill(action_masks <= 0, -1e9), dim=1)
+    preds = torch.argmax(
+        model(x, prompt_texts=prompt_texts, text_context=cached_text_context).masked_fill(action_masks <= 0, -1e9),
+        dim=1,
+    )
     accuracy = float((preds == y).float().mean().item())
     os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
     metadata = {
@@ -199,6 +229,12 @@ def train_bc_model(
         "distill_temperature": distill_temperature,
         "supervised_loss_coef": supervised_loss_coef,
         "action_weight_boosts": action_weight_boosts,
+        "text_encoder_backend": text_encoder_backend,
+        "text_vocab_size": text_vocab_size,
+        "text_embedding_dim": text_embedding_dim,
+        "text_model_name": text_model_name,
+        "text_max_length": text_max_length,
+        "text_trainable": text_trainable,
         "final_loss": losses[-1],
         "train_accuracy": accuracy,
     }
@@ -223,6 +259,12 @@ def parse_args(argv=None):
     parser.add_argument("--distill-temperature", type=float, default=1.0)
     parser.add_argument("--supervised-loss-coef", type=float, default=1.0)
     parser.add_argument("--action-weight-boosts", type=str, default=None)
+    parser.add_argument("--text-encoder-backend", type=str, default="none", choices=["none", "hash", "transformer"])
+    parser.add_argument("--text-vocab-size", type=int, default=4096)
+    parser.add_argument("--text-embedding-dim", type=int, default=128)
+    parser.add_argument("--text-model-name", type=str, default=None)
+    parser.add_argument("--text-max-length", type=int, default=128)
+    parser.add_argument("--text-trainable", action="store_true")
     parser.add_argument("--heldout-input", type=str, default=None)
     parser.add_argument("--teacher-report-output", type=str, default=None)
     parser.add_argument("--weak-action-input", type=str, default=None)
@@ -248,6 +290,12 @@ def main(argv=None):
         distill_temperature=args.distill_temperature,
         supervised_loss_coef=args.supervised_loss_coef,
         action_weight_boosts=args.action_weight_boosts,
+        text_encoder_backend=args.text_encoder_backend,
+        text_vocab_size=args.text_vocab_size,
+        text_embedding_dim=args.text_embedding_dim,
+        text_model_name=args.text_model_name,
+        text_max_length=args.text_max_length,
+        text_trainable=args.text_trainable,
     )
     output = {"train": result}
     if args.heldout_input:

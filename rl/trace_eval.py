@@ -59,6 +59,16 @@ def _validate_trace_rows(rows: list[dict]) -> None:
         raise ValueError("No trace rows provided")
 
 
+def _state_prompt_from_row(row: dict) -> str:
+    if row.get("state_prompt"):
+        return str(row["state_prompt"])
+    prompt = row.get("prompt")
+    if not prompt:
+        return ""
+    lines = [line for line in str(prompt).splitlines() if not line.startswith("Action:")]
+    return "\n".join(lines)
+
+
 def _evaluate_trace_rows(
     rows: list[dict],
     *,
@@ -96,7 +106,11 @@ def _evaluate_trace_rows(
             teacher_action = row["action"]
 
             if bc_policy:
-                predicted_action = bc_policy.act(features, allowed_actions=allowed_actions)
+                predicted_action = bc_policy.act(
+                    features,
+                    allowed_actions=allowed_actions,
+                    prompt_text=_state_prompt_from_row(row),
+                )
             else:
                 obs_tensor = torch.from_numpy(features).unsqueeze(0).to(appo_bundle["device"])
                 normalized_obs = appo_bundle["prepare_and_normalize_obs"](
