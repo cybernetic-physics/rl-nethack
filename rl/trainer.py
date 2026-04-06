@@ -120,6 +120,7 @@ class APPOTrainerScaffold:
             *encoder_layers,
             f"--normalize_input={str(cfg.model.normalize_input)}",
             f"--nonlinearity={cfg.model.nonlinearity}",
+            f"--actor_critic_share_weights={str(cfg.model.actor_critic_share_weights)}",
             f"--gamma={cfg.appo.gamma}",
             f"--gae_lambda={cfg.appo.gae_lambda}",
             f"--learning_rate={cfg.appo.learning_rate}",
@@ -206,6 +207,15 @@ class APPOTrainerScaffold:
                 linear_layers.append((weight_key, bias_key))
         return linear_layers
 
+    @staticmethod
+    def _model_encoder_prefixes(state_dict: dict[str, torch.Tensor]) -> tuple[str, str | None]:
+        actor_prefix = "actor_encoder.encoders.obs.mlp_head."
+        critic_prefix = "critic_encoder.encoders.obs.mlp_head."
+        if any(key.startswith(actor_prefix) for key in state_dict):
+            return actor_prefix, critic_prefix
+        shared_prefix = "encoder.encoders.obs.mlp_head."
+        return shared_prefix, None
+
     def maybe_write_bc_warmstart_checkpoint(self, sf_cfg, actor_critic) -> str | None:
         if not self.config.model.bc_init_path:
             return None
@@ -218,10 +228,16 @@ class APPOTrainerScaffold:
             raise ValueError("BC warmstart requires at least one hidden linear layer and one output linear layer")
         hidden_layers = linear_layers[:-1]
         output_weight_key, output_bias_key = linear_layers[-1]
-        actor_hidden_layers = self._linear_state_keys(model_state, "encoder.encoders.obs.mlp_head.")
+        actor_prefix, critic_prefix = self._model_encoder_prefixes(model_state)
+        actor_hidden_layers = self._linear_state_keys(model_state, actor_prefix)
         for (dst_weight_key, dst_bias_key), (src_weight_key, src_bias_key) in zip(actor_hidden_layers, hidden_layers):
             self._copy_prefix(model_state[dst_weight_key], bc_state[src_weight_key])
             self._copy_prefix(model_state[dst_bias_key], bc_state[src_bias_key])
+        if critic_prefix is not None:
+            critic_hidden_layers = self._linear_state_keys(model_state, critic_prefix)
+            for (dst_weight_key, dst_bias_key), (src_weight_key, src_bias_key) in zip(critic_hidden_layers, hidden_layers):
+                self._copy_prefix(model_state[dst_weight_key], bc_state[src_weight_key])
+                self._copy_prefix(model_state[dst_bias_key], bc_state[src_bias_key])
         self._copy_prefix(
             model_state["action_parameterization.distribution_linear.weight"],
             bc_state[output_weight_key],

@@ -46,6 +46,7 @@ def parse_args(argv=None):
     parser.add_argument("--env-max-episode-steps", type=int, default=5000)
     parser.add_argument("--model-hidden-size", type=int, default=None)
     parser.add_argument("--model-num-layers", type=int, default=None)
+    parser.add_argument("--separate-actor-critic", action="store_true")
     parser.add_argument("--disable-input-normalization", action="store_true")
     parser.add_argument("--nonlinearity", type=str, default=None, choices=["elu", "relu", "tanh"])
     parser.add_argument("--bc-init-path", type=str, default=None)
@@ -122,6 +123,7 @@ def build_config(args) -> RLConfig:
     config.env.max_episode_steps = getattr(args, "env_max_episode_steps", config.env.max_episode_steps)
     if args.model_hidden_size is not None:
         config.model.hidden_size = args.model_hidden_size
+    config.model.actor_critic_share_weights = not bool(getattr(args, "separate_actor_critic", False))
     if getattr(args, "model_num_layers", None) is not None:
         config.model.num_layers = int(args.model_num_layers)
     elif getattr(args, "appo_init_checkpoint_path", None):

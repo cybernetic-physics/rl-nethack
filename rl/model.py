@@ -10,6 +10,7 @@ class SkillConditionedModelSpec:
     backbone: str
     hidden_size: int
     num_layers: int
+    actor_critic_share_weights: bool
     use_lstm: bool
     lstm_size: int
     skill_embedding_dim: int
@@ -21,6 +22,7 @@ def build_model_spec(config) -> SkillConditionedModelSpec:
         backbone=config.backbone,
         hidden_size=config.hidden_size,
         num_layers=config.num_layers,
+        actor_critic_share_weights=config.actor_critic_share_weights,
         use_lstm=config.use_lstm,
         lstm_size=config.lstm_size,
         skill_embedding_dim=config.skill_embedding_dim,

@@ -362,6 +362,8 @@ def cmd_rl_train_appo(args):
         argv.extend(["--model-hidden-size", str(args.model_hidden_size)])
     if getattr(args, "model_num_layers", None) is not None:
         argv.extend(["--model-num-layers", str(args.model_num_layers)])
+    if getattr(args, "separate_actor_critic", False):
+        argv.append("--separate-actor-critic")
     if getattr(args, "world_model_path", None):
         argv.extend(["--world-model-path", args.world_model_path])
     if getattr(args, "world_model_feature_mode", None):
@@ -1354,6 +1356,8 @@ def main():
                       help='Optional actor MLP width; defaults to teacher/BC hidden size when warm-starting')
     p_rl.add_argument('--model-num-layers', type=int, default=None,
                       help='Optional actor MLP depth; defaults to teacher/BC depth when warm-starting')
+    p_rl.add_argument('--separate-actor-critic', action='store_true',
+                      help='Use separate actor and critic encoders so value updates do not perturb the actor backbone directly')
     p_rl.add_argument('--disable-input-normalization', action='store_true',
                       help='Disable Sample Factory input normalization; BC warm-start defaults to this off path')
     p_rl.add_argument('--nonlinearity', type=str, default=None, choices=['elu', 'relu', 'tanh'],

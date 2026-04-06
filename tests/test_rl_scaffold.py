@@ -115,6 +115,7 @@ def test_trainer_scaffold_includes_teacher_reg_args():
     config.appo.ppo_clip_ratio = 0.05
     config.model.hidden_size = 256
     config.model.num_layers = 3
+    config.model.actor_critic_share_weights = False
     config.model.normalize_input = False
     config.model.nonlinearity = "relu"
     trainer = APPOTrainerScaffold(config)
@@ -132,6 +133,7 @@ def test_trainer_scaffold_includes_teacher_reg_args():
     assert "--ppo_clip_ratio=0.05" in argv
     assert "--normalize_input=False" in argv
     assert "--nonlinearity=relu" in argv
+    assert "--actor_critic_share_weights=False" in argv
     idx = argv.index("--encoder_mlp_layers")
     assert argv[idx + 1:idx + 4] == ["256", "256", "256"]
 
@@ -258,6 +260,7 @@ def test_build_appo_config_infers_hidden_size_from_bc_checkpoint():
                     "observation_version": "v2",
                     "model_hidden_size": None,
                     "model_num_layers": None,
+                    "separate_actor_critic": True,
                     "disable_input_normalization": False,
                     "nonlinearity": None,
                     "bc_init_path": out,
@@ -278,6 +281,7 @@ def test_build_appo_config_infers_hidden_size_from_bc_checkpoint():
             },
         )()
         config = build_appo_config(args)
+        assert config.model.actor_critic_share_weights is False
         assert config.model.hidden_size == 64
         assert config.model.num_layers == 3
 
@@ -1400,6 +1404,91 @@ def test_bc_warmstart_uses_final_linear_for_deeper_teacher():
         assert torch.allclose(dummy.loaded_state["encoder.encoders.obs.mlp_head.0.weight"], bc_state["net.0.weight"])
         assert torch.allclose(dummy.loaded_state["encoder.encoders.obs.mlp_head.2.weight"], bc_state["net.2.weight"])
         assert torch.allclose(dummy.loaded_state["encoder.encoders.obs.mlp_head.4.weight"], bc_state["net.4.weight"])
+        assert torch.allclose(
+            dummy.loaded_state["action_parameterization.distribution_linear.weight"],
+            bc_state["net.6.weight"],
+        )
+
+
+def test_bc_warmstart_copies_teacher_to_separate_actor_and_critic_encoders():
+    rows = [
+        {
+            "episode_id": "ep0",
+            "step": 0,
+            "seed": 1,
+            "task": "explore",
+            "action": "east",
+            "allowed_actions": ["east", "west"],
+            "observation_version": "v2",
+            "feature_vector": [1.0, 0.0, 0.0, 0.0],
+        },
+        {
+            "episode_id": "ep0",
+            "step": 1,
+            "seed": 1,
+            "task": "explore",
+            "action": "west",
+            "allowed_actions": ["east", "west"],
+            "observation_version": "v2",
+            "feature_vector": [0.0, 1.0, 0.0, 0.0],
+        },
+    ]
+
+    class DummyActorCritic:
+        def __init__(self):
+            self._param = torch.nn.Parameter(torch.zeros(1))
+            self.loaded_state = {
+                "actor_encoder.encoders.obs.mlp_head.0.weight": torch.zeros(32, 4),
+                "actor_encoder.encoders.obs.mlp_head.0.bias": torch.zeros(32),
+                "actor_encoder.encoders.obs.mlp_head.2.weight": torch.zeros(32, 32),
+                "actor_encoder.encoders.obs.mlp_head.2.bias": torch.zeros(32),
+                "actor_encoder.encoders.obs.mlp_head.4.weight": torch.zeros(32, 32),
+                "actor_encoder.encoders.obs.mlp_head.4.bias": torch.zeros(32),
+                "critic_encoder.encoders.obs.mlp_head.0.weight": torch.zeros(32, 4),
+                "critic_encoder.encoders.obs.mlp_head.0.bias": torch.zeros(32),
+                "critic_encoder.encoders.obs.mlp_head.2.weight": torch.zeros(32, 32),
+                "critic_encoder.encoders.obs.mlp_head.2.bias": torch.zeros(32),
+                "critic_encoder.encoders.obs.mlp_head.4.weight": torch.zeros(32, 32),
+                "critic_encoder.encoders.obs.mlp_head.4.bias": torch.zeros(32),
+                "action_parameterization.distribution_linear.weight": torch.zeros(len(ACTION_SET), 32),
+                "action_parameterization.distribution_linear.bias": torch.zeros(len(ACTION_SET)),
+            }
+
+        def state_dict(self):
+            return {key: value.clone() for key, value in self.loaded_state.items()}
+
+        def load_state_dict(self, state_dict, strict=False):
+            self.loaded_state = {key: value.clone() for key, value in state_dict.items()}
+
+        def parameters(self):
+            return [self._param]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        teacher_path = os.path.join(tmpdir, "teacher.pt")
+        train_bc_model(
+            rows,
+            teacher_path,
+            epochs=5,
+            lr=1e-3,
+            hidden_size=32,
+            num_layers=3,
+            observation_version="v2",
+        )
+        config = RLConfig()
+        config.train_dir = tmpdir
+        config.experiment = "warmstart_separate"
+        config.model.bc_init_path = teacher_path
+        config.model.num_layers = 3
+        config.model.actor_critic_share_weights = False
+        trainer = APPOTrainerScaffold(config)
+        dummy = DummyActorCritic()
+        sf_cfg = type("DummyCfg", (), {"learning_rate": 1e-4, "adam_eps": 1e-6})()
+        trainer.maybe_write_bc_warmstart_checkpoint(sf_cfg, dummy)
+        bc_state = torch.load(teacher_path, map_location="cpu")["state_dict"]
+        for prefix in ["actor_encoder", "critic_encoder"]:
+            assert torch.allclose(dummy.loaded_state[f"{prefix}.encoders.obs.mlp_head.0.weight"], bc_state["net.0.weight"])
+            assert torch.allclose(dummy.loaded_state[f"{prefix}.encoders.obs.mlp_head.2.weight"], bc_state["net.2.weight"])
+            assert torch.allclose(dummy.loaded_state[f"{prefix}.encoders.obs.mlp_head.4.weight"], bc_state["net.4.weight"])
         assert torch.allclose(
             dummy.loaded_state["action_parameterization.distribution_linear.weight"],
             bc_state["net.6.weight"],

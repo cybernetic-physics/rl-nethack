@@ -72,6 +72,7 @@ class ModelConfig:
     backbone: str = "skill_conditioned_mlp"
     hidden_size: int = 512
     num_layers: int = 2
+    actor_critic_share_weights: bool = True
     normalize_input: bool = True
     nonlinearity: str = "elu"
     use_lstm: bool = True

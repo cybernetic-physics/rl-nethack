@@ -161,14 +161,20 @@ def _anchor_named_parameters(self):
     actor_critic = getattr(self, "actor_critic", None)
     if actor_critic is None:
         return {}
-    return {
-        "encoder_0_weight": actor_critic.encoder.encoders["obs"].mlp_head[0].weight,
-        "encoder_0_bias": actor_critic.encoder.encoders["obs"].mlp_head[0].bias,
-        "encoder_2_weight": actor_critic.encoder.encoders["obs"].mlp_head[2].weight,
-        "encoder_2_bias": actor_critic.encoder.encoders["obs"].mlp_head[2].bias,
-        "policy_weight": actor_critic.action_parameterization.distribution_linear.weight,
-        "policy_bias": actor_critic.action_parameterization.distribution_linear.bias,
-    }
+    named: dict[str, torch.Tensor] = {}
+    if hasattr(actor_critic, "actor_encoder"):
+        mlp_head = actor_critic.actor_encoder.encoders["obs"].mlp_head
+    else:
+        mlp_head = actor_critic.encoder.encoders["obs"].mlp_head
+    linear_idx = 0
+    for module in mlp_head:
+        if isinstance(module, torch.nn.Linear):
+            named[f"actor_encoder_{linear_idx}_weight"] = module.weight
+            named[f"actor_encoder_{linear_idx}_bias"] = module.bias
+            linear_idx += 1
+    named["policy_weight"] = actor_critic.action_parameterization.distribution_linear.weight
+    named["policy_bias"] = actor_critic.action_parameterization.distribution_linear.bias
+    return named
 
 
 def _parse_teacher_action_boosts(raw: str) -> dict[int, float]:
