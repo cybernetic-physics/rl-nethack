@@ -79,14 +79,33 @@ Trusted ranking:
 
 So the post-fix behavior-reg teacher did not improve online. It simply held its offline score.
 
+## Latest Rerun
+
+I reran the short online continuation after the masked-prior fix to confirm the branch end to end.
+
+Rerun experiment:
+
+- `train_dir/rl/appo_from_breg_v4_balanced_fix_short_a`
+
+Rerun trusted ranking:
+
+- best checkpoint: `0.9250`
+- later checkpoints: `0.9250`
+
+So the rerun confirmed the same result:
+
+- the fixed behavior-reg teacher is stable enough to fine-tune
+- but the online learner does not improve it on the held-out trace benchmark
+
 ## What We Learned
 
 1. The behavior-reg code path trains and evaluates correctly.
 2. The branch is not broken operationally.
 3. On the current benchmark, behavior-reg is still weaker than the best existing teacher.
-4. Online APPO fine-tuning from that teacher still shows the same broad pattern:
-   - early best checkpoint
-   - then flat or downward behavior
+4. Online APPO fine-tuning from that teacher still does not beat the best branch.
+5. After the masked-prior fix, this branch now looks more like:
+   - stable but weaker
+   - not unstable and promising
 
 ## Bug Found In Behavior-Reg
 
@@ -121,3 +140,4 @@ The next correct step is:
 1. do not replace the current mainline with behavior-reg yet
 2. if this branch continues, change the objective more substantially than a masked-prior KL
 3. keep using the held-out deterministic trace benchmark as the gate
+4. do not run a larger behavior-reg online continuation until a short run beats `0.9250`

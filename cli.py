@@ -368,6 +368,8 @@ def cmd_rl_train_appo(args):
         argv.extend(["--appo-init-checkpoint-path", args.appo_init_checkpoint_path])
     if args.teacher_bc_path:
         argv.extend(["--teacher-bc-path", args.teacher_bc_path])
+    if getattr(args, "teacher_report_path", None):
+        argv.extend(["--teacher-report-path", args.teacher_report_path])
     if args.teacher_loss_coef:
         argv.extend(["--teacher-loss-coef", str(args.teacher_loss_coef)])
     if args.teacher_loss_type:
@@ -412,6 +414,8 @@ def cmd_rl_train_appo(args):
         argv.extend(["--trace-eval-interval-env-steps", str(args.trace_eval_interval_env_steps)])
     if args.write_plan:
         argv.extend(["--write-plan", args.write_plan])
+    if getattr(args, "improver_report_output", None):
+        argv.extend(["--improver-report-output", args.improver_report_output])
     if args.dry_run:
         argv.append("--dry-run")
     return train_appo_main(argv)
@@ -523,6 +527,12 @@ def cmd_rl_train_bc(args):
         argv.extend(["--world-model-path", args.world_model_path])
     if args.world_model_feature_mode:
         argv.extend(["--world-model-feature-mode", args.world_model_feature_mode])
+    if args.heldout_input:
+        argv.extend(["--heldout-input", args.heldout_input])
+    if args.teacher_report_output:
+        argv.extend(["--teacher-report-output", args.teacher_report_output])
+    if args.weak_action_input:
+        argv.extend(["--weak-action-input", args.weak_action_input])
     return train_bc_main(argv)
 
 
@@ -920,6 +930,10 @@ def cmd_rl_train_behavior_reg(args):
         argv.extend(["--heldout-input", args.heldout_input])
     if args.teacher_action_boost:
         argv.extend(["--teacher-action-boost", args.teacher_action_boost])
+    if args.teacher_report_output:
+        argv.extend(["--teacher-report-output", args.teacher_report_output])
+    if args.weak_action_input:
+        argv.extend(["--weak-action-input", args.weak_action_input])
     return train_behavior_reg_main(argv)
 
 
@@ -1237,6 +1251,8 @@ def main():
                       help='Optional APPO checkpoint used to warm start a fresh APPO experiment')
     p_rl.add_argument('--teacher-bc-path', type=str, default=None,
                       help='Optional frozen BC teacher checkpoint used for auxiliary teacher regularization')
+    p_rl.add_argument('--teacher-report-path', type=str, default=None,
+                      help='Optional canonical teacher report JSON used to link this improver run back to its teacher artifact')
     p_rl.add_argument('--teacher-loss-coef', type=float, default=0.01,
                       help='Auxiliary teacher loss coefficient; teacher-reg baseline uses 0.01')
     p_rl.add_argument('--teacher-loss-type', type=str, default='ce', choices=['ce', 'kl'],
@@ -1293,6 +1309,8 @@ def main():
                       help='Disable env-side invalid action clamping')
     p_rl.add_argument('--write-plan', type=str, default=None,
                       help='Optional JSON output path for the resolved training plan')
+    p_rl.add_argument('--improver-report-output', type=str, default=None,
+                      help='Optional JSON output path for the post-run improver report artifact')
     p_rl.add_argument('--dry-run', action='store_true',
                       help='Print scaffold plan without launching training')
 
@@ -1490,6 +1508,8 @@ def main():
     p_rl_breg.add_argument('--class-balance-power', type=float, default=0.0)
     p_rl_breg.add_argument('--teacher-action-boost', type=str, default='')
     p_rl_breg.add_argument('--teacher-action-boost-scale', type=float, default=1.0)
+    p_rl_breg.add_argument('--teacher-report-output', type=str, default=None)
+    p_rl_breg.add_argument('--weak-action-input', type=str, default=None)
 
     p_rl_shard_bench = subparsers.add_parser('rl-shard-benchmark', help='Compare BC and behavior-regularized training on a focused trace shard')
     p_rl_shard_bench.add_argument('--input', type=str, required=True)
@@ -1556,6 +1576,9 @@ def main():
     p_bc.add_argument('--world-model-path', type=str, default=None)
     p_bc.add_argument('--world-model-feature-mode', type=str, default=None,
                       choices=['replace', 'concat', 'concat_aux'])
+    p_bc.add_argument('--heldout-input', type=str, default=None)
+    p_bc.add_argument('--teacher-report-output', type=str, default=None)
+    p_bc.add_argument('--weak-action-input', type=str, default=None)
 
     p_bc_eval = subparsers.add_parser('rl-evaluate-bc', help='Evaluate a behavior cloning policy')
     p_bc_eval.add_argument('--model', type=str, required=True)

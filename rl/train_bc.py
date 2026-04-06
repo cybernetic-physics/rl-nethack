@@ -9,6 +9,7 @@ import torch.nn.functional as F
 
 from rl.bc_model import BCPolicyMLP, save_bc_model
 from rl.feature_encoder import ACTION_SET
+from rl.teacher_report import build_teacher_report, write_teacher_report
 
 
 def load_trace_rows(path: str) -> list[dict]:
@@ -99,6 +100,9 @@ def parse_args(argv=None):
     parser.add_argument("--observation-version", type=str, default="v1")
     parser.add_argument("--world-model-path", type=str, default=None)
     parser.add_argument("--world-model-feature-mode", type=str, default=None)
+    parser.add_argument("--heldout-input", type=str, default=None)
+    parser.add_argument("--teacher-report-output", type=str, default=None)
+    parser.add_argument("--weak-action-input", type=str, default=None)
     return parser.parse_args(argv)
 
 
@@ -115,7 +119,22 @@ def main(argv=None):
         world_model_path=args.world_model_path,
         world_model_feature_mode=args.world_model_feature_mode,
     )
-    print(json.dumps(result, indent=2))
+    output = {"train": result}
+    if args.heldout_input:
+        report = build_teacher_report(
+            model_path=args.output,
+            heldout_trace_path=args.heldout_input,
+            train_result=result,
+            teacher_kind="bc",
+            weak_action_trace_path=args.weak_action_input,
+            source_trace_path=args.input,
+            observation_version=args.observation_version,
+            world_model_path=args.world_model_path,
+            world_model_feature_mode=args.world_model_feature_mode,
+        )
+        output["teacher_report"] = report
+        output["teacher_report_path"] = write_teacher_report(report, args.teacher_report_output)
+    print(json.dumps(output, indent=2))
     return 0
 
 

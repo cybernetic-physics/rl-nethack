@@ -40,6 +40,8 @@ from rl.env_adapter import SkillEnvAdapter, EpisodeContext
 from rl.dagger import build_merged_trace_rows, run_dagger_iteration, run_dagger_schedule
 from rl.train_behavior_reg import train_behavior_regularized_policy, _masked_behavior_targets
 from rl.train_appo import build_config as build_appo_config
+from rl.teacher_report import build_teacher_report
+from rl.improver_report import build_improver_report
 from rl.train_world_model import train_world_model
 from rl.world_model_dataset import build_world_model_examples, examples_to_arrays
 from rl.world_model_eval import evaluate_world_model
@@ -155,6 +157,7 @@ def test_build_appo_config_respects_value_stability_args():
             "nonlinearity": None,
             "bc_init_path": None,
             "teacher_bc_path": None,
+            "teacher_report_path": "/tmp/teacher_report.json",
             "teacher_loss_coef": 0.01,
             "teacher_loss_type": "ce",
             "teacher_action_boosts": "",
@@ -177,6 +180,7 @@ def test_build_appo_config_respects_value_stability_args():
             "trace_eval_input": None,
             "trace_eval_interval_env_steps": 0,
             "trace_eval_top_k": 5,
+            "improver_report_output": "/tmp/improver_report.json",
             "use_rnn": False,
             "no_rnn": True,
             "disable_action_mask": False,
@@ -192,6 +196,8 @@ def test_build_appo_config_respects_value_stability_args():
     assert config.appo.teacher_replay_decay_env_steps == 256
     assert config.appo.teacher_replay_priority_power == 1.7
     assert config.appo.teacher_replay_source_mode == "disagreement"
+    assert config.model.teacher_report_path == "/tmp/teacher_report.json"
+    assert config.appo.improver_report_output == "/tmp/improver_report.json"
 
 
 def test_build_appo_config_infers_hidden_size_from_bc_checkpoint():
@@ -361,6 +367,8 @@ def test_trainer_scaffold_includes_trace_eval_args():
     config.appo.save_every_sec = 9
     config.appo.save_best_every_sec = 3
     config.model.appo_init_checkpoint_path = "/tmp/seed_checkpoint.pth"
+    config.model.teacher_report_path = "/tmp/teacher_report.json"
+    config.appo.improver_report_output = "/tmp/improver_report.json"
     trainer = APPOTrainerScaffold(config)
     argv = trainer.build_sf_argv()
     assert "--trace_eval_input=data/trace.jsonl" in argv
@@ -377,8 +385,69 @@ def test_trainer_scaffold_includes_trace_eval_args():
     assert "--actor_loss_warmup_env_steps=64" in argv
     assert "--actor_loss_decay_env_steps=256" in argv
     assert "--appo_init_checkpoint_path=/tmp/seed_checkpoint.pth" in argv
+    assert "--teacher_report_path=/tmp/teacher_report.json" in argv
+    assert "--improver_report_output=/tmp/improver_report.json" in argv
     assert "--save_every_sec=9" in argv
     assert "--save_best_every_sec=3" in argv
+
+
+def test_teacher_report_includes_source_and_feature_metadata():
+    report = build_teacher_report(
+        model_path="/tmp/model.pt",
+        heldout_trace_path=None,
+        train_result={"train_accuracy": 1.0},
+        teacher_kind="bc",
+        source_trace_path="/tmp/train.jsonl",
+        observation_version="v4",
+        world_model_path="/tmp/world_model.pt",
+        world_model_feature_mode="concat_aux",
+    )
+    assert report["source_trace_path"] == "/tmp/train.jsonl"
+    assert report["observation_version"] == "v4"
+    assert report["world_model_path"] == "/tmp/world_model.pt"
+    assert report["world_model_feature_mode"] == "concat_aux"
+
+
+def test_improver_report_links_teacher_and_best_trace_metadata():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        experiment_dir = Path(tmpdir) / "exp"
+        checkpoint_dir = experiment_dir / "checkpoint_p0"
+        checkpoint_dir.mkdir(parents=True)
+        teacher_report_path = Path(tmpdir) / "teacher_report.json"
+        teacher_report_path.write_text(
+            json.dumps(
+                {
+                    "teacher_kind": "bc",
+                    "heldout_trace_eval": {"match_rate": 0.95},
+                    "weak_action_trace_eval": {"match_rate": 0.875},
+                }
+            )
+        )
+        (checkpoint_dir / "best_trace_match.json").write_text(
+            json.dumps(
+                {
+                    "best_checkpoint_path": str(checkpoint_dir / "checkpoint_000000010_80.pth"),
+                    "match_rate": 0.9375,
+                }
+            )
+        )
+        cfg = RLConfig()
+        cfg.train_dir = tmpdir
+        cfg.experiment = "exp"
+        cfg.model.teacher_report_path = str(teacher_report_path)
+        cfg.model.bc_init_path = "/tmp/teacher.pt"
+        cfg.appo.teacher_replay_trace_input = "/tmp/replay.jsonl"
+        cfg.appo.trace_eval_input = "/tmp/heldout.jsonl"
+        report = build_improver_report(
+            config=cfg,
+            plan={"experiment": "exp"},
+            argv=["--foo"],
+            warmstart_checkpoint="/tmp/warmstart.pth",
+            status="SUCCESS",
+        )
+        assert report["teacher_checkpoint_path"] == "/tmp/teacher.pt"
+        assert report["teacher_report_summary"]["heldout_match_rate"] == 0.95
+        assert report["trace_gate"]["best_checkpoint_path"].endswith("checkpoint_000000010_80.pth")
 
 
 def test_teacher_patch_is_idempotent():

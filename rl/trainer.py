@@ -10,6 +10,7 @@ import torch
 from rl.config import RLConfig
 from rl.checkpoint_tools import TraceCheckpointMonitor
 from rl.io_utils import atomic_torch_save, atomic_write_text, experiment_lock
+from rl.improver_report import write_improver_report, build_improver_report
 from rl.model import build_model_spec
 from rl.sf_env import make_nethack_skill_env
 
@@ -47,6 +48,7 @@ class APPOTrainerScaffold:
             "reward_source": self.config.reward.source,
             "learned_reward_path": self.config.reward.learned_reward_path,
             "teacher_bc_path": self.config.appo.teacher_bc_path,
+            "teacher_report_path": self.config.model.teacher_report_path,
             "teacher_loss_coef": self.config.appo.teacher_loss_coef,
             "teacher_loss_type": self.config.appo.teacher_loss_type,
             "teacher_action_boosts": self.config.appo.teacher_action_boosts,
@@ -78,6 +80,7 @@ class APPOTrainerScaffold:
             "world_model_path": self.config.env.world_model_path,
             "world_model_feature_mode": self.config.env.world_model_feature_mode,
             "appo_init_checkpoint_path": self.config.model.appo_init_checkpoint_path,
+            "improver_report_output": self.config.appo.improver_report_output,
             "model": asdict(self.model_spec),
             "dependency_status": self.dependency_status(),
         }
@@ -124,6 +127,7 @@ class APPOTrainerScaffold:
             f"--teacher_loss_coef={cfg.appo.teacher_loss_coef}",
             f"--teacher_loss_type={cfg.appo.teacher_loss_type}",
             f"--teacher_bc_path={cfg.appo.teacher_bc_path or ''}",
+            f"--teacher_report_path={cfg.model.teacher_report_path or ''}",
             f"--teacher_action_boosts={cfg.appo.teacher_action_boosts}",
             f"--teacher_loss_final_coef={cfg.appo.teacher_loss_final_coef}",
             f"--teacher_loss_warmup_env_steps={cfg.appo.teacher_loss_warmup_env_steps}",
@@ -146,6 +150,7 @@ class APPOTrainerScaffold:
             f"--trace_eval_top_k={cfg.appo.trace_eval_top_k}",
             f"--save_every_sec={cfg.appo.save_every_sec}",
             f"--save_best_every_sec={cfg.appo.save_best_every_sec}",
+            f"--improver_report_output={cfg.appo.improver_report_output or ''}",
             f"--use_rnn={str(cfg.model.use_lstm)}",
             f"--env_max_episode_steps={cfg.env.max_episode_steps}",
             f"--observation_version={cfg.env.observation_version}",
@@ -282,6 +287,7 @@ class APPOTrainerScaffold:
         parser.add_argument("--bc_init_path", type=str, default=self.config.model.bc_init_path)
         parser.add_argument("--appo_init_checkpoint_path", type=str, default=self.config.model.appo_init_checkpoint_path)
         parser.add_argument("--teacher_bc_path", type=str, default=self.config.appo.teacher_bc_path)
+        parser.add_argument("--teacher_report_path", type=str, default=self.config.model.teacher_report_path)
         parser.add_argument("--teacher_loss_coef", type=float, default=self.config.appo.teacher_loss_coef)
         parser.add_argument("--teacher_loss_type", type=str, default=self.config.appo.teacher_loss_type)
         parser.add_argument("--teacher_action_boosts", type=str, default=self.config.appo.teacher_action_boosts)
@@ -304,6 +310,7 @@ class APPOTrainerScaffold:
         parser.add_argument("--trace_eval_input", type=str, default=self.config.appo.trace_eval_input)
         parser.add_argument("--trace_eval_interval_env_steps", type=int, default=self.config.appo.trace_eval_interval_env_steps)
         parser.add_argument("--trace_eval_top_k", type=int, default=self.config.appo.trace_eval_top_k)
+        parser.add_argument("--improver_report_output", type=str, default=self.config.appo.improver_report_output)
         parser.add_argument("--enforce_action_mask", type=str, default=str(self.config.env.enforce_action_mask))
         parser.add_argument("--invalid_action_penalty", type=float, default=self.config.reward.invalid_action_penalty)
         parser.add_argument("--invalid_action_fallback", type=str, default=self.config.env.invalid_action_fallback)
@@ -336,10 +343,21 @@ class APPOTrainerScaffold:
             finally:
                 if monitor is not None:
                     monitor.stop()
+            improver_report_path = write_improver_report(
+                build_improver_report(
+                    config=self.config,
+                    plan=plan,
+                    argv=argv,
+                    warmstart_checkpoint=warmstart_checkpoint,
+                    status=str(status),
+                ),
+                self.config.appo.improver_report_output,
+            )
             return {
                 "status": str(status),
                 "plan": plan,
                 "argv": argv,
                 "warmstart_checkpoint": warmstart_checkpoint,
                 "experiment_lock": lock_path,
+                "improver_report_path": improver_report_path,
             }

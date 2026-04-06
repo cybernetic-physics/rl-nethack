@@ -64,6 +64,7 @@ class APPOConfig:
     trace_eval_top_k: int = 5
     save_every_sec: int = 120
     save_best_every_sec: int = 5
+    improver_report_output: str | None = None
 
 
 @dataclass
@@ -78,6 +79,7 @@ class ModelConfig:
     share_backbone_across_skills: bool = True
     bc_init_path: str | None = None
     appo_init_checkpoint_path: str | None = None
+    teacher_report_path: str | None = None
 
 
 @dataclass

@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from rl.bc_model import BCPolicyMLP, save_bc_model
 from rl.feature_encoder import ACTION_SET
 from rl.io_utils import atomic_torch_save
+from rl.teacher_report import build_teacher_report, write_teacher_report
 from rl.train_bc import load_trace_rows
 from rl.trace_eval import evaluate_trace_policy
 
@@ -198,6 +199,8 @@ def parse_args(argv=None):
     parser.add_argument("--class-balance-power", type=float, default=0.0)
     parser.add_argument("--teacher-action-boost", type=str, default="")
     parser.add_argument("--teacher-action-boost-scale", type=float, default=1.0)
+    parser.add_argument("--teacher-report-output", type=str, default=None)
+    parser.add_argument("--weak-action-input", type=str, default=None)
     return parser.parse_args(argv)
 
 
@@ -227,6 +230,17 @@ def main(argv=None):
             bc_model_path=args.output,
             summary_only=True,
         )["summary"]
+        report = build_teacher_report(
+            model_path=args.output,
+            heldout_trace_path=args.heldout_input,
+            train_result=train_result,
+            teacher_kind="behavior_reg",
+            weak_action_trace_path=args.weak_action_input,
+            source_trace_path=args.input,
+            observation_version=args.observation_version,
+        )
+        result["teacher_report"] = report
+        result["teacher_report_path"] = write_teacher_report(report, args.teacher_report_output)
     print(json.dumps(result, indent=2))
     return 0
 

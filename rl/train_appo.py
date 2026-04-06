@@ -48,6 +48,7 @@ def parse_args(argv=None):
     parser.add_argument("--bc-init-path", type=str, default=None)
     parser.add_argument("--appo-init-checkpoint-path", type=str, default=None)
     parser.add_argument("--teacher-bc-path", type=str, default=None)
+    parser.add_argument("--teacher-report-path", type=str, default=None)
     parser.add_argument("--teacher-loss-coef", type=float, default=0.01)
     parser.add_argument("--teacher-loss-type", type=str, default="ce", choices=["ce", "kl"])
     parser.add_argument("--teacher-action-boosts", type=str, default="")
@@ -76,6 +77,7 @@ def parse_args(argv=None):
     parser.add_argument("--use-rnn", action="store_true")
     parser.add_argument("--disable-action-mask", action="store_true")
     parser.add_argument("--write-plan", type=str, default=None)
+    parser.add_argument("--improver-report-output", type=str, default=None)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
 
@@ -133,6 +135,7 @@ def build_config(args) -> RLConfig:
             pass
     config.model.bc_init_path = args.bc_init_path
     config.model.appo_init_checkpoint_path = getattr(args, "appo_init_checkpoint_path", None)
+    config.model.teacher_report_path = getattr(args, "teacher_report_path", None)
     appo_init_config_path = None
     if config.model.appo_init_checkpoint_path:
         checkpoint_path = Path(config.model.appo_init_checkpoint_path)
@@ -209,6 +212,7 @@ def build_config(args) -> RLConfig:
     config.appo.trace_eval_top_k = args.trace_eval_top_k
     config.appo.save_every_sec = int(getattr(args, "save_every_sec", config.appo.save_every_sec))
     config.appo.save_best_every_sec = int(getattr(args, "save_best_every_sec", config.appo.save_best_every_sec))
+    config.appo.improver_report_output = getattr(args, "improver_report_output", None)
     config.model.use_lstm = bool(args.use_rnn and not args.no_rnn)
     if not config.model.use_lstm:
         config.rollout.recurrence = 1
