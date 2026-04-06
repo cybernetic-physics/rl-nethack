@@ -29,6 +29,25 @@ from src.task_harness import select_task_action
 from src.task_rewards import observation_hash, snapshot_memory
 
 
+def _load_bc_eval_bundle(bc_model_path: str, default_observation_version: str) -> dict:
+    import torch
+
+    bc_policy = load_bc_model(bc_model_path)
+    payload = torch.load(bc_model_path, map_location="cpu")
+    metadata = payload.get("metadata", {})
+    observation_version = metadata.get("observation_version", default_observation_version)
+    world_model_path = metadata.get("world_model_path")
+    world_model_feature_mode = metadata.get("world_model_feature_mode")
+    world_model_inference = load_world_model(world_model_path) if world_model_path and world_model_feature_mode else None
+    return {
+        "policy": bc_policy,
+        "observation_version": observation_version,
+        "world_model_path": world_model_path,
+        "world_model_feature_mode": world_model_feature_mode,
+        "world_model_inference": world_model_inference,
+    }
+
+
 def _load_appo_eval_bundle(appo_experiment: str | None, appo_train_dir: str, checkpoint_path: str | None = None) -> dict:
     from rl.evaluate import _load_actor_critic
     import torch
@@ -524,6 +543,7 @@ def generate_dagger_traces(
     appo_train_dir: str = "train_dir/rl",
     appo_checkpoint_path: Optional[str] = None,
     bc_model_path: Optional[str] = None,
+    teacher_bc_model_path: Optional[str] = None,
     observation_version: str = "v1",
 ) -> dict:
     if student_policy not in {"bc", "appo", "wall_avoidance"}:
@@ -552,12 +572,16 @@ def generate_dagger_traces(
 
     bc_policy = None
     bc_observation_version = observation_version
+    bc_world_model_inference = None
+    bc_world_model_feature_mode = None
     if student_policy == "bc":
-        bc_policy = load_bc_model(bc_model_path)
-        import torch
+        bc_bundle = _load_bc_eval_bundle(bc_model_path, observation_version)
+        bc_policy = bc_bundle["policy"]
+        bc_observation_version = bc_bundle["observation_version"]
+        bc_world_model_inference = bc_bundle["world_model_inference"]
+        bc_world_model_feature_mode = bc_bundle["world_model_feature_mode"]
 
-        payload = torch.load(bc_model_path, map_location="cpu")
-        bc_observation_version = payload.get("metadata", {}).get("observation_version", observation_version)
+    teacher_bc_bundle = _load_bc_eval_bundle(teacher_bc_model_path, observation_version) if teacher_bc_model_path else None
 
     total_rows = 0
     episode_lengths = []
@@ -621,20 +645,37 @@ def generate_dagger_traces(
                     observation_version=observation_version,
                     bc_policy=bc_policy,
                     bc_observation_version=bc_observation_version,
+                    bc_world_model_inference=bc_world_model_inference,
+                    bc_world_model_feature_mode=bc_world_model_feature_mode,
                     appo_eval=appo_eval,
                     appo_rnn_states=rnn_states,
                 )
-                teacher_action, teacher_trace = select_task_action(
-                    env=env.adapter.env if student_policy == "appo" else env,
-                    obs_before=raw_obs,
-                    state_before=state,
-                    memory_before=memory,
-                    task=task,
-                    prev_action=prev_action,
-                    recent_state_hashes=list(recent_state_hashes),
-                    recent_positions=list(recent_positions),
-                    encoder=encoder,
-                )
+                active_skill = timestep["active_skill"]
+                allowed_actions = timestep["allowed_actions"]
+                if teacher_bc_bundle is not None:
+                    teacher_base_version = teacher_bc_bundle["observation_version"].split("+", 1)[0]
+                    teacher_features = encode_observation(timestep, version=teacher_base_version)
+                    if teacher_bc_bundle["world_model_inference"] is not None and teacher_bc_bundle["world_model_feature_mode"]:
+                        teacher_features = augment_feature_vector(
+                            teacher_features,
+                            teacher_bc_bundle["world_model_inference"],
+                            mode=teacher_bc_bundle["world_model_feature_mode"],
+                            prompt_text=encoder.format_state_prompt(state),
+                        )
+                    teacher_action = teacher_bc_bundle["policy"].act(teacher_features, allowed_actions=allowed_actions)
+                    teacher_trace = []
+                else:
+                    teacher_action, teacher_trace = select_task_action(
+                        env=env.adapter.env if student_policy == "appo" else env,
+                        obs_before=raw_obs,
+                        state_before=state,
+                        memory_before=memory,
+                        task=task,
+                        prev_action=prev_action,
+                        recent_state_hashes=list(recent_state_hashes),
+                        recent_positions=list(recent_positions),
+                        encoder=encoder,
+                    )
                 relabel_match_count += int(student_action == teacher_action)
 
                 if student_action not in action_map:
@@ -653,8 +694,6 @@ def generate_dagger_traces(
 
                 delta = encoder.encode_delta(obs_before, raw_obs_after, teacher_action)
                 next_hash = observation_hash(raw_obs_after)
-                active_skill = timestep["active_skill"]
-                allowed_actions = timestep["allowed_actions"]
                 record = {
                     "episode_id": f"dagger:{student_policy}:{seed}",
                     "seed": seed,
@@ -718,4 +757,6 @@ def generate_dagger_traces(
     summary["student_policy"] = student_policy
     summary["observation_version"] = observation_version
     summary["teacher_match_rate"] = round(relabel_match_count / max(1, total_rows), 4)
+    summary["teacher_policy"] = "bc" if teacher_bc_model_path else "task_greedy"
+    summary["teacher_bc_model_path"] = teacher_bc_model_path
     return summary

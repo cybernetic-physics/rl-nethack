@@ -646,6 +646,7 @@ These conclusions remained robust despite code churn:
 - the strongest world-model contribution so far is now:
   - world-model-backed offline teacher construction,
   - followed by teacher-logit distillation into a cheap base-`v4` student,
+  - and then multi-teacher compression into a deeper cheap student,
   - not direct transformer-conditioned online rollouts.
 
 ## What Was Invalidated, Demoted, Or Narrowed
@@ -681,7 +682,9 @@ More specifically:
 - the best current world-model line is:
   - `distilbert` world-model teacher at `0.9625`,
   - cheap base-`v4` student distilled from that teacher at `0.975`,
-  - short APPO from that student tying at `0.975` and drifting to `0.875`,
+  - two-teacher ensemble over the best cheap students at `0.9875`,
+  - a single deeper cheap student distilled from that ensemble at `0.9875`,
+  - short APPO from the deeper `0.9875` student still collapsing to `0.2875` best learned trace match,
 - the proxy-reward branch is implemented but not mature enough to replace the current best teacher-replay branch,
 - the most plausible next frontier is a more teacher-aware and behavior-constrained online improver.
 

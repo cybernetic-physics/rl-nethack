@@ -529,6 +529,7 @@ def cmd_rl_train_bc(args):
         "--epochs", str(args.epochs),
         "--lr", str(args.lr),
         "--hidden-size", str(args.hidden_size),
+        "--num-layers", str(args.num_layers),
         "--observation-version", args.observation_version,
     ]
     if args.world_model_path:
@@ -539,6 +540,13 @@ def cmd_rl_train_bc(args):
         argv.extend(["--distill-teacher-bc-path", args.distill_teacher_bc_path])
         argv.extend(["--distill-loss-coef", str(args.distill_loss_coef)])
         argv.extend(["--distill-temperature", str(args.distill_temperature)])
+    if args.distill_teacher_bc_paths:
+        argv.extend(["--distill-teacher-bc-paths", *args.distill_teacher_bc_paths])
+        if not args.distill_teacher_bc_path:
+            argv.extend(["--distill-loss-coef", str(args.distill_loss_coef)])
+            argv.extend(["--distill-temperature", str(args.distill_temperature)])
+    if float(getattr(args, "supervised_loss_coef", 1.0)) != 1.0:
+        argv.extend(["--supervised-loss-coef", str(args.supervised_loss_coef)])
     if args.heldout_input:
         argv.extend(["--heldout-input", args.heldout_input])
     if args.teacher_report_output:
@@ -957,12 +965,16 @@ def cmd_rl_run_dagger(args):
         appo_train_dir=args.appo_train_dir,
         appo_checkpoint_path=args.appo_checkpoint_path,
         bc_model_path=args.bc_model_path,
+        teacher_bc_model_path=args.teacher_bc_model_path,
         observation_version=args.observation_version,
         merge_ratio=args.merge_ratio,
         merge_policy=args.merge_policy,
         epochs=args.epochs,
         lr=args.lr,
         hidden_size=args.hidden_size,
+        distill_teacher_bc_path=args.distill_teacher_bc_path,
+        distill_loss_coef=args.distill_loss_coef,
+        distill_temperature=args.distill_temperature,
         heldout_trace_input=args.heldout_input,
     )
     print(json.dumps(result, indent=2))
@@ -985,12 +997,16 @@ def cmd_rl_dagger_iterate(args):
         appo_train_dir=args.appo_train_dir,
         appo_checkpoint_path=args.appo_checkpoint_path,
         bc_model_path=args.bc_model_path,
+        teacher_bc_model_path=args.teacher_bc_model_path,
         observation_version=args.observation_version,
         merge_ratio=args.merge_ratio,
         merge_policy=args.merge_policy,
         epochs=args.epochs,
         lr=args.lr,
         hidden_size=args.hidden_size,
+        distill_teacher_bc_path=args.distill_teacher_bc_path,
+        distill_loss_coef=args.distill_loss_coef,
+        distill_temperature=args.distill_temperature,
         heldout_trace_input=args.heldout_input,
         random_seed=args.random_seed,
         stop_on_heldout_regression=args.stop_on_heldout_regression,
@@ -1550,6 +1566,8 @@ def main():
     p_rl_dagger.add_argument('--appo-train-dir', type=str, default='train_dir/rl')
     p_rl_dagger.add_argument('--appo-checkpoint-path', type=str, default=None)
     p_rl_dagger.add_argument('--bc-model-path', type=str, default=None)
+    p_rl_dagger.add_argument('--teacher-bc-model-path', type=str, default=None,
+                             help='Optional BC teacher used to relabel student-induced states instead of task_greedy')
     p_rl_dagger.add_argument('--observation-version', type=str, default='v1')
     p_rl_dagger.add_argument('--merge-ratio', type=float, default=0.5,
                              help='Fraction of the base trace dataset to keep when merging with new relabeled traces')
@@ -1560,6 +1578,10 @@ def main():
     p_rl_dagger.add_argument('--epochs', type=int, default=20)
     p_rl_dagger.add_argument('--lr', type=float, default=1e-3)
     p_rl_dagger.add_argument('--hidden-size', type=int, default=256)
+    p_rl_dagger.add_argument('--distill-teacher-bc-path', type=str, default=None,
+                             help='Optional BC teacher for retraining distillation; defaults to --teacher-bc-model-path when set')
+    p_rl_dagger.add_argument('--distill-loss-coef', type=float, default=0.0)
+    p_rl_dagger.add_argument('--distill-temperature', type=float, default=1.0)
 
     p_rl_dagger_sched = subparsers.add_parser('rl-dagger-iterate', help='Run an iterative DAgger schedule with BC retraining and trace-gated reports')
     p_rl_dagger_sched.add_argument('--input', type=str, required=True)
@@ -1576,6 +1598,7 @@ def main():
     p_rl_dagger_sched.add_argument('--appo-train-dir', type=str, default='train_dir/rl')
     p_rl_dagger_sched.add_argument('--appo-checkpoint-path', type=str, default=None)
     p_rl_dagger_sched.add_argument('--bc-model-path', type=str, default=None)
+    p_rl_dagger_sched.add_argument('--teacher-bc-model-path', type=str, default=None)
     p_rl_dagger_sched.add_argument('--observation-version', type=str, default='v1')
     p_rl_dagger_sched.add_argument('--merge-ratio', type=float, default=0.5)
     p_rl_dagger_sched.add_argument('--merge-policy', type=str, default='uniform_merge',
@@ -1584,6 +1607,9 @@ def main():
     p_rl_dagger_sched.add_argument('--epochs', type=int, default=20)
     p_rl_dagger_sched.add_argument('--lr', type=float, default=1e-3)
     p_rl_dagger_sched.add_argument('--hidden-size', type=int, default=256)
+    p_rl_dagger_sched.add_argument('--distill-teacher-bc-path', type=str, default=None)
+    p_rl_dagger_sched.add_argument('--distill-loss-coef', type=float, default=0.0)
+    p_rl_dagger_sched.add_argument('--distill-temperature', type=float, default=1.0)
     p_rl_dagger_sched.add_argument('--random-seed', type=int, default=123)
     p_rl_dagger_sched.add_argument('--stop-on-heldout-regression', action='store_true')
     p_rl_dagger_sched.add_argument('--min-improvement', type=float, default=0.0)
@@ -1665,13 +1691,16 @@ def main():
     p_bc.add_argument('--epochs', type=int, default=20)
     p_bc.add_argument('--lr', type=float, default=1e-3)
     p_bc.add_argument('--hidden-size', type=int, default=256)
+    p_bc.add_argument('--num-layers', type=int, default=2)
     p_bc.add_argument('--observation-version', type=str, default='v1')
     p_bc.add_argument('--world-model-path', type=str, default=None)
     p_bc.add_argument('--world-model-feature-mode', type=str, default=None,
                       choices=['replace', 'concat', 'concat_aux'])
     p_bc.add_argument('--distill-teacher-bc-path', type=str, default=None)
+    p_bc.add_argument('--distill-teacher-bc-paths', type=str, nargs='*', default=None)
     p_bc.add_argument('--distill-loss-coef', type=float, default=0.0)
     p_bc.add_argument('--distill-temperature', type=float, default=1.0)
+    p_bc.add_argument('--supervised-loss-coef', type=float, default=1.0)
     p_bc.add_argument('--heldout-input', type=str, default=None)
     p_bc.add_argument('--teacher-report-output', type=str, default=None)
     p_bc.add_argument('--weak-action-input', type=str, default=None)

@@ -4,13 +4,10 @@ import argparse
 import json
 
 import numpy as np
-import torch
 
-from rl.bc_model import load_bc_model
+from rl.feature_encoder import ACTION_SET
 from rl.io_utils import atomic_write_text
-from rl.train_bc import load_trace_rows
-from rl.world_model import load_world_model
-from rl.world_model_features import coerce_world_model_feature_vector, state_prompt_from_row
+from rl.train_bc import _normalize_teacher_paths, _teacher_logits_for_rows, load_trace_rows
 
 
 def relabel_trace_actions(
@@ -20,38 +17,11 @@ def relabel_trace_actions(
     bc_model_path: str,
 ) -> dict:
     rows = load_trace_rows(input_path)
-    bc_policy = load_bc_model(bc_model_path)
-    model_payload = torch.load(bc_model_path, map_location="cpu")
-    metadata = model_payload.get("metadata", {})
-    wm_path = metadata.get("world_model_path")
-    wm_mode = metadata.get("world_model_feature_mode")
-    wm_inference = load_world_model(wm_path) if wm_path and wm_mode else None
-
-    allowed_actions_list = [row.get("allowed_actions") for row in rows]
-    if wm_inference and wm_mode:
-        expected_dim = int(getattr(wm_inference.model, "_metadata", {}).get("input_dim", 0))
-        base_features = [
-            coerce_world_model_feature_vector(row["feature_vector"], expected_dim) if expected_dim else row["feature_vector"]
-            for row in rows
-        ]
-        prompts = [state_prompt_from_row(row) for row in rows]
-        encoded = wm_inference.encode_with_aux_batch(base_features, prompt_texts=prompts)
-        latents = encoded["latent"]
-        action_logits = encoded["action_logits"]
-        feature_batch = []
-        for base_feature, latent, logits in zip(base_features, latents, action_logits):
-            if wm_mode == "replace":
-                feature_batch.append(np.asarray(latent, dtype=np.float32))
-            elif wm_mode == "concat":
-                feature_batch.append(np.concatenate([base_feature, latent]).astype(np.float32))
-            elif wm_mode == "concat_aux":
-                feature_batch.append(np.concatenate([base_feature, latent, logits]).astype(np.float32))
-            else:
-                raise ValueError(f"Unsupported world-model feature mode: {wm_mode}")
-    else:
-        feature_batch = [row["feature_vector"] for row in rows]
-
-    predicted_actions = bc_policy.act_names_batch(feature_batch, allowed_actions_list=allowed_actions_list)
+    teacher_paths = _normalize_teacher_paths(bc_model_path, None)
+    if not teacher_paths:
+        raise ValueError("At least one bc_model_path is required")
+    ensembled_logits = _teacher_logits_for_rows(rows, teacher_paths)
+    predicted_actions = [ACTION_SET[int(np.argmax(row_logits))] for row_logits in ensembled_logits]
 
     relabeled_rows = []
     changed = 0
@@ -68,12 +38,12 @@ def relabel_trace_actions(
     return {
         "input_path": input_path,
         "output_path": output_path,
+        "teacher_bc_model_path": bc_model_path,
+        "teacher_bc_model_paths": teacher_paths,
         "rows": len(relabeled_rows),
         "changed_rows": changed,
         "changed_rate": round(changed / max(1, len(relabeled_rows)), 4),
         "action_counts": action_counts,
-        "world_model_path": wm_path,
-        "world_model_feature_mode": wm_mode,
     }
 
 

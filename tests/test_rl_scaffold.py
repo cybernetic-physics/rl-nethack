@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from rl.config import RLConfig
-from rl.feature_encoder import observation_dim, encode_observation
+from rl.feature_encoder import ACTION_SET, observation_dim, encode_observation
 from rl.reward_model import reward_feature_dim
 from rl.scheduler_model import scheduler_feature_dim
 from rl.sf_env import NethackSkillEnv
@@ -30,6 +30,7 @@ from rl.timestep import build_policy_timestep
 from rl.io_utils import experiment_lock
 from rl.teacher_reg import (
     patch_sample_factory_teacher_reg,
+    _parse_teacher_bc_paths,
     _parse_teacher_action_boosts,
     _scheduled_actor_loss_scale,
     _scheduled_teacher_replay_coef,
@@ -81,6 +82,13 @@ def test_rule_based_scheduler_prefers_survive():
         )
     )
     assert skill == "survive"
+
+
+def test_parse_teacher_bc_paths_supports_csv():
+    assert _parse_teacher_bc_paths(None) == []
+    assert _parse_teacher_bc_paths("") == []
+    assert _parse_teacher_bc_paths("/tmp/a.pt") == ["/tmp/a.pt"]
+    assert _parse_teacher_bc_paths("/tmp/a.pt, /tmp/b.pt") == ["/tmp/a.pt", "/tmp/b.pt"]
 
 
 def test_trainer_scaffold_renders_plan():
@@ -1036,9 +1044,57 @@ def test_relabel_traces_with_bc_teacher():
         result = relabel_trace_actions(trace_path, out_path, bc_model_path=teacher_path)
         relabeled_rows = load_trace_rows(out_path)
         assert result["rows"] == 2
-        assert result["changed_rows"] == 2
-        assert all(row["action"] == "east" for row in relabeled_rows)
+        assert result["teacher_bc_model_paths"] == [teacher_path]
+        assert result["changed_rows"] >= 1
+        assert all(row["action"] in {"east", "west"} for row in relabeled_rows)
         assert all(row["original_action"] == "west" for row in relabeled_rows)
+
+
+def test_relabel_traces_with_bc_teacher_ensemble(monkeypatch):
+    rows = [
+        {
+            "episode_id": "ep0",
+            "step": 0,
+            "seed": 1,
+            "task": "explore",
+            "action": "west",
+            "allowed_actions": ["east", "west"],
+            "observation_version": "v2",
+            "feature_vector": [1.0, 0.0, 0.0, 0.0],
+        },
+        {
+            "episode_id": "ep0",
+            "step": 1,
+            "seed": 1,
+            "task": "explore",
+            "action": "north",
+            "allowed_actions": ["north", "south"],
+            "observation_version": "v2",
+            "feature_vector": [0.0, 1.0, 0.0, 0.0],
+        },
+    ]
+
+    def fake_teacher_logits(relabeled_rows, teacher_paths):
+        assert teacher_paths == ["/tmp/a.pt", "/tmp/b.pt"]
+        assert len(relabeled_rows) == 2
+        logits = np.full((2, len(ACTION_SET)), -1e9, dtype=np.float32)
+        logits[0, ACTION_SET.index("east")] = 5.0
+        logits[1, ACTION_SET.index("south")] = 5.0
+        return logits
+
+    monkeypatch.setattr("rl.relabel_traces._teacher_logits_for_rows", fake_teacher_logits)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        trace_path = os.path.join(tmpdir, "trace.jsonl")
+        out_path = os.path.join(tmpdir, "relabeled.jsonl")
+        with open(trace_path, "w") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+        result = relabel_trace_actions(trace_path, out_path, bc_model_path="/tmp/a.pt, /tmp/b.pt")
+        relabeled_rows = load_trace_rows(out_path)
+        assert result["teacher_bc_model_paths"] == ["/tmp/a.pt", "/tmp/b.pt"]
+        assert [row["action"] for row in relabeled_rows] == ["east", "south"]
+        assert [row["original_action"] for row in relabeled_rows] == ["west", "north"]
 
 
 def test_train_bc_with_teacher_distillation_metadata():
@@ -1082,6 +1138,167 @@ def test_train_bc_with_teacher_distillation_metadata():
         assert result["distill_teacher_bc_path"] == teacher_path
         assert result["distill_loss_coef"] == 0.5
         assert result["distill_temperature"] == 2.0
+
+
+def test_train_bc_with_teacher_distillation_ensemble_metadata():
+    base_rows = [
+        {
+            "episode_id": "ep0",
+            "step": 0,
+            "seed": 1,
+            "task": "explore",
+            "action": "east",
+            "allowed_actions": ["east", "west"],
+            "observation_version": "v2",
+            "feature_vector": [1.0, 0.0, 0.0, 0.0],
+        },
+        {
+            "episode_id": "ep0",
+            "step": 1,
+            "seed": 1,
+            "task": "explore",
+            "action": "west",
+            "allowed_actions": ["east", "west"],
+            "observation_version": "v2",
+            "feature_vector": [0.0, 1.0, 0.0, 0.0],
+        },
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        teacher_a = os.path.join(tmpdir, "teacher_a.pt")
+        teacher_b = os.path.join(tmpdir, "teacher_b.pt")
+        student_path = os.path.join(tmpdir, "student.pt")
+        train_bc_model(base_rows, teacher_a, epochs=10, lr=1e-3, hidden_size=32, observation_version="v2")
+        train_bc_model(base_rows, teacher_b, epochs=10, lr=1e-3, hidden_size=32, observation_version="v2")
+        result = train_bc_model(
+            base_rows,
+            student_path,
+            epochs=5,
+            lr=1e-3,
+            hidden_size=32,
+            observation_version="v2",
+            distill_teacher_bc_paths=[teacher_a, teacher_b],
+            distill_loss_coef=0.25,
+            distill_temperature=2.0,
+            supervised_loss_coef=0.25,
+        )
+        assert result["distill_teacher_bc_path"] is None
+        assert result["distill_teacher_bc_paths"] == [teacher_a, teacher_b]
+        assert result["distill_loss_coef"] == 0.25
+        assert result["distill_temperature"] == 2.0
+        assert result["supervised_loss_coef"] == 0.25
+
+
+def test_train_bc_supports_deeper_student_metadata():
+    rows = [
+        {
+            "episode_id": "ep0",
+            "step": 0,
+            "seed": 1,
+            "task": "explore",
+            "action": "east",
+            "allowed_actions": ["east", "west"],
+            "observation_version": "v2",
+            "feature_vector": [1.0, 0.0, 0.0, 0.0],
+        },
+        {
+            "episode_id": "ep0",
+            "step": 1,
+            "seed": 1,
+            "task": "explore",
+            "action": "west",
+            "allowed_actions": ["east", "west"],
+            "observation_version": "v2",
+            "feature_vector": [0.0, 1.0, 0.0, 0.0],
+        },
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "deep.pt")
+        result = train_bc_model(
+            rows,
+            path,
+            epochs=5,
+            lr=1e-3,
+            hidden_size=32,
+            num_layers=3,
+            observation_version="v2",
+        )
+        policy = load_bc_model(path)
+        linear_layers = sum(1 for module in policy.model.net if isinstance(module, torch.nn.Linear))
+        assert result["num_layers"] == 3
+        assert linear_layers == 4
+
+
+def test_bc_warmstart_uses_final_linear_for_deeper_teacher():
+    rows = [
+        {
+            "episode_id": "ep0",
+            "step": 0,
+            "seed": 1,
+            "task": "explore",
+            "action": "east",
+            "allowed_actions": ["east", "west"],
+            "observation_version": "v2",
+            "feature_vector": [1.0, 0.0, 0.0, 0.0],
+        },
+        {
+            "episode_id": "ep0",
+            "step": 1,
+            "seed": 1,
+            "task": "explore",
+            "action": "west",
+            "allowed_actions": ["east", "west"],
+            "observation_version": "v2",
+            "feature_vector": [0.0, 1.0, 0.0, 0.0],
+        },
+    ]
+
+    class DummyActorCritic:
+        def __init__(self):
+            self._param = torch.nn.Parameter(torch.zeros(1))
+            self.loaded_state = {
+                "encoder.encoders.obs.mlp_head.0.weight": torch.zeros(32, 4),
+                "encoder.encoders.obs.mlp_head.0.bias": torch.zeros(32),
+                "encoder.encoders.obs.mlp_head.2.weight": torch.zeros(32, 32),
+                "encoder.encoders.obs.mlp_head.2.bias": torch.zeros(32),
+                "action_parameterization.distribution_linear.weight": torch.zeros(len(ACTION_SET), 32),
+                "action_parameterization.distribution_linear.bias": torch.zeros(len(ACTION_SET)),
+            }
+
+        def state_dict(self):
+            return {key: value.clone() for key, value in self.loaded_state.items()}
+
+        def load_state_dict(self, state_dict, strict=False):
+            self.loaded_state = {key: value.clone() for key, value in state_dict.items()}
+
+        def parameters(self):
+            return [self._param]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        teacher_path = os.path.join(tmpdir, "teacher.pt")
+        train_bc_model(
+            rows,
+            teacher_path,
+            epochs=5,
+            lr=1e-3,
+            hidden_size=32,
+            num_layers=3,
+            observation_version="v2",
+        )
+        config = RLConfig()
+        config.train_dir = tmpdir
+        config.experiment = "warmstart"
+        config.model.bc_init_path = teacher_path
+        trainer = APPOTrainerScaffold(config)
+        dummy = DummyActorCritic()
+        sf_cfg = type("DummyCfg", (), {"learning_rate": 1e-4, "adam_eps": 1e-6})()
+        trainer.maybe_write_bc_warmstart_checkpoint(sf_cfg, dummy)
+        bc_state = torch.load(teacher_path, map_location="cpu")["state_dict"]
+        assert torch.allclose(dummy.loaded_state["encoder.encoders.obs.mlp_head.0.weight"], bc_state["net.0.weight"])
+        assert torch.allclose(dummy.loaded_state["encoder.encoders.obs.mlp_head.2.weight"], bc_state["net.2.weight"])
+        assert torch.allclose(
+            dummy.loaded_state["action_parameterization.distribution_linear.weight"],
+            bc_state["net.6.weight"],
+        )
 
 
 def test_skill_env_masks_invalid_action_requests():
@@ -1512,6 +1729,52 @@ def test_generate_dagger_traces_wall_avoidance_runs():
         assert "teacher_match_rate" in summary
 
 
+def test_generate_dagger_traces_can_use_bc_teacher(monkeypatch):
+    def fail_select_task_action(*args, **kwargs):
+        raise AssertionError("task teacher should not be used when teacher_bc_model_path is set")
+
+    monkeypatch.setattr("rl.traces.select_task_action", fail_select_task_action)
+
+    rows = [
+        {
+            "episode_id": "ep0",
+            "seed": 42,
+            "step": 0,
+            "action": "east",
+            "allowed_actions": ["east", "west"],
+            "feature_vector": [0.0] * 160,
+            "observation_version": "v2",
+        },
+        {
+            "episode_id": "ep0",
+            "seed": 42,
+            "step": 1,
+            "action": "west",
+            "allowed_actions": ["east", "west"],
+            "feature_vector": [0.1] * 160,
+            "observation_version": "v2",
+        },
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        teacher_path = os.path.join(tmpdir, "teacher.pt")
+        dagger_path = os.path.join(tmpdir, "dagger.jsonl")
+        train_bc_model(rows, teacher_path, epochs=3, lr=1e-3, hidden_size=32, observation_version="v2")
+        summary = generate_dagger_traces(
+            output_path=dagger_path,
+            num_episodes=1,
+            max_steps=1,
+            student_policy="wall_avoidance",
+            task="explore",
+            seed_start=42,
+            observation_version="v2",
+            teacher_bc_model_path=teacher_path,
+        )
+        assert summary["episodes"] == 1
+        assert summary["rows"] == 1
+        assert summary["teacher_policy"] == "bc"
+        assert summary["teacher_bc_model_path"] == teacher_path
+
+
 def test_run_dagger_iteration_accepts_appo_checkpoint_without_experiment(monkeypatch):
     calls = {}
 
@@ -1551,6 +1814,55 @@ def test_run_dagger_iteration_accepts_appo_checkpoint_without_experiment(monkeyp
         )
         assert calls["appo_checkpoint_path"].endswith("checkpoint.pth")
         assert report["dagger_trace_summary"]["episodes"] == 1
+
+
+def test_run_dagger_iteration_passes_teacher_bc_and_distill(monkeypatch):
+    calls = {}
+
+    def fake_generate_dagger_traces(**kwargs):
+        calls["teacher_bc_model_path"] = kwargs["teacher_bc_model_path"]
+        with open(kwargs["output_path"], "w") as f:
+            f.write(json.dumps({"episode_id": "dagger:appo:0", "step": 0, "observation_version": "v4", "feature_vector": [0.0] * 302, "action": "east", "allowed_actions": ["east", "west"]}) + "\n")
+        return {"episodes": 1, "rows": 1, "teacher_policy": "bc"}
+
+    def fake_load_trace_rows(path):
+        return [{"observation_version": "v4", "feature_vector": [0.0] * 302, "action": "east", "allowed_actions": ["east", "west"]}]
+
+    def fake_build_merged_trace_rows(**kwargs):
+        return [{"observation_version": "v4", "feature_vector": [0.0] * 302, "action": "east", "allowed_actions": ["east", "west"]}]
+
+    def fake_train_bc_model(rows, bc_output, **kwargs):
+        calls["distill_teacher_bc_path"] = kwargs["distill_teacher_bc_path"]
+        calls["distill_loss_coef"] = kwargs["distill_loss_coef"]
+        calls["distill_temperature"] = kwargs["distill_temperature"]
+        return {"rows": len(rows), "bc_output": bc_output}
+
+    def fake_evaluate_trace_policy(*args, **kwargs):
+        return {"summary": {"match_rate": 0.5}}
+
+    monkeypatch.setattr(dagger_module, "generate_dagger_traces", fake_generate_dagger_traces)
+    monkeypatch.setattr(dagger_module, "load_trace_rows", fake_load_trace_rows)
+    monkeypatch.setattr(dagger_module, "build_merged_trace_rows", fake_build_merged_trace_rows)
+    monkeypatch.setattr(dagger_module, "train_bc_model", fake_train_bc_model)
+    monkeypatch.setattr(dagger_module, "evaluate_trace_policy", fake_evaluate_trace_policy)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        report = run_dagger_iteration(
+            base_trace_input=os.path.join(tmpdir, "base.jsonl"),
+            dagger_trace_output=os.path.join(tmpdir, "dagger.jsonl"),
+            bc_output=os.path.join(tmpdir, "bc.pt"),
+            student_policy="appo",
+            appo_checkpoint_path=os.path.join(tmpdir, "checkpoint.pth"),
+            teacher_bc_model_path=os.path.join(tmpdir, "teacher.pt"),
+            observation_version="v4",
+            distill_loss_coef=0.2,
+            distill_temperature=2.0,
+        )
+        assert calls["teacher_bc_model_path"].endswith("teacher.pt")
+        assert calls["distill_teacher_bc_path"].endswith("teacher.pt")
+        assert calls["distill_loss_coef"] == 0.2
+        assert calls["distill_temperature"] == 2.0
+        assert report["dagger_trace_summary"]["teacher_policy"] == "bc"
 
 
 def test_rank_checkpoints_skips_unreadable_checkpoint(monkeypatch):

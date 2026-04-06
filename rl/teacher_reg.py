@@ -104,7 +104,13 @@ def _load_teacher_replay_tensors(path: str, device: torch.device, source_mode: s
 
 
 def _teacher_enabled(cfg: Any) -> bool:
-    return bool(getattr(cfg, "teacher_bc_path", None)) and float(getattr(cfg, "teacher_loss_coef", 0.0) or 0.0) > 0.0
+    return bool(_parse_teacher_bc_paths(getattr(cfg, "teacher_bc_path", None))) and float(getattr(cfg, "teacher_loss_coef", 0.0) or 0.0) > 0.0
+
+
+def _parse_teacher_bc_paths(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return [part.strip() for part in str(raw).split(",") if part.strip()]
 
 
 def _scheduled_teacher_coef(self) -> float:
@@ -224,6 +230,7 @@ def patch_sample_factory_teacher_reg() -> None:
     def _init_with_teacher(self):
         model_init = _ORIG_INIT(self)
         self.teacher_policy = None
+        self.teacher_policies = []
         self.teacher_replay = None
         self.teacher_loss_coef = float(getattr(self.cfg, "teacher_loss_coef", 0.0) or 0.0)
         self.teacher_loss_type = str(getattr(self.cfg, "teacher_loss_type", "ce") or "ce")
@@ -253,17 +260,21 @@ def patch_sample_factory_teacher_reg() -> None:
         if _teacher_enabled(self.cfg):
             if getattr(self.cfg, "use_rnn", False):
                 raise ValueError("Teacher-regularized APPO is only supported on the non-RNN path")
-            payload = torch.load(self.teacher_bc_path, map_location=self.device)
-            metadata = payload.get("metadata", {})
-            input_dim = int(metadata.get("input_dim", observation_dim(getattr(self.cfg, "observation_version", "v1"))))
-            hidden_size = int(metadata.get("hidden_size", 256))
-            teacher = BCPolicyMLP(input_dim=input_dim, hidden_size=hidden_size)
-            teacher.load_state_dict(payload["state_dict"])
-            teacher.to(self.device)
-            teacher.eval()
-            for param in teacher.parameters():
-                param.requires_grad_(False)
-            self.teacher_policy = teacher
+            teacher_paths = _parse_teacher_bc_paths(self.teacher_bc_path)
+            for teacher_path in teacher_paths:
+                payload = torch.load(teacher_path, map_location=self.device)
+                metadata = payload.get("metadata", {})
+                input_dim = int(metadata.get("input_dim", observation_dim(getattr(self.cfg, "observation_version", "v1"))))
+                hidden_size = int(metadata.get("hidden_size", 256))
+                num_layers = int(metadata.get("num_layers", 2))
+                teacher = BCPolicyMLP(input_dim=input_dim, hidden_size=hidden_size, num_layers=num_layers)
+                teacher.load_state_dict(payload["state_dict"])
+                teacher.to(self.device)
+                teacher.eval()
+                for param in teacher.parameters():
+                    param.requires_grad_(False)
+                self.teacher_policies.append(teacher)
+            self.teacher_policy = self.teacher_policies[0] if self.teacher_policies else None
         if self.teacher_replay_trace_input and max(self.teacher_replay_coef, self.teacher_replay_final_coef) > 0.0:
             self.teacher_replay = _load_teacher_replay_tensors(
                 self.teacher_replay_trace_input,
@@ -288,12 +299,12 @@ def patch_sample_factory_teacher_reg() -> None:
         param_anchor_loss = torch.zeros((), device=self.device)
         actor_loss_scale = policy_loss.new_tensor(_scheduled_actor_loss_scale(self))
 
-        if self.teacher_policy is not None:
+        if self.teacher_policies:
             raw_obs = mb.get("raw_obs")
             if raw_obs is None:
                 raise RuntimeError("Teacher regularization requires raw_obs in the minibatch")
             with torch.no_grad():
-                teacher_logits = self.teacher_policy(raw_obs.float())
+                teacher_logits = torch.stack([teacher(raw_obs.float()) for teacher in self.teacher_policies], dim=0).mean(dim=0)
                 teacher_actions = torch.argmax(teacher_logits, dim=-1)
 
             student_logits = action_distribution.raw_logits

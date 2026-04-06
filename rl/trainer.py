@@ -187,6 +187,21 @@ class APPOTrainerScaffold:
         cols = min(dst.shape[1], src.shape[1])
         dst[:rows, :cols].copy_(src[:rows, :cols])
 
+    @staticmethod
+    def _bc_linear_state_keys(bc_state: dict[str, torch.Tensor]) -> list[tuple[str, str]]:
+        weight_keys = sorted(
+            [key for key in bc_state if key.startswith("net.") and key.endswith(".weight")],
+            key=lambda key: int(key.split(".")[1]),
+        )
+        bias_keys = {key.rsplit(".", 1)[0]: key for key in bc_state if key.startswith("net.") and key.endswith(".bias")}
+        linear_layers: list[tuple[str, str]] = []
+        for weight_key in weight_keys:
+            prefix = weight_key.rsplit(".", 1)[0]
+            bias_key = bias_keys.get(prefix)
+            if bias_key:
+                linear_layers.append((weight_key, bias_key))
+        return linear_layers
+
     def maybe_write_bc_warmstart_checkpoint(self, sf_cfg, actor_critic) -> str | None:
         if not self.config.model.bc_init_path:
             return None
@@ -194,17 +209,26 @@ class APPOTrainerScaffold:
         payload = torch.load(self.config.model.bc_init_path, map_location="cpu")
         bc_state = payload["state_dict"]
         model_state = actor_critic.state_dict()
-        self._copy_prefix(model_state["encoder.encoders.obs.mlp_head.0.weight"], bc_state["net.0.weight"])
-        self._copy_prefix(model_state["encoder.encoders.obs.mlp_head.0.bias"], bc_state["net.0.bias"])
-        self._copy_prefix(model_state["encoder.encoders.obs.mlp_head.2.weight"], bc_state["net.2.weight"])
-        self._copy_prefix(model_state["encoder.encoders.obs.mlp_head.2.bias"], bc_state["net.2.bias"])
+        linear_layers = self._bc_linear_state_keys(bc_state)
+        if len(linear_layers) < 2:
+            raise ValueError("BC warmstart requires at least one hidden linear layer and one output linear layer")
+        hidden_layers = linear_layers[:-1]
+        output_weight_key, output_bias_key = linear_layers[-1]
+        if hidden_layers:
+            first_weight_key, first_bias_key = hidden_layers[0]
+            self._copy_prefix(model_state["encoder.encoders.obs.mlp_head.0.weight"], bc_state[first_weight_key])
+            self._copy_prefix(model_state["encoder.encoders.obs.mlp_head.0.bias"], bc_state[first_bias_key])
+        if len(hidden_layers) > 1:
+            second_weight_key, second_bias_key = hidden_layers[1]
+            self._copy_prefix(model_state["encoder.encoders.obs.mlp_head.2.weight"], bc_state[second_weight_key])
+            self._copy_prefix(model_state["encoder.encoders.obs.mlp_head.2.bias"], bc_state[second_bias_key])
         self._copy_prefix(
             model_state["action_parameterization.distribution_linear.weight"],
-            bc_state["net.4.weight"],
+            bc_state[output_weight_key],
         )
         self._copy_prefix(
             model_state["action_parameterization.distribution_linear.bias"],
-            bc_state["net.4.bias"],
+            bc_state[output_bias_key],
         )
         actor_critic.load_state_dict(model_state, strict=False)
 

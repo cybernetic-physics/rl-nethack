@@ -11,15 +11,23 @@ from rl.io_utils import atomic_torch_save
 
 
 class BCPolicyMLP(nn.Module):
-    def __init__(self, input_dim: int, hidden_size: int = 256, output_dim: int = len(ACTION_SET)):
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_size: int = 256,
+        output_dim: int = len(ACTION_SET),
+        num_layers: int = 2,
+    ):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, output_dim),
-        )
+        resolved_layers = max(int(num_layers), 1)
+        layers: list[nn.Module] = []
+        prev_dim = input_dim
+        for _ in range(resolved_layers):
+            layers.append(nn.Linear(prev_dim, hidden_size))
+            layers.append(nn.ReLU())
+            prev_dim = hidden_size
+        layers.append(nn.Linear(prev_dim, output_dim))
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
@@ -106,7 +114,8 @@ def load_bc_model(path: str, input_dim: int | None = None, device: str = "cpu") 
     if resolved_input_dim is None:
         raise ValueError("BC model input_dim is required and was not found in metadata")
     hidden_size = metadata.get("hidden_size", 256)
-    model = BCPolicyMLP(input_dim=resolved_input_dim, hidden_size=hidden_size)
+    num_layers = metadata.get("num_layers", 2)
+    model = BCPolicyMLP(input_dim=resolved_input_dim, hidden_size=hidden_size, num_layers=num_layers)
     model.load_state_dict(payload["state_dict"])
     model.eval()
     model.to(torch_device)
