@@ -102,6 +102,50 @@ def test_parse_action_weight_boosts_supports_csv():
     }
 
 
+def test_cli_train_bc_forwards_explicit_device(monkeypatch):
+    captured = {}
+
+    def fake_train(argv):
+        captured["argv"] = list(argv)
+        return 0
+
+    monkeypatch.setattr("rl.train_bc.main", fake_train)
+    args = argparse.Namespace(
+        input="/tmp/train.jsonl",
+        output="/tmp/bc.pt",
+        epochs=5,
+        lr=1e-3,
+        hidden_size=128,
+        num_layers=2,
+        observation_version="v4",
+        world_model_path=None,
+        world_model_feature_mode=None,
+        distill_teacher_bc_path=None,
+        distill_teacher_bc_paths=None,
+        distill_loss_coef=0.0,
+        distill_temperature=1.0,
+        supervised_loss_coef=1.0,
+        action_weight_boosts=None,
+        text_encoder_backend="none",
+        text_vocab_size=4096,
+        text_embedding_dim=128,
+        text_model_name=None,
+        text_max_length=128,
+        text_trainable=False,
+        device="cuda",
+        select_by_heldout=True,
+        heldout_input=None,
+        teacher_report_output=None,
+        weak_action_input=None,
+    )
+    rc = cli_module.cmd_rl_train_bc(args)
+    assert rc == 0
+    argv = captured["argv"]
+    assert "--device" in argv
+    assert argv[argv.index("--device") + 1] == "cuda"
+    assert "--select-by-heldout" in argv
+
+
 def test_trainer_scaffold_renders_plan():
     config = RLConfig()
     trainer = APPOTrainerScaffold(config)
@@ -1662,11 +1706,54 @@ def test_bc_model_round_trips_with_metadata():
     ]
     with tempfile.TemporaryDirectory() as tmpdir:
         out = os.path.join(tmpdir, "bc.pt")
-        meta = train_bc_model(rows, out, epochs=1, lr=1e-3, hidden_size=64, observation_version="v2")
+        meta = train_bc_model(rows, out, epochs=1, lr=1e-3, hidden_size=64, observation_version="v2", device="cpu")
         assert meta["observation_version"] == "v2"
+        assert meta["device_requested"] == "cpu"
+        assert meta["training_device"] == "cpu"
         policy = load_bc_model(out)
         action = policy.act(rows[0]["feature_vector"], allowed_actions=["east", "west"])
         assert action in {"east", "west"}
+
+
+def test_bc_can_select_by_heldout_metric(monkeypatch):
+    rows = [
+        {
+            "feature_vector": [0.0] * 160,
+            "action": "east",
+            "allowed_actions": ["east", "west"],
+            "observation_version": "v2",
+        },
+        {
+            "feature_vector": [0.1] * 160,
+            "action": "west",
+            "allowed_actions": ["east", "west"],
+            "observation_version": "v2",
+        },
+    ]
+    scores = iter([0.9, 0.95, 0.92])
+
+    def fake_eval(*args, **kwargs):
+        return {"summary": {"match_rate": next(scores)}}
+
+    monkeypatch.setattr("rl.trace_eval.evaluate_trace_policy", fake_eval)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = os.path.join(tmpdir, "bc.pt")
+        meta = train_bc_model(
+            rows,
+            out,
+            epochs=3,
+            lr=1e-3,
+            hidden_size=64,
+            observation_version="v2",
+            device="cpu",
+            heldout_trace_path="/tmp/heldout.jsonl",
+            select_by_heldout=True,
+        )
+        payload = torch.load(out, map_location="cpu")
+        assert payload["metadata"]["selection_metric"] == "heldout_match_rate"
+        assert payload["metadata"]["selected_epoch"] == 2
+        assert payload["metadata"]["selection_score"] == 0.95
+        assert len(meta["epoch_summaries"]) == 3
 
 
 def test_text_conditioned_bc_uses_prompt_text_in_trace_eval():

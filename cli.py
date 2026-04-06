@@ -565,6 +565,10 @@ def cmd_rl_train_bc(args):
         argv.extend(["--text-max-length", str(args.text_max_length)])
     if bool(getattr(args, "text_trainable", False)):
         argv.append("--text-trainable")
+    if getattr(args, "device", "auto") != "auto":
+        argv.extend(["--device", args.device])
+    if bool(getattr(args, "select_by_heldout", False)):
+        argv.append("--select-by-heldout")
     if args.heldout_input:
         argv.extend(["--heldout-input", args.heldout_input])
     if args.teacher_report_output:
@@ -1730,6 +1734,8 @@ def main():
     p_bc.add_argument('--text-model-name', type=str, default=None)
     p_bc.add_argument('--text-max-length', type=int, default=128)
     p_bc.add_argument('--text-trainable', action='store_true')
+    p_bc.add_argument('--device', type=str, default='auto')
+    p_bc.add_argument('--select-by-heldout', action='store_true')
     p_bc.add_argument('--heldout-input', type=str, default=None)
     p_bc.add_argument('--teacher-report-output', type=str, default=None)
     p_bc.add_argument('--weak-action-input', type=str, default=None)

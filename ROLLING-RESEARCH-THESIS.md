@@ -695,6 +695,12 @@ More specifically:
   - neither fixed the remaining held-out `east -> south` miss,
   - a prompt-conditioned frozen-`distilbert` teacher trained directly on supervised trace labels regressed to `0.95`,
   - so missing prompt text is not the leading explanation for the last gap in the current teacher family,
+- larger offline BC scaling is now implemented with explicit GPU training and deterministic held-out checkpoint selection,
+  - scaling to `2048 x 4` MLP teachers on both a clean `680`-row set and a larger `1400`-row merged set could recover `0.9875`,
+  - but only when selecting checkpoints by held-out trace match,
+  - the same scaled runs regressed to `0.975` or worse at late epochs if judged by final weights alone,
+  - so larger models and longer offline runs are viable, but only under benchmark-aware checkpoint selection,
+  - and scale by itself still did not beat the `0.9875` cheap-teacher baseline,
 - the most plausible next frontier is a more teacher-aware and behavior-constrained online improver.
 
 ## Practical Research Rules Going Forward

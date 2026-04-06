@@ -113,6 +113,15 @@ def _parse_action_weight_boosts(raw: str | None) -> dict[int, float]:
     return boosts
 
 
+def _resolve_training_device(requested: str | None) -> torch.device:
+    value = str(requested or "auto").strip().lower()
+    if value == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if value == "cuda" and not torch.cuda.is_available():
+        raise ValueError("Requested device=cuda but CUDA is not available")
+    return torch.device(value)
+
+
 def train_bc_model(
     rows: list[dict],
     output_path: str,
@@ -135,6 +144,9 @@ def train_bc_model(
     text_model_name: str | None = None,
     text_max_length: int = 128,
     text_trainable: bool = False,
+    device: str = "auto",
+    heldout_trace_path: str | None = None,
+    select_by_heldout: bool = False,
 ) -> dict:
     if not rows:
         raise ValueError("No trace rows to train on")
@@ -153,7 +165,7 @@ def train_bc_model(
     if len(input_dims) != 1:
         raise ValueError(f"Mixed feature dimensions in trace rows: {sorted(input_dims)}")
     input_dim = len(rows[0]["feature_vector"])
-    device = torch.device("cpu")
+    torch_device = _resolve_training_device(device)
     model = BCPolicyMLP(
         input_dim=input_dim,
         hidden_size=hidden_size,
@@ -165,32 +177,35 @@ def train_bc_model(
         text_max_length=text_max_length,
         text_trainable=text_trainable,
     )
-    model.to(device)
+    model.to(torch_device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-    x = torch.tensor([row["feature_vector"] for row in rows], dtype=torch.float32, device=device)
-    y = torch.tensor([ACTION_SET.index(row["action"]) for row in rows], dtype=torch.long, device=device)
+    x = torch.tensor([row["feature_vector"] for row in rows], dtype=torch.float32, device=torch_device)
+    y = torch.tensor([ACTION_SET.index(row["action"]) for row in rows], dtype=torch.long, device=torch_device)
     prompt_texts = [state_prompt_from_row(row) for row in rows]
     action_masks = torch.tensor(
         [[1.0 if name in row.get("allowed_actions", ACTION_SET) else 0.0 for name in ACTION_SET] for row in rows],
         dtype=torch.float32,
-        device=device,
+        device=torch_device,
     )
     teacher_paths = _normalize_teacher_paths(distill_teacher_bc_path, distill_teacher_bc_paths)
     teacher_logits = None
     if teacher_paths:
         teacher_logits_np = _teacher_logits_for_rows(rows, teacher_paths)
-        teacher_logits = torch.tensor(teacher_logits_np, dtype=torch.float32, device=device)
-    example_weights = torch.ones(len(rows), dtype=torch.float32, device=device)
+        teacher_logits = torch.tensor(teacher_logits_np, dtype=torch.float32, device=torch_device)
+    example_weights = torch.ones(len(rows), dtype=torch.float32, device=torch_device)
     for action_idx, weight in _parse_action_weight_boosts(action_weight_boosts).items():
         example_weights = torch.where(y == action_idx, torch.full_like(example_weights, weight), example_weights)
     cached_text_context = None
     if text_encoder_backend == "transformer" and not text_trainable:
         with torch.no_grad():
-            cached_text_context = model.encode_text_context(prompt_texts, device=device)
+            cached_text_context = model.encode_text_context(prompt_texts, device=torch_device)
 
+    best_payload = None
+    best_score = float("-inf")
+    epoch_summaries: list[dict] = []
     losses = []
-    for _ in range(epochs):
+    for epoch in range(epochs):
         optimizer.zero_grad()
         logits = model(x, prompt_texts=prompt_texts, text_context=cached_text_context)
         logits = logits.masked_fill(action_masks <= 0, -1e9)
@@ -206,6 +221,72 @@ def train_bc_model(
         loss.backward()
         optimizer.step()
         losses.append(float(loss.item()))
+
+        train_preds = torch.argmax(
+            model(x, prompt_texts=prompt_texts, text_context=cached_text_context).masked_fill(action_masks <= 0, -1e9),
+            dim=1,
+        )
+        train_accuracy = float((train_preds == y).float().mean().item())
+        epoch_summary = {
+            "epoch": epoch + 1,
+            "loss": float(loss.item()),
+            "train_accuracy": train_accuracy,
+        }
+        if select_by_heldout:
+            if not heldout_trace_path:
+                raise ValueError("heldout_trace_path is required when select_by_heldout is enabled")
+            from rl.trace_eval import evaluate_trace_policy
+
+            candidate_path = output_path + ".tmp_eval"
+            save_bc_model(
+                model,
+                candidate_path,
+                metadata={
+                    "epochs": epoch + 1,
+                    "learning_rate": lr,
+                    "num_examples": len(rows),
+                    "input_dim": input_dim,
+                    "hidden_size": hidden_size,
+                    "num_layers": num_layers,
+                    "observation_version": observation_version,
+                    "world_model_path": world_model_path,
+                    "world_model_feature_mode": world_model_feature_mode,
+                    "distill_teacher_bc_path": distill_teacher_bc_path,
+                    "distill_teacher_bc_paths": teacher_paths or None,
+                    "distill_loss_coef": distill_loss_coef,
+                    "distill_temperature": distill_temperature,
+                    "supervised_loss_coef": supervised_loss_coef,
+                    "action_weight_boosts": action_weight_boosts,
+                    "text_encoder_backend": text_encoder_backend,
+                    "text_vocab_size": text_vocab_size,
+                    "text_embedding_dim": text_embedding_dim,
+                    "text_model_name": text_model_name,
+                    "text_max_length": text_max_length,
+                    "text_trainable": text_trainable,
+                    "device_requested": device,
+                    "training_device": str(torch_device),
+                },
+            )
+            heldout_eval = evaluate_trace_policy(
+                heldout_trace_path,
+                "bc",
+                bc_model_path=candidate_path,
+                summary_only=True,
+            )["summary"]
+            epoch_summary["heldout_match_rate"] = heldout_eval["match_rate"]
+            score = heldout_eval["match_rate"]
+            if score >= best_score:
+                best_score = score
+                best_payload = torch.load(candidate_path, map_location="cpu")
+                best_payload["metadata"] = {
+                    **best_payload.get("metadata", {}),
+                    "selected_epoch": epoch + 1,
+                    "selection_metric": "heldout_match_rate",
+                    "selection_score": score,
+                }
+            if os.path.exists(candidate_path):
+                os.remove(candidate_path)
+        epoch_summaries.append(epoch_summary)
 
     preds = torch.argmax(
         model(x, prompt_texts=prompt_texts, text_context=cached_text_context).masked_fill(action_masks <= 0, -1e9),
@@ -235,10 +316,23 @@ def train_bc_model(
         "text_model_name": text_model_name,
         "text_max_length": text_max_length,
         "text_trainable": text_trainable,
+        "device_requested": device,
+        "training_device": str(torch_device),
         "final_loss": losses[-1],
         "train_accuracy": accuracy,
+        "epoch_summaries": epoch_summaries,
     }
-    save_bc_model(model, output_path, metadata=metadata)
+    if best_payload is not None:
+        best_payload["metadata"] = {
+            **metadata,
+            **best_payload.get("metadata", {}),
+        }
+        save_bc_model(model, output_path, metadata=best_payload["metadata"])
+        payload = torch.load(output_path, map_location="cpu")
+        payload["state_dict"] = best_payload["state_dict"]
+        torch.save(payload, output_path)
+    else:
+        save_bc_model(model, output_path, metadata=metadata)
     return metadata
 
 
@@ -265,6 +359,8 @@ def parse_args(argv=None):
     parser.add_argument("--text-model-name", type=str, default=None)
     parser.add_argument("--text-max-length", type=int, default=128)
     parser.add_argument("--text-trainable", action="store_true")
+    parser.add_argument("--device", type=str, default="auto")
+    parser.add_argument("--select-by-heldout", action="store_true")
     parser.add_argument("--heldout-input", type=str, default=None)
     parser.add_argument("--teacher-report-output", type=str, default=None)
     parser.add_argument("--weak-action-input", type=str, default=None)
@@ -296,6 +392,9 @@ def main(argv=None):
         text_model_name=args.text_model_name,
         text_max_length=args.text_max_length,
         text_trainable=args.text_trainable,
+        device=args.device,
+        heldout_trace_path=args.heldout_input,
+        select_by_heldout=args.select_by_heldout,
     )
     output = {"train": result}
     if args.heldout_input:
