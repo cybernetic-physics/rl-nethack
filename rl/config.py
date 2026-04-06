@@ -40,6 +40,8 @@ class APPOConfig:
     teacher_loss_coef: float = 0.0
     teacher_loss_type: str = "ce"
     teacher_bc_path: str | None = None
+    teacher_action_boosts: str = ""
+    param_anchor_coef: float = 0.0
     trace_eval_input: str | None = None
     trace_eval_interval_env_steps: int = 0
     trace_eval_top_k: int = 5
@@ -49,6 +51,8 @@ class APPOConfig:
 class ModelConfig:
     backbone: str = "skill_conditioned_mlp"
     hidden_size: int = 512
+    normalize_input: bool = True
+    nonlinearity: str = "elu"
     use_lstm: bool = True
     lstm_size: int = 512
     skill_embedding_dim: int = 32

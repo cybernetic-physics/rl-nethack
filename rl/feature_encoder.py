@@ -48,7 +48,7 @@ SKILL_SET = list(build_skill_registry().keys())
 _TILE_TO_IDX = {name: i for i, name in enumerate(ADJ_TILES)}
 _SKILL_TO_IDX = {name: i for i, name in enumerate(SKILL_SET)}
 _ACTION_TO_IDX = {name: i for i, name in enumerate(ACTION_SET)}
-_OBS_VERSION_TO_DIM = {"v1": 106, "v2": 160, "v3": 244}
+_OBS_VERSION_TO_DIM = {"v1": 106, "v2": 160, "v3": 244, "v4": 302}
 
 _LOCAL_PATCH_CATEGORIES = [
     "unseen",
@@ -264,11 +264,140 @@ def _directional_ray_features(timestep: dict, max_len: int = 5) -> np.ndarray:
     return np.asarray(features, dtype=np.float32)
 
 
+def _directional_quadrant_features(timestep: dict, radius: int = 4) -> np.ndarray:
+    obs = timestep["obs"]
+    state = timestep["state"]
+    px, py = state["position"]
+    chars = obs["chars"]
+    features: list[float] = []
+    directions = {
+        "north": lambda dx, dy: dy < 0 and abs(dx) <= abs(dy),
+        "south": lambda dx, dy: dy > 0 and abs(dx) <= abs(dy),
+        "east": lambda dx, dy: dx > 0 and abs(dy) <= abs(dx),
+        "west": lambda dx, dy: dx < 0 and abs(dy) <= abs(dx),
+    }
+    passable = {"floor", "corridor", "door", "stairs_down", "stairs_up"}
+    items = {"gold", "scroll", "potion", "wand", "ring", "gem", "amulet", "tool", "weapon", "armor", "food"}
+    for predicate in directions.values():
+        unseen_count = 0
+        passable_count = 0
+        wall_count = 0
+        item_count = 0
+        monster_count = 0
+        total = 0
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                if dx == 0 and dy == 0:
+                    continue
+                if not predicate(dx, dy):
+                    continue
+                nx, ny = px + dx, py + dy
+                total += 1
+                tile_name = "unseen"
+                if 0 <= ny < chars.shape[0] and 0 <= nx < chars.shape[1]:
+                    tile_name = _normalize_tile_name(_tile_name(int(chars[ny, nx])))
+                if tile_name == "unseen":
+                    unseen_count += 1
+                elif tile_name == "wall":
+                    wall_count += 1
+                elif tile_name in passable:
+                    passable_count += 1
+                elif tile_name in items:
+                    item_count += 1
+                elif tile_name == "monster":
+                    monster_count += 1
+        denom = float(max(1, total))
+        features.extend(
+            [
+                unseen_count / denom,
+                passable_count / denom,
+                wall_count / denom,
+                item_count / denom,
+                monster_count / denom,
+            ]
+        )
+    return np.asarray(features, dtype=np.float32)
+
+
+def _directional_first_hit_features(timestep: dict, max_len: int = 6) -> np.ndarray:
+    obs = timestep["obs"]
+    state = timestep["state"]
+    px, py = state["position"]
+    chars = obs["chars"]
+    buckets = ["unseen", "wall", "passable", "item", "monster", "other"]
+    bucket_to_idx = {name: idx for idx, name in enumerate(buckets)}
+    passable = {"floor", "corridor", "door", "stairs_down", "stairs_up"}
+    items = {"gold", "scroll", "potion", "wand", "ring", "gem", "amulet", "tool", "weapon", "armor", "food"}
+    deltas = {"north": (0, -1), "south": (0, 1), "east": (1, 0), "west": (-1, 0)}
+    all_features = []
+    for dx, dy in deltas.values():
+        vec = np.zeros(len(buckets) + 1, dtype=np.float32)
+        hit_bucket = "unseen"
+        hit_distance = float(max_len)
+        for step in range(1, max_len + 1):
+            nx, ny = px + dx * step, py + dy * step
+            tile_name = "unseen"
+            if 0 <= ny < chars.shape[0] and 0 <= nx < chars.shape[1]:
+                tile_name = _normalize_tile_name(_tile_name(int(chars[ny, nx])))
+            if tile_name == "unseen":
+                hit_bucket = "unseen"
+                hit_distance = float(step)
+                break
+            if tile_name == "wall":
+                hit_bucket = "wall"
+                hit_distance = float(step)
+                break
+            if tile_name in passable:
+                hit_bucket = "passable"
+                hit_distance = float(step)
+                break
+            if tile_name in items:
+                hit_bucket = "item"
+                hit_distance = float(step)
+                break
+            if tile_name == "monster":
+                hit_bucket = "monster"
+                hit_distance = float(step)
+                break
+            hit_bucket = "other"
+            hit_distance = float(step)
+            break
+        vec[bucket_to_idx[hit_bucket]] = 1.0
+        vec[-1] = hit_distance / float(max_len)
+        all_features.append(vec)
+    return np.concatenate(all_features)
+
+
+def _recent_action_direction_features(timestep: dict) -> np.ndarray:
+    recent_actions = timestep.get("recent_actions", [])
+    last_action = recent_actions[-1] if recent_actions else None
+    reverse_of = {"north": "south", "south": "north", "east": "west", "west": "east"}
+    vec = np.zeros(10, dtype=np.float32)
+    dir_actions = ["north", "south", "east", "west"]
+    if last_action in dir_actions:
+        vec[dir_actions.index(last_action)] = 1.0
+        reverse = reverse_of[last_action]
+        vec[4 + dir_actions.index(reverse)] = 1.0
+    allowed = set(timestep.get("allowed_actions", []))
+    for idx, action in enumerate(dir_actions):
+        vec[8] += 0.25 if action in allowed else 0.0
+    vec[9] = min(1.0, float(timestep.get("repeated_action_count", 0)) / 8.0)
+    return vec
+
+
 def _v3_extra_features(timestep: dict) -> np.ndarray:
     extras = [*_v2_extra_features(timestep)]
     local_patch = _encode_local_patch(timestep, radius=1)
     ray = _directional_ray_features(timestep, max_len=5)
     return np.concatenate([np.asarray(extras, dtype=np.float32), local_patch, ray])
+
+
+def _v4_extra_features(timestep: dict) -> np.ndarray:
+    v3 = _v3_extra_features(timestep)
+    quadrants = _directional_quadrant_features(timestep, radius=4)
+    hits = _directional_first_hit_features(timestep, max_len=6)
+    recent = _recent_action_direction_features(timestep)
+    return np.concatenate([v3, quadrants, hits, recent])
 
 
 def encode_observation(timestep: dict, version: str = "v1") -> np.ndarray:
@@ -286,6 +415,8 @@ def encode_observation(timestep: dict, version: str = "v1") -> np.ndarray:
         parts.append(_v2_extra_features(timestep))
     elif version == "v3":
         parts.append(_v3_extra_features(timestep))
+    elif version == "v4":
+        parts.append(_v4_extra_features(timestep))
 
     encoded = np.concatenate(parts)
     expected_dim = observation_dim(version)

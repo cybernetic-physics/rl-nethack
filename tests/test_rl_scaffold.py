@@ -27,10 +27,11 @@ from pathlib import Path
 import torch
 from rl.timestep import build_policy_timestep
 from rl.io_utils import experiment_lock
-from rl.teacher_reg import patch_sample_factory_teacher_reg
+from rl.teacher_reg import patch_sample_factory_teacher_reg, _parse_teacher_action_boosts
 from rl.env_adapter import SkillEnvAdapter, EpisodeContext
 from rl.dagger import build_merged_trace_rows, run_dagger_schedule
 from rl.train_behavior_reg import train_behavior_regularized_policy
+from rl.train_appo import build_config as build_appo_config
 
 
 def test_skill_registry_contains_expected_skills():
@@ -68,11 +69,92 @@ def test_trainer_scaffold_includes_teacher_reg_args():
     config.appo.teacher_bc_path = "/tmp/teacher.pt"
     config.appo.teacher_loss_coef = 0.25
     config.appo.teacher_loss_type = "ce"
+    config.appo.teacher_action_boosts = "west=2.0,south=1.5"
+    config.appo.param_anchor_coef = 0.005
+    config.appo.learning_rate = 1e-4
+    config.appo.entropy_coeff = 0.0
+    config.appo.ppo_clip_ratio = 0.05
+    config.model.hidden_size = 256
+    config.model.normalize_input = False
+    config.model.nonlinearity = "relu"
     trainer = APPOTrainerScaffold(config)
     argv = trainer.build_sf_argv()
     assert "--teacher_loss_coef=0.25" in argv
     assert "--teacher_loss_type=ce" in argv
     assert "--teacher_bc_path=/tmp/teacher.pt" in argv
+    assert "--teacher_action_boosts=west=2.0,south=1.5" in argv
+    assert "--param_anchor_coef=0.005" in argv
+    assert "--learning_rate=0.0001" in argv
+    assert "--exploration_loss_coeff=0.0" in argv
+    assert "--ppo_clip_ratio=0.05" in argv
+    assert "--normalize_input=False" in argv
+    assert "--nonlinearity=relu" in argv
+    idx = argv.index("--encoder_mlp_layers")
+    assert argv[idx + 1:idx + 3] == ["256", "256"]
+
+
+def test_build_appo_config_infers_hidden_size_from_bc_checkpoint():
+    rows = [
+        {"feature_vector": [0.0] * 160, "action": "east", "allowed_actions": ["east", "west"]},
+        {"feature_vector": [0.1] * 160, "action": "west", "allowed_actions": ["east", "west"]},
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = os.path.join(tmpdir, "bc.pt")
+        train_bc_model(rows, out, epochs=1, lr=1e-3, hidden_size=64, observation_version="v2")
+        args = type(
+            "Args",
+            (),
+            {
+                "experiment": "exp",
+                "train_dir": "train_dir/rl",
+                "serial_mode": False,
+                "async_rl": False,
+                "num_workers": 1,
+                "num_envs_per_worker": 1,
+                "rollout_length": 8,
+                "recurrence": 8,
+                "batch_size": 8,
+                "num_batches_per_epoch": 1,
+                    "ppo_epochs": 1,
+                    "learning_rate": 3e-4,
+                    "entropy_coeff": 0.01,
+                    "ppo_clip_ratio": 0.1,
+                    "train_for_env_steps": 32,
+                "scheduler": "rule_based",
+                "reward_source": "hand_shaped",
+                "learned_reward_path": None,
+                "episodic_explore_bonus_enabled": False,
+                "episodic_explore_bonus_scale": 0.0,
+                "episodic_explore_bonus_mode": "state_hash",
+                "scheduler_model_path": None,
+                "enabled_skills": "explore",
+                    "observation_version": "v2",
+                    "model_hidden_size": None,
+                    "disable_input_normalization": False,
+                    "nonlinearity": None,
+                    "bc_init_path": out,
+                "teacher_bc_path": None,
+                "teacher_loss_coef": 0.01,
+                "teacher_loss_type": "ce",
+                "teacher_action_boosts": "",
+                "param_anchor_coef": 0.0,
+                "trace_eval_input": None,
+                "trace_eval_interval_env_steps": 0,
+                "trace_eval_top_k": 5,
+                "use_rnn": False,
+                "no_rnn": True,
+                "disable_action_mask": False,
+            },
+        )()
+        config = build_appo_config(args)
+        assert config.model.hidden_size == 64
+        assert config.model.normalize_input is False
+        assert config.model.nonlinearity == "relu"
+
+
+def test_parse_teacher_action_boosts():
+    boosts = _parse_teacher_action_boosts("west=2.0,south=1.5")
+    assert boosts == {3: 2.0, 1: 1.5}
 
 
 def test_trainer_scaffold_includes_episodic_bonus_args():
@@ -134,6 +216,7 @@ def test_feature_dims_are_stable():
     assert observation_dim("v1") == 106
     assert observation_dim("v2") == 160
     assert observation_dim("v3") == 244
+    assert observation_dim("v4") == 302
     assert reward_feature_dim() == 37
     assert scheduler_feature_dim() > 0
 
@@ -206,6 +289,44 @@ def test_feature_encoder_v3_shape():
         "obs": obs,
     }
     assert encode_observation(timestep, version="v3").shape == (244,)
+
+
+def test_feature_encoder_v4_shape():
+    obs = {"chars": np.full((10, 10), ord("."), dtype=np.int32)}
+    obs["chars"][4, 5] = ord("@")
+    obs["chars"][4, 6] = ord('#')
+    obs["chars"][5, 5] = ord('|')
+    timestep = {
+        "state": {
+            "hp": 10,
+            "hp_max": 12,
+            "gold": 5,
+            "depth": 1,
+            "turn": 20,
+            "ac": 4,
+            "strength": 10,
+            "dexterity": 8,
+            "visible_monsters": [{"char": "k", "pos": (4, 4)}],
+            "visible_items": [{"type": "gold", "pos": (5, 4)}],
+            "adjacent": {"north": "wall", "south": "floor", "east": "unseen", "west": "door"},
+            "message": "You see here a gold piece.",
+            "position": (5, 4),
+        },
+        "active_skill": "explore",
+        "allowed_actions": ["north", "south", "east", "wait", "pickup"],
+        "memory_total_explored": 20,
+        "rooms_discovered": 2,
+        "steps_in_skill": 3,
+        "standing_on_down_stairs": False,
+        "standing_on_up_stairs": False,
+        "recent_positions": [(5, 4), (5, 3)],
+        "recent_actions": ["east", "east", "search"],
+        "repeated_state_count": 1,
+        "revisited_recent_tile_count": 1,
+        "repeated_action_count": 2,
+        "obs": obs,
+    }
+    assert encode_observation(timestep, version="v4").shape == (302,)
 
 
 def test_skill_env_masks_invalid_action_requests():

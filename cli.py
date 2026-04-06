@@ -321,6 +321,9 @@ def cmd_rl_train_appo(args):
         "--batch-size", str(args.batch_size),
         "--num-batches-per-epoch", str(args.num_batches_per_epoch),
         "--ppo-epochs", str(args.ppo_epochs),
+        "--learning-rate", str(args.learning_rate),
+        "--entropy-coeff", str(args.entropy_coeff),
+        "--ppo-clip-ratio", str(args.ppo_clip_ratio),
         "--train-for-env-steps", str(args.train_for_env_steps),
         "--scheduler", args.scheduler,
         "--reward-source", args.reward_source,
@@ -331,11 +334,16 @@ def cmd_rl_train_appo(args):
         "--trace-eval-top-k", str(args.trace_eval_top_k),
         "--no-rnn" if args.no_rnn else "",
         "--use-rnn" if getattr(args, "use_rnn", False) else "",
+        "--disable-input-normalization" if getattr(args, "disable_input_normalization", False) else "",
         "--disable-action-mask" if args.disable_action_mask else "",
     ]
     argv = [arg for arg in argv if arg != ""]
     if args.learned_reward_path:
         argv.extend(["--learned-reward-path", args.learned_reward_path])
+    if getattr(args, "model_hidden_size", None) is not None:
+        argv.extend(["--model-hidden-size", str(args.model_hidden_size)])
+    if getattr(args, "nonlinearity", None):
+        argv.extend(["--nonlinearity", args.nonlinearity])
     if args.episodic_explore_bonus_enabled:
         argv.append("--episodic-explore-bonus-enabled")
     if args.scheduler_model_path:
@@ -348,6 +356,10 @@ def cmd_rl_train_appo(args):
         argv.extend(["--teacher-loss-coef", str(args.teacher_loss_coef)])
     if args.teacher_loss_type:
         argv.extend(["--teacher-loss-type", args.teacher_loss_type])
+    if getattr(args, "teacher_action_boosts", ""):
+        argv.extend(["--teacher-action-boosts", args.teacher_action_boosts])
+    if getattr(args, "param_anchor_coef", 0.0):
+        argv.extend(["--param-anchor-coef", str(args.param_anchor_coef)])
     if args.trace_eval_input:
         argv.extend(["--trace-eval-input", args.trace_eval_input])
     if args.trace_eval_interval_env_steps:
@@ -1071,6 +1083,12 @@ def main():
                       help='APPO batches per epoch')
     p_rl.add_argument('--ppo-epochs', type=int, default=1,
                       help='APPO epochs per update')
+    p_rl.add_argument('--learning-rate', type=float, default=3e-4,
+                      help='APPO optimizer learning rate')
+    p_rl.add_argument('--entropy-coeff', type=float, default=0.01,
+                      help='Entropy regularization coefficient')
+    p_rl.add_argument('--ppo-clip-ratio', type=float, default=0.1,
+                      help='PPO clip ratio')
     p_rl.add_argument('--train-for-env-steps', type=int, default=50000000,
                       help='Target environment steps')
     p_rl.add_argument('--scheduler', type=str, default='rule_based',
@@ -1092,6 +1110,12 @@ def main():
                       help='Comma-separated skill list')
     p_rl.add_argument('--observation-version', type=str, default='v2',
                       help='Observation encoder version (v1, v2, or v3)')
+    p_rl.add_argument('--model-hidden-size', type=int, default=None,
+                      help='Optional actor MLP width; defaults to teacher/BC hidden size when warm-starting')
+    p_rl.add_argument('--disable-input-normalization', action='store_true',
+                      help='Disable Sample Factory input normalization; BC warm-start defaults to this off path')
+    p_rl.add_argument('--nonlinearity', type=str, default=None, choices=['elu', 'relu', 'tanh'],
+                      help='Actor MLP nonlinearity; BC warm-start defaults to relu')
     p_rl.add_argument('--bc-init-path', type=str, default=None,
                       help='Optional BC checkpoint used to warm start APPO')
     p_rl.add_argument('--teacher-bc-path', type=str, default=None,
@@ -1100,6 +1124,10 @@ def main():
                       help='Auxiliary teacher loss coefficient; teacher-reg baseline uses 0.01')
     p_rl.add_argument('--teacher-loss-type', type=str, default='ce', choices=['ce', 'kl'],
                       help='Teacher regularization loss type')
+    p_rl.add_argument('--teacher-action-boosts', type=str, default='',
+                      help='Optional comma-separated action=multiplier boosts for teacher CE/KL, e.g. west=2.0,south=1.5')
+    p_rl.add_argument('--param-anchor-coef', type=float, default=0.0,
+                      help='L2 anchor coefficient on warm-started encoder/policy parameters')
     p_rl.add_argument('--trace-eval-input', type=str, default=None,
                       help='Optional trusted trace JSONL used for in-training checkpoint selection')
     p_rl.add_argument('--trace-eval-interval-env-steps', type=int, default=0,

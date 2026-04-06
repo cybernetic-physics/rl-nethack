@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import torch
 
 from rl.config import RLConfig
 from rl.trainer import APPOTrainerScaffold
@@ -20,6 +21,9 @@ def parse_args(argv=None):
     parser.add_argument("--batch-size", type=int, default=4096)
     parser.add_argument("--num-batches-per-epoch", type=int, default=1)
     parser.add_argument("--ppo-epochs", type=int, default=1)
+    parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument("--entropy-coeff", type=float, default=0.01)
+    parser.add_argument("--ppo-clip-ratio", type=float, default=0.1)
     parser.add_argument("--train-for-env-steps", type=int, default=50_000_000)
     parser.add_argument("--scheduler", type=str, default="rule_based")
     parser.add_argument("--reward-source", type=str, default="hand_shaped")
@@ -30,10 +34,15 @@ def parse_args(argv=None):
     parser.add_argument("--scheduler-model-path", type=str, default=None)
     parser.add_argument("--enabled-skills", type=str, default="explore,survive,combat,descend,resource")
     parser.add_argument("--observation-version", type=str, default="v2")
+    parser.add_argument("--model-hidden-size", type=int, default=None)
+    parser.add_argument("--disable-input-normalization", action="store_true")
+    parser.add_argument("--nonlinearity", type=str, default=None, choices=["elu", "relu", "tanh"])
     parser.add_argument("--bc-init-path", type=str, default=None)
     parser.add_argument("--teacher-bc-path", type=str, default=None)
     parser.add_argument("--teacher-loss-coef", type=float, default=0.01)
     parser.add_argument("--teacher-loss-type", type=str, default="ce", choices=["ce", "kl"])
+    parser.add_argument("--teacher-action-boosts", type=str, default="")
+    parser.add_argument("--param-anchor-coef", type=float, default=0.0)
     parser.add_argument("--trace-eval-input", type=str, default=None)
     parser.add_argument("--trace-eval-interval-env-steps", type=int, default=0)
     parser.add_argument("--trace-eval-top-k", type=int, default=5)
@@ -58,6 +67,9 @@ def build_config(args) -> RLConfig:
     config.appo.batch_size = args.batch_size
     config.appo.num_batches_per_epoch = args.num_batches_per_epoch
     config.appo.ppo_epochs = args.ppo_epochs
+    config.appo.learning_rate = float(getattr(args, "learning_rate", config.appo.learning_rate))
+    config.appo.entropy_coeff = float(getattr(args, "entropy_coeff", config.appo.entropy_coeff))
+    config.appo.ppo_clip_ratio = float(getattr(args, "ppo_clip_ratio", config.appo.ppo_clip_ratio))
     config.appo.train_for_env_steps = args.train_for_env_steps
     config.options.scheduler = args.scheduler
     config.options.scheduler_model_path = args.scheduler_model_path
@@ -68,10 +80,30 @@ def build_config(args) -> RLConfig:
     config.reward.episodic_explore_bonus_mode = args.episodic_explore_bonus_mode
     config.options.enabled_skills = [s.strip() for s in args.enabled_skills.split(",") if s.strip()]
     config.env.observation_version = args.observation_version
+    if args.model_hidden_size is not None:
+        config.model.hidden_size = args.model_hidden_size
+    elif args.bc_init_path:
+        try:
+            payload = torch.load(args.bc_init_path, map_location="cpu")
+            metadata = payload.get("metadata", {})
+            config.model.hidden_size = int(metadata.get("hidden_size", config.model.hidden_size))
+        except Exception:
+            pass
     config.model.bc_init_path = args.bc_init_path
+    nonlinearity = getattr(args, "nonlinearity", None)
+    if nonlinearity is not None:
+        config.model.nonlinearity = nonlinearity
+    elif args.bc_init_path:
+        config.model.nonlinearity = "relu"
+    disable_input_normalization = bool(getattr(args, "disable_input_normalization", False))
+    config.model.normalize_input = not disable_input_normalization
+    if args.bc_init_path and args.model_hidden_size is None and not disable_input_normalization:
+        config.model.normalize_input = False
     config.appo.teacher_bc_path = args.teacher_bc_path or args.bc_init_path
     config.appo.teacher_loss_coef = args.teacher_loss_coef
     config.appo.teacher_loss_type = args.teacher_loss_type
+    config.appo.teacher_action_boosts = args.teacher_action_boosts
+    config.appo.param_anchor_coef = args.param_anchor_coef
     config.appo.trace_eval_input = args.trace_eval_input
     config.appo.trace_eval_interval_env_steps = args.trace_eval_interval_env_steps
     config.appo.trace_eval_top_k = args.trace_eval_top_k

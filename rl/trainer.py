@@ -49,6 +49,8 @@ class APPOTrainerScaffold:
             "teacher_bc_path": self.config.appo.teacher_bc_path,
             "teacher_loss_coef": self.config.appo.teacher_loss_coef,
             "teacher_loss_type": self.config.appo.teacher_loss_type,
+            "teacher_action_boosts": self.config.appo.teacher_action_boosts,
+            "param_anchor_coef": self.config.appo.param_anchor_coef,
             "trace_eval_input": self.config.appo.trace_eval_input,
             "trace_eval_interval_env_steps": self.config.appo.trace_eval_interval_env_steps,
             "trace_eval_top_k": self.config.appo.trace_eval_top_k,
@@ -88,6 +90,11 @@ class APPOTrainerScaffold:
             f"--ppo_clip_ratio={cfg.appo.ppo_clip_ratio}",
             f"--value_loss_coeff={cfg.appo.value_loss_coeff}",
             f"--exploration_loss_coeff={cfg.appo.entropy_coeff}",
+            "--encoder_mlp_layers",
+            str(cfg.model.hidden_size),
+            str(cfg.model.hidden_size),
+            f"--normalize_input={str(cfg.model.normalize_input)}",
+            f"--nonlinearity={cfg.model.nonlinearity}",
             f"--gamma={cfg.appo.gamma}",
             f"--gae_lambda={cfg.appo.gae_lambda}",
             f"--learning_rate={cfg.appo.learning_rate}",
@@ -97,6 +104,8 @@ class APPOTrainerScaffold:
             f"--teacher_loss_coef={cfg.appo.teacher_loss_coef}",
             f"--teacher_loss_type={cfg.appo.teacher_loss_type}",
             f"--teacher_bc_path={cfg.appo.teacher_bc_path or ''}",
+            f"--teacher_action_boosts={cfg.appo.teacher_action_boosts}",
+            f"--param_anchor_coef={cfg.appo.param_anchor_coef}",
             f"--trace_eval_input={cfg.appo.trace_eval_input or ''}",
             f"--trace_eval_interval_env_steps={cfg.appo.trace_eval_interval_env_steps}",
             f"--trace_eval_top_k={cfg.appo.trace_eval_top_k}",
@@ -208,6 +217,8 @@ class APPOTrainerScaffold:
         parser.add_argument("--teacher_bc_path", type=str, default=self.config.appo.teacher_bc_path)
         parser.add_argument("--teacher_loss_coef", type=float, default=self.config.appo.teacher_loss_coef)
         parser.add_argument("--teacher_loss_type", type=str, default=self.config.appo.teacher_loss_type)
+        parser.add_argument("--teacher_action_boosts", type=str, default=self.config.appo.teacher_action_boosts)
+        parser.add_argument("--param_anchor_coef", type=float, default=self.config.appo.param_anchor_coef)
         parser.add_argument("--trace_eval_input", type=str, default=self.config.appo.trace_eval_input)
         parser.add_argument("--trace_eval_interval_env_steps", type=int, default=self.config.appo.trace_eval_interval_env_steps)
         parser.add_argument("--trace_eval_top_k", type=int, default=self.config.appo.trace_eval_top_k)
