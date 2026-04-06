@@ -701,6 +701,12 @@ More specifically:
   - the same scaled runs regressed to `0.975` or worse at late epochs if judged by final weights alone,
   - so larger models and longer offline runs are viable, but only under benchmark-aware checkpoint selection,
   - and scale by itself still did not beat the `0.9875` cheap-teacher baseline,
+- exact step-0 hard-case mining confirmed that the remaining `0.9875 -> 1.0` gap is a real slice-coverage problem,
+  - existing train sets had zero rows for the held-out local geometry `north=monster_*`, `south=floor`, `east=monster_*`, `west=floor`,
+  - an off-heldout miner over fresh seeds found only `3` exact rows, with action split `east=1`, `south=2`,
+  - augmenting the base train set with the single off-heldout `east` example was enough to fix the original held-out `east` miss,
+  - but every such augmentation simply moved the lone benchmark error to a different row, yielding `0.9875` again,
+  - so the current best explanation is not “the model cannot represent the fix,” but “the repo lacks enough breadth in that failure-family slice,”
 - the most plausible next frontier is a more teacher-aware and behavior-constrained online improver.
 
 ## Practical Research Rules Going Forward

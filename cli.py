@@ -933,6 +933,17 @@ def cmd_rl_shard_traces(args):
     teacher_actions = None
     if args.teacher_actions:
         teacher_actions = [s.strip() for s in args.teacher_actions.split(",") if s.strip()]
+    adjacent_signature = None
+    if getattr(args, "adjacent_signature", None):
+        adjacent_signature = {}
+        for token in args.adjacent_signature.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            if "=" not in token:
+                raise ValueError(f"Invalid adjacent signature token: {token!r}")
+            key, value = token.split("=", 1)
+            adjacent_signature[key.strip()] = value.strip()
     result = shard_trace_file(
         input_path=args.input,
         output_path=args.output,
@@ -940,6 +951,7 @@ def cmd_rl_shard_traces(args):
         max_rows=args.max_rows,
         seeds=seeds,
         teacher_actions=teacher_actions,
+        adjacent_signature=adjacent_signature,
     )
     print(json.dumps(result, indent=2))
     return 0
@@ -1553,6 +1565,8 @@ def main():
                                   help='Optional comma-separated seed filter')
     p_rl_trace_shard.add_argument('--teacher-actions', type=str, default=None,
                                   help='Optional comma-separated teacher-action filter; keeps episodes containing these actions')
+    p_rl_trace_shard.add_argument('--adjacent-signature', type=str, default=None,
+                                  help='Optional comma-separated local geometry filter, e.g. north=monster_*,south=floor,east=monster_*,west=floor')
 
     p_rl_rank = subparsers.add_parser('rl-rank-checkpoints', help='Rank APPO checkpoints by deterministic trace match rate')
     p_rl_rank.add_argument('--experiment', type=str, required=True)

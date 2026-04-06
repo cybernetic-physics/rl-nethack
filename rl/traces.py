@@ -243,6 +243,7 @@ def shard_trace_file(
     max_rows: int | None = None,
     seeds: list[int] | None = None,
     teacher_actions: list[str] | None = None,
+    adjacent_signature: dict[str, str] | None = None,
 ) -> dict:
     with open(input_path, "r") as f:
         rows = [json.loads(line) for line in f if line.strip()]
@@ -250,10 +251,39 @@ def shard_trace_file(
     rows = sorted(rows, key=lambda row: (row["episode_id"], row["step"]))
     seed_filter = set(seeds or [])
     action_filter = set(teacher_actions or [])
+    adjacent_filter = dict(adjacent_signature or {})
     written_rows: list[dict] = []
     seen_episodes: list[str] = []
     current_episode_rows: list[dict] = []
     current_episode_id: str | None = None
+
+    def row_matches_adjacent_signature(row: dict) -> bool:
+        if not adjacent_filter:
+            return True
+        prompt_text = str(row.get("state_prompt") or row.get("prompt") or "")
+        adjacent_line = None
+        for line in prompt_text.splitlines():
+            if line.startswith("Adjacent:"):
+                adjacent_line = line[len("Adjacent:"):].strip()
+                break
+        if not adjacent_line:
+            return False
+        parsed: dict[str, str] = {}
+        for token in adjacent_line.split():
+            if "=" not in token:
+                continue
+            key, value = token.split("=", 1)
+            parsed[key.strip()] = value.strip()
+        for direction, expected in adjacent_filter.items():
+            actual = parsed.get(direction)
+            if actual is None:
+                return False
+            if expected.endswith("*"):
+                if not actual.startswith(expected[:-1]):
+                    return False
+            elif actual != expected:
+                return False
+        return True
 
     def flush_episode() -> bool:
         if not current_episode_rows:
@@ -262,6 +292,8 @@ def shard_trace_file(
         if seed_filter and episode_seed not in seed_filter:
             return False
         if action_filter and not any(row.get("action") in action_filter for row in current_episode_rows):
+            return False
+        if adjacent_filter and not any(row_matches_adjacent_signature(row) for row in current_episode_rows):
             return False
         if max_episodes is not None and len(seen_episodes) >= max_episodes:
             return True
@@ -296,6 +328,7 @@ def shard_trace_file(
     summary["max_rows"] = max_rows
     summary["selected_seeds"] = sorted(seed_filter)
     summary["selected_teacher_actions"] = sorted(action_filter)
+    summary["selected_adjacent_signature"] = adjacent_filter
     return summary
 
 

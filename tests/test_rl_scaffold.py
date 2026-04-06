@@ -2025,6 +2025,65 @@ def test_shard_trace_file_can_filter_by_teacher_action():
         assert summary["selected_teacher_actions"] == ["east"]
 
 
+def test_shard_trace_file_can_filter_by_adjacent_signature():
+    rows = [
+        {
+            "episode_id": "ep0",
+            "seed": 1,
+            "step": 0,
+            "action": "east",
+            "allowed_actions": ["east"],
+            "feature_vector": [0.0] * 160,
+            "observation_version": "v2",
+            "state_prompt": "Adjacent: north=monster_d south=floor east=monster_f west=floor",
+        },
+        {
+            "episode_id": "ep0",
+            "seed": 1,
+            "step": 1,
+            "action": "east",
+            "allowed_actions": ["east"],
+            "feature_vector": [0.0] * 160,
+            "observation_version": "v2",
+            "state_prompt": "Adjacent: north=floor south=floor east=floor west=floor",
+        },
+        {
+            "episode_id": "ep1",
+            "seed": 2,
+            "step": 0,
+            "action": "north",
+            "allowed_actions": ["north"],
+            "feature_vector": [0.0] * 160,
+            "observation_version": "v2",
+            "state_prompt": "Adjacent: north=monster_d south=wall east=monster_f west=wall",
+        },
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        trace_path = os.path.join(tmpdir, "trace.jsonl")
+        shard_path = os.path.join(tmpdir, "shard.jsonl")
+        with open(trace_path, "w") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+        summary = shard_trace_file(
+            trace_path,
+            shard_path,
+            adjacent_signature={
+                "north": "monster_*",
+                "south": "floor",
+                "east": "monster_*",
+                "west": "floor",
+            },
+        )
+        assert summary["episodes"] == 1
+        assert summary["rows"] == 2
+        assert summary["selected_adjacent_signature"] == {
+            "north": "monster_*",
+            "south": "floor",
+            "east": "monster_*",
+            "west": "floor",
+        }
+
+
 def test_behavior_reg_can_select_by_heldout_metric():
     train_rows = [
         {"episode_id": "ep0", "seed": 1, "step": 0, "action": "east", "allowed_actions": ["east", "west"], "feature_vector": [0.0] * 160, "observation_version": "v2"},
