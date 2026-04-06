@@ -136,8 +136,7 @@ def _forward_replay_action_logits(
 ) -> torch.Tensor:
     sentinel = object()
     prior_raw_obs = getattr(actor_critic, "_teacher_prior_raw_obs", sentinel)
-    if prior_raw_obs is not sentinel:
-        actor_critic._teacher_prior_raw_obs = None
+    actor_critic._teacher_prior_raw_obs = replay_features
     try:
         replay_logits = actor_critic.forward_head({"obs": replay_features})["x"]
         replay_logits = actor_critic.forward_core(replay_logits, None, values_only=False)["x"]
@@ -145,7 +144,9 @@ def _forward_replay_action_logits(
             replay_logits, values_only=False, sample_actions=False
         )["action_logits"]
     finally:
-        if prior_raw_obs is not sentinel:
+        if prior_raw_obs is sentinel:
+            delattr(actor_critic, "_teacher_prior_raw_obs")
+        else:
             actor_critic._teacher_prior_raw_obs = prior_raw_obs
     return replay_logits.masked_fill(replay_allowed_masks <= 0, -1e9)
 

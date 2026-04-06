@@ -1322,10 +1322,10 @@ def test_replay_priority_weights_target_requested_rows():
     assert boosted[1] > boosted[0]
 
 
-def test_forward_replay_action_logits_ignores_stale_teacher_prior_raw_obs():
+def test_forward_replay_action_logits_uses_replay_features_for_teacher_prior_raw_obs():
     class FakeActorCritic:
         def __init__(self):
-            self._teacher_prior_raw_obs = "stale"
+            self._teacher_prior_raw_obs = torch.full((2, len(ACTION_SET)), 50.0)
 
         def forward_head(self, obs):
             return {"x": obs["obs"] + 1.0}
@@ -1334,21 +1334,28 @@ def test_forward_replay_action_logits_ignores_stale_teacher_prior_raw_obs():
             return {"x": x + 1.0}
 
         def forward_tail(self, x, **_kwargs):
-            bonus = 100.0 if self._teacher_prior_raw_obs is not None else 10.0
-            return {"action_logits": x + bonus}
+            return {"action_logits": x + self._teacher_prior_raw_obs}
 
     actor_critic = FakeActorCritic()
-    features = torch.zeros((2, len(ACTION_SET)), dtype=torch.float32)
-    allowed_masks = torch.tensor(
+    stale = actor_critic._teacher_prior_raw_obs.clone()
+    features = torch.tensor(
         [
-            [1.0] * len(ACTION_SET),
+            [0.0] * len(ACTION_SET),
             [1.0] * len(ACTION_SET),
         ],
         dtype=torch.float32,
     )
+    allowed_masks = torch.tensor(
+        [
+            [1.0] * len(ACTION_SET),
+            [0.0] + [1.0] * (len(ACTION_SET) - 1),
+        ],
+        dtype=torch.float32,
+    )
     logits = _forward_replay_action_logits(actor_critic, features, allowed_masks)
-    assert torch.allclose(logits, torch.full_like(logits, 12.0))
-    assert actor_critic._teacher_prior_raw_obs == "stale"
+    expected = (features + 1.0 + 1.0 + features).masked_fill(allowed_masks <= 0, -1e9)
+    assert torch.allclose(logits, expected)
+    assert torch.allclose(actor_critic._teacher_prior_raw_obs, stale)
 
 
 def test_skill_env_reset_and_step():

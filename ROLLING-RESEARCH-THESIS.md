@@ -773,6 +773,14 @@ More specifically:
     - retained late fell to `0.8625`,
     - final fell to `0.8375`,
   - so the earlier split-base late-stability result was at least partly propped up by an invalid replay-prior coupling, which means that branch is cleaner now but weaker than previously believed,
+- a replay-context follow-up weakened the split-base replay story even further:
+  - the next obvious correction was to make replay CE use the replay feature batch itself as temporary `_teacher_prior_raw_obs`, rather than stale on-policy context or no prior context,
+  - that is the semantically cleanest replay-prior context tested so far, but the comparable short gate got even worse:
+    - warm-start stayed `0.9875`,
+    - best learned fell immediately to `0.9625` at `512`,
+    - final fell all the way to `0.7000` at `4608`,
+  - so the replay issue is no longer well explained by “wrong raw-observation tensor” alone,
+  - the stronger hypothesis now is that replay CE should not be supervising the rollout-time teacher-prior / fallback policy head at all; it likely needs to target raw student logits before teacher-as-base shaping is applied,
 - the most plausible next frontier is a more teacher-aware and behavior-constrained online improver.
 
 ## Practical Research Rules Going Forward
