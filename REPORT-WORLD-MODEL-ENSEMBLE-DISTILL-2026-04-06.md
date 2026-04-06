@@ -19,6 +19,9 @@ The active question was:
 - [rl/relabel_traces.py](/home/luc/rl-nethack/rl/relabel_traces.py)
 - [rl/teacher_reg.py](/home/luc/rl-nethack/rl/teacher_reg.py)
 - [rl/trainer.py](/home/luc/rl-nethack/rl/trainer.py)
+- [rl/checkpoint_tools.py](/home/luc/rl-nethack/rl/checkpoint_tools.py)
+- [rl/trace_eval.py](/home/luc/rl-nethack/rl/trace_eval.py)
+- [rl/improver_report.py](/home/luc/rl-nethack/rl/improver_report.py)
 - [cli.py](/home/luc/rl-nethack/cli.py)
 - [tests/test_rl_scaffold.py](/home/luc/rl-nethack/tests/test_rl_scaffold.py)
 
@@ -196,6 +199,42 @@ Interpretation:
 - but the current online improver still collapses almost immediately under this setup,
 - so this branch does **not** earn medium promotion.
 
+## Follow-up Bridge Validation
+
+The `short_b` collapse forced a more careful bridge audit.
+
+Two additional bridge bugs were found and fixed:
+
+1. APPO still hard-coded a two-layer actor even when the BC teacher had three hidden layers.
+2. BC warm-start would re-enable input normalization when explicit model-shape flags were provided.
+
+After those fixes, I added separate warm-start trace recording:
+
+- `warmstart_trace_match.json`
+- `warmstart_trace_match.pth`
+
+This is intentionally separate from `best_trace_match.json` so step-0 teacher-clone quality and best learned checkpoint quality do not get conflated.
+
+### Probe result
+
+Experiment:
+
+- `train_dir/rl/appo_v4_distill_ensemble_l3pure_probe_warmstart_b`
+
+Trusted metrics:
+
+- warm-start checkpoint at env step `0`: `0.9875`
+- best learned checkpoint at env step `256`: `0.975`
+- later retained checkpoints:
+  - `1280` env steps -> `0.925`
+  - `1536` env steps -> `0.9125`
+
+Interpretation:
+
+- the APPO bridge is now faithful,
+- the stronger `0.9875` teacher survives exactly at step 0,
+- and the online learner degrades it almost immediately after learning starts.
+
 ## What Held Up
 
 - The world-model teacher-transfer line is still the strongest teacher-building path in the repo.
@@ -220,7 +259,10 @@ But the broader scientific conclusion did not change:
 
 - the teacher pipeline improved again,
 - the online improver is still the bottleneck,
-- and this is now even clearer because the stronger teacher made the improver failure easier to see.
+- and this is now even clearer because:
+  - the teacher is stronger,
+  - the APPO bridge is faithful at step 0,
+  - and the first learned checkpoint is still worse than the teacher.
 
 ## Recommended Next Move
 
@@ -229,5 +271,5 @@ Do not run a medium or large APPO branch from this teacher.
 Instead:
 
 1. preserve this new `0.9875` teacher as the offline baseline,
-2. keep the deeper-student and multi-teacher infrastructure,
-3. treat the online failure as further evidence that the next mainline work should target the improver, not more teacher scaling on the same APPO branch.
+2. keep the deeper-student, multi-teacher, and warm-start trace instrumentation infrastructure,
+3. treat `short_b` plus `probe_warmstart_b` as evidence that the next mainline work should target the improver, not more teacher scaling on the same APPO branch.

@@ -123,6 +123,40 @@ def materialize_trace_best_checkpoint(result: dict) -> str | None:
     return str(alias_path)
 
 
+def materialize_trace_checkpoint_alias(checkpoint_path: str, alias_name: str) -> str | None:
+    source = Path(checkpoint_path)
+    if not source.exists():
+        return None
+    alias_path = source.parent / alias_name
+    atomic_copy_file(source, alias_path)
+    return str(alias_path)
+
+
+def record_warmstart_trace_match(
+    *,
+    experiment: str,
+    train_dir: str,
+    trace_input: str,
+    checkpoint_path: str,
+    evaluation: dict,
+) -> dict:
+    checkpoint_dir = Path(train_dir) / experiment / "checkpoint_p0"
+    metadata = {
+        "experiment": experiment,
+        "trace_input": trace_input,
+        "warmstart_checkpoint_path": checkpoint_path,
+        "env_steps": evaluation["env_steps"],
+        "match_rate": evaluation["match_rate"],
+        "invalid_action_rate": evaluation["invalid_action_rate"],
+        "action_counts": evaluation["action_counts"],
+    }
+    alias_path = materialize_trace_checkpoint_alias(checkpoint_path, "warmstart_trace_match.pth")
+    if alias_path:
+        metadata["alias_checkpoint_path"] = alias_path
+    atomic_write_json(checkpoint_dir / "warmstart_trace_match.json", metadata)
+    return metadata
+
+
 class TraceCheckpointMonitor:
     def __init__(
         self,
@@ -149,11 +183,15 @@ class TraceCheckpointMonitor:
             checkpoint_paths = list_checkpoint_paths(self.experiment, self.train_dir)
         except FileNotFoundError:
             return
+        checkpoint_dir = Path(self.train_dir) / self.experiment / "checkpoint_p0"
         for checkpoint_path in checkpoint_paths:
             checkpoint_path_str = str(checkpoint_path)
             if checkpoint_path_str in self._seen_paths:
                 continue
             env_steps = checkpoint_env_steps(checkpoint_path)
+            if env_steps == 0:
+                self._seen_paths.add(checkpoint_path_str)
+                continue
             if env_steps < self._next_eval_at:
                 continue
             evaluation = evaluate_checkpoint_trace_match(
@@ -182,7 +220,6 @@ class TraceCheckpointMonitor:
                         "num_checkpoints": len(checkpoint_paths),
                     }
                 )
-                checkpoint_dir = Path(self.train_dir) / self.experiment / "checkpoint_p0"
                 atomic_write_json(checkpoint_dir / "best_trace_match.json", metadata)
             self._next_eval_at = max(self._next_eval_at + self.interval_env_steps, env_steps + self.interval_env_steps)
 

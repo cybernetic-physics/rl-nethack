@@ -360,6 +360,8 @@ def cmd_rl_train_appo(args):
         argv.extend(["--proxy-reward-weight", str(args.proxy_reward_weight)])
     if getattr(args, "model_hidden_size", None) is not None:
         argv.extend(["--model-hidden-size", str(args.model_hidden_size)])
+    if getattr(args, "model_num_layers", None) is not None:
+        argv.extend(["--model-num-layers", str(args.model_num_layers)])
     if getattr(args, "world_model_path", None):
         argv.extend(["--world-model-path", args.world_model_path])
     if getattr(args, "world_model_feature_mode", None):
@@ -1350,6 +1352,8 @@ def main():
                       help='Episode horizon for RL training/evaluation envs')
     p_rl.add_argument('--model-hidden-size', type=int, default=None,
                       help='Optional actor MLP width; defaults to teacher/BC hidden size when warm-starting')
+    p_rl.add_argument('--model-num-layers', type=int, default=None,
+                      help='Optional actor MLP depth; defaults to teacher/BC depth when warm-starting')
     p_rl.add_argument('--disable-input-normalization', action='store_true',
                       help='Disable Sample Factory input normalization; BC warm-start defaults to this off path')
     p_rl.add_argument('--nonlinearity', type=str, default=None, choices=['elu', 'relu', 'tanh'],

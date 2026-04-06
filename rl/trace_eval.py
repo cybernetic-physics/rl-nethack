@@ -48,57 +48,30 @@ def _mask_logits(logits: torch.Tensor, allowed_actions: list[str]) -> torch.Tens
     return masked
 
 
-def evaluate_trace_policy(
-    trace_path: str,
-    policy: str,
-    *,
-    bc_model_path: str | None = None,
-    appo_experiment: str | None = None,
-    appo_train_dir: str = "train_dir/rl",
-    appo_checkpoint_path: str | None = None,
-    deterministic: bool = True,
-    summary_only: bool = False,
-) -> dict:
-    rows = load_trace_rows(trace_path)
+def _validate_trace_rows(rows: list[dict]) -> None:
     versions = {row.get("observation_version", "unknown") for row in rows}
     feature_dims = {len(row.get("feature_vector", [])) for row in rows}
     if len(versions) != 1:
         raise ValueError(f"Mixed observation versions in trace file: {sorted(versions)}")
     if len(feature_dims) != 1:
         raise ValueError(f"Mixed feature dimensions in trace file: {sorted(feature_dims)}")
+    if not rows:
+        raise ValueError("No trace rows provided")
+
+
+def _evaluate_trace_rows(
+    rows: list[dict],
+    *,
+    bc_policy=None,
+    appo_bundle: dict | None = None,
+    deterministic: bool = True,
+    summary_only: bool = False,
+) -> dict:
+    _validate_trace_rows(rows)
+    versions = {row.get("observation_version", "unknown") for row in rows}
     episodes = _group_trace_rows(rows)
     if not episodes:
-        raise ValueError(f"No trace rows found in {trace_path}")
-
-    bc_policy = None
-    appo_bundle = None
-    if policy == "bc":
-        if not bc_model_path:
-            raise ValueError("bc_model_path is required for policy=bc")
-        bc_policy = load_bc_model(bc_model_path)
-    elif policy == "appo":
-        if not appo_experiment:
-            raise ValueError("appo_experiment is required for policy=appo")
-        from sample_factory.algo.utils.rl_utils import prepare_and_normalize_obs
-        from sample_factory.model.model_utils import get_rnn_size
-
-        from rl.evaluate import _load_actor_critic
-
-        cfg, _, actor_critic, device = _load_actor_critic(
-            appo_experiment,
-            appo_train_dir,
-            device="cpu",
-            checkpoint_path=appo_checkpoint_path,
-        )
-        appo_bundle = {
-            "cfg": cfg,
-            "actor_critic": actor_critic,
-            "device": device,
-            "prepare_and_normalize_obs": prepare_and_normalize_obs,
-            "get_rnn_size": get_rnn_size,
-        }
-    else:
-        raise ValueError(f"Unsupported trace policy: {policy}")
+        raise ValueError("No trace rows provided")
 
     episode_results = []
     total_matches = 0
@@ -174,10 +147,6 @@ def evaluate_trace_policy(
         )
 
     result = {
-        "trace_path": trace_path,
-        "policy": policy,
-        "evaluation_mode": "trace_dataset",
-        "checkpoint_path": appo_checkpoint_path if policy == "appo" else bc_model_path,
         "summary": {
             "episodes": len(episode_results),
             "rows": total_rows,
@@ -189,6 +158,103 @@ def evaluate_trace_policy(
     }
     if not summary_only:
         result["episodes"] = episode_results
+    return result
+
+
+def evaluate_trace_appo_bundle(
+    trace_path: str,
+    *,
+    cfg,
+    actor_critic,
+    device: str = "cpu",
+    deterministic: bool = True,
+    summary_only: bool = False,
+) -> dict:
+    from sample_factory.algo.utils.rl_utils import prepare_and_normalize_obs
+    from sample_factory.model.model_utils import get_rnn_size
+
+    rows = load_trace_rows(trace_path)
+    bundle = {
+        "cfg": cfg,
+        "actor_critic": actor_critic,
+        "device": torch.device(device),
+        "prepare_and_normalize_obs": prepare_and_normalize_obs,
+        "get_rnn_size": get_rnn_size,
+    }
+    result = _evaluate_trace_rows(
+        rows,
+        appo_bundle=bundle,
+        deterministic=deterministic,
+        summary_only=summary_only,
+    )
+    result.update(
+        {
+            "trace_path": trace_path,
+            "policy": "appo",
+            "evaluation_mode": "trace_dataset",
+            "checkpoint_path": None,
+        }
+    )
+    return result
+
+
+def evaluate_trace_policy(
+    trace_path: str,
+    policy: str,
+    *,
+    bc_model_path: str | None = None,
+    appo_experiment: str | None = None,
+    appo_train_dir: str = "train_dir/rl",
+    appo_checkpoint_path: str | None = None,
+    deterministic: bool = True,
+    summary_only: bool = False,
+) -> dict:
+    rows = load_trace_rows(trace_path)
+    _validate_trace_rows(rows)
+    bc_policy = None
+    appo_bundle = None
+    if policy == "bc":
+        if not bc_model_path:
+            raise ValueError("bc_model_path is required for policy=bc")
+        bc_policy = load_bc_model(bc_model_path)
+    elif policy == "appo":
+        if not appo_experiment:
+            raise ValueError("appo_experiment is required for policy=appo")
+        from sample_factory.algo.utils.rl_utils import prepare_and_normalize_obs
+        from sample_factory.model.model_utils import get_rnn_size
+
+        from rl.evaluate import _load_actor_critic
+
+        cfg, _, actor_critic, device = _load_actor_critic(
+            appo_experiment,
+            appo_train_dir,
+            device="cpu",
+            checkpoint_path=appo_checkpoint_path,
+        )
+        appo_bundle = {
+            "cfg": cfg,
+            "actor_critic": actor_critic,
+            "device": device,
+            "prepare_and_normalize_obs": prepare_and_normalize_obs,
+            "get_rnn_size": get_rnn_size,
+        }
+    else:
+        raise ValueError(f"Unsupported trace policy: {policy}")
+    result = _evaluate_trace_rows(
+        rows,
+        bc_policy=bc_policy,
+        appo_bundle=appo_bundle,
+        deterministic=deterministic,
+        summary_only=summary_only,
+    )
+    result.update(
+        {
+            "trace_path": trace_path,
+            "policy": policy,
+            "evaluation_mode": "trace_dataset",
+            "checkpoint_path": appo_checkpoint_path if policy == "appo" else bc_model_path,
+        }
+    )
     return result
 
 

@@ -684,7 +684,8 @@ More specifically:
   - cheap base-`v4` student distilled from that teacher at `0.975`,
   - two-teacher ensemble over the best cheap students at `0.9875`,
   - a single deeper cheap student distilled from that ensemble at `0.9875`,
-  - short APPO from the deeper `0.9875` student still collapsing to `0.2875` best learned trace match,
+  - after fixing the remaining APPO bridge bugs, the same deeper `0.9875` student now survives at step 0 with exact `0.9875` warm-start trace match,
+  - but the first learned checkpoint still drops to `0.975` and later short-run checkpoints fall further to `0.925` and `0.9125`,
 - the proxy-reward branch is implemented but not mature enough to replace the current best teacher-replay branch,
 - the most plausible next frontier is a more teacher-aware and behavior-constrained online improver.
 

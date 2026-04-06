@@ -45,6 +45,7 @@ def parse_args(argv=None):
     parser.add_argument("--world-model-feature-mode", type=str, default=None, choices=["replace", "concat", "concat_aux"])
     parser.add_argument("--env-max-episode-steps", type=int, default=5000)
     parser.add_argument("--model-hidden-size", type=int, default=None)
+    parser.add_argument("--model-num-layers", type=int, default=None)
     parser.add_argument("--disable-input-normalization", action="store_true")
     parser.add_argument("--nonlinearity", type=str, default=None, choices=["elu", "relu", "tanh"])
     parser.add_argument("--bc-init-path", type=str, default=None)
@@ -121,6 +122,8 @@ def build_config(args) -> RLConfig:
     config.env.max_episode_steps = getattr(args, "env_max_episode_steps", config.env.max_episode_steps)
     if args.model_hidden_size is not None:
         config.model.hidden_size = args.model_hidden_size
+    if getattr(args, "model_num_layers", None) is not None:
+        config.model.num_layers = int(args.model_num_layers)
     elif getattr(args, "appo_init_checkpoint_path", None):
         try:
             payload = torch.load(args.appo_init_checkpoint_path, map_location="cpu", weights_only=False)
@@ -135,6 +138,7 @@ def build_config(args) -> RLConfig:
             payload = torch.load(args.bc_init_path, map_location="cpu")
             metadata = payload.get("metadata", {})
             config.model.hidden_size = int(metadata.get("hidden_size", config.model.hidden_size))
+            config.model.num_layers = int(metadata.get("num_layers", config.model.num_layers))
         except Exception:
             pass
     config.model.bc_init_path = args.bc_init_path
@@ -171,7 +175,7 @@ def build_config(args) -> RLConfig:
                     config.model.normalize_input = bool(normalize_input)
         except Exception:
             pass
-    if args.bc_init_path and args.model_hidden_size is None and not disable_input_normalization:
+    if args.bc_init_path and not disable_input_normalization:
         config.model.normalize_input = False
     config.appo.teacher_bc_path = args.teacher_bc_path or args.bc_init_path
     config.appo.teacher_loss_coef = args.teacher_loss_coef

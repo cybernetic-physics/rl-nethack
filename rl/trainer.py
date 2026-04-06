@@ -8,7 +8,7 @@ from dataclasses import asdict
 import torch
 
 from rl.config import RLConfig
-from rl.checkpoint_tools import TraceCheckpointMonitor
+from rl.checkpoint_tools import TraceCheckpointMonitor, record_warmstart_trace_match
 from rl.io_utils import atomic_torch_save, atomic_write_text, experiment_lock
 from rl.improver_report import write_improver_report, build_improver_report
 from rl.model import build_model_spec
@@ -94,6 +94,7 @@ class APPOTrainerScaffold:
         cfg = self.config
         worker_num_splits = 1 if cfg.serial_mode or cfg.rollout.num_envs_per_worker % 2 != 0 else 2
         restart_behavior = "resume" if (cfg.model.bc_init_path or cfg.model.appo_init_checkpoint_path) else "overwrite"
+        encoder_layers = [str(cfg.model.hidden_size)] * max(int(cfg.model.num_layers), 1)
         return [
             f"--algo=APPO",
             f"--env={cfg.env.env_id}",
@@ -116,8 +117,7 @@ class APPOTrainerScaffold:
             f"--value_loss_coeff={cfg.appo.value_loss_coeff}",
             f"--exploration_loss_coeff={cfg.appo.entropy_coeff}",
             "--encoder_mlp_layers",
-            str(cfg.model.hidden_size),
-            str(cfg.model.hidden_size),
+            *encoder_layers,
             f"--normalize_input={str(cfg.model.normalize_input)}",
             f"--nonlinearity={cfg.model.nonlinearity}",
             f"--gamma={cfg.appo.gamma}",
@@ -188,12 +188,16 @@ class APPOTrainerScaffold:
         dst[:rows, :cols].copy_(src[:rows, :cols])
 
     @staticmethod
-    def _bc_linear_state_keys(bc_state: dict[str, torch.Tensor]) -> list[tuple[str, str]]:
+    def _linear_state_keys(state_dict: dict[str, torch.Tensor], module_prefix: str) -> list[tuple[str, str]]:
         weight_keys = sorted(
-            [key for key in bc_state if key.startswith("net.") and key.endswith(".weight")],
-            key=lambda key: int(key.split(".")[1]),
+            [key for key in state_dict if key.startswith(module_prefix) and key.endswith(".weight")],
+            key=lambda key: int(key.rsplit(".", 2)[1]),
         )
-        bias_keys = {key.rsplit(".", 1)[0]: key for key in bc_state if key.startswith("net.") and key.endswith(".bias")}
+        bias_keys = {
+            key.rsplit(".", 1)[0]: key
+            for key in state_dict
+            if key.startswith(module_prefix) and key.endswith(".bias")
+        }
         linear_layers: list[tuple[str, str]] = []
         for weight_key in weight_keys:
             prefix = weight_key.rsplit(".", 1)[0]
@@ -209,19 +213,15 @@ class APPOTrainerScaffold:
         payload = torch.load(self.config.model.bc_init_path, map_location="cpu")
         bc_state = payload["state_dict"]
         model_state = actor_critic.state_dict()
-        linear_layers = self._bc_linear_state_keys(bc_state)
+        linear_layers = self._linear_state_keys(bc_state, "net.")
         if len(linear_layers) < 2:
             raise ValueError("BC warmstart requires at least one hidden linear layer and one output linear layer")
         hidden_layers = linear_layers[:-1]
         output_weight_key, output_bias_key = linear_layers[-1]
-        if hidden_layers:
-            first_weight_key, first_bias_key = hidden_layers[0]
-            self._copy_prefix(model_state["encoder.encoders.obs.mlp_head.0.weight"], bc_state[first_weight_key])
-            self._copy_prefix(model_state["encoder.encoders.obs.mlp_head.0.bias"], bc_state[first_bias_key])
-        if len(hidden_layers) > 1:
-            second_weight_key, second_bias_key = hidden_layers[1]
-            self._copy_prefix(model_state["encoder.encoders.obs.mlp_head.2.weight"], bc_state[second_weight_key])
-            self._copy_prefix(model_state["encoder.encoders.obs.mlp_head.2.bias"], bc_state[second_bias_key])
+        actor_hidden_layers = self._linear_state_keys(model_state, "encoder.encoders.obs.mlp_head.")
+        for (dst_weight_key, dst_bias_key), (src_weight_key, src_bias_key) in zip(actor_hidden_layers, hidden_layers):
+            self._copy_prefix(model_state[dst_weight_key], bc_state[src_weight_key])
+            self._copy_prefix(model_state[dst_bias_key], bc_state[src_bias_key])
         self._copy_prefix(
             model_state["action_parameterization.distribution_linear.weight"],
             bc_state[output_weight_key],
@@ -291,6 +291,7 @@ class APPOTrainerScaffold:
         from sample_factory.model.actor_critic import create_actor_critic
         from sample_factory.train import run_rl
         from gymnasium import spaces
+        from rl.trace_eval import evaluate_trace_appo_bundle
         from rl.teacher_reg import patch_sample_factory_teacher_reg
 
         argv = self.build_sf_argv()
@@ -358,6 +359,26 @@ class APPOTrainerScaffold:
                     warmstart_checkpoint = self.maybe_write_appo_warmstart_checkpoint(sf_cfg, actor_critic)
                 else:
                     warmstart_checkpoint = self.maybe_write_bc_warmstart_checkpoint(sf_cfg, actor_critic)
+                if warmstart_checkpoint and self.config.appo.trace_eval_input:
+                    warmstart_result = evaluate_trace_appo_bundle(
+                        self.config.appo.trace_eval_input,
+                        cfg=sf_cfg,
+                        actor_critic=actor_critic,
+                        device="cpu",
+                        summary_only=True,
+                    )
+                    record_warmstart_trace_match(
+                        experiment=self.config.experiment,
+                        train_dir=self.config.train_dir,
+                        trace_input=self.config.appo.trace_eval_input,
+                        checkpoint_path=warmstart_checkpoint,
+                        evaluation={
+                            "env_steps": 0,
+                            "match_rate": warmstart_result["summary"]["match_rate"],
+                            "invalid_action_rate": warmstart_result["summary"]["invalid_action_rate"],
+                            "action_counts": warmstart_result["summary"]["action_counts"],
+                        },
+                    )
                 env.close()
             monitor = None
             try:

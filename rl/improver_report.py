@@ -34,6 +34,7 @@ def build_improver_report(
     experiment_dir = Path(config.train_dir) / config.experiment
     teacher_report = _load_json_if_exists(config.model.teacher_report_path)
     best_trace_metadata = _load_json_if_exists(str(experiment_dir / "checkpoint_p0" / "best_trace_match.json"))
+    warmstart_trace_metadata = _load_json_if_exists(str(experiment_dir / "checkpoint_p0" / "warmstart_trace_match.json"))
 
     teacher_checkpoint = (
         config.appo.teacher_bc_path
@@ -60,6 +61,7 @@ def build_improver_report(
         if teacher_report
         else None,
         "warmstart_checkpoint": warmstart_checkpoint,
+        "warmstart_trace_metadata": warmstart_trace_metadata,
         "replay_source": {
             "trace_input": config.appo.teacher_replay_trace_input,
             "source_mode": config.appo.teacher_replay_source_mode,

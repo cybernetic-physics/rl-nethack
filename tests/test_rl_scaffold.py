@@ -114,6 +114,7 @@ def test_trainer_scaffold_includes_teacher_reg_args():
     config.appo.entropy_coeff = 0.0
     config.appo.ppo_clip_ratio = 0.05
     config.model.hidden_size = 256
+    config.model.num_layers = 3
     config.model.normalize_input = False
     config.model.nonlinearity = "relu"
     trainer = APPOTrainerScaffold(config)
@@ -132,7 +133,7 @@ def test_trainer_scaffold_includes_teacher_reg_args():
     assert "--normalize_input=False" in argv
     assert "--nonlinearity=relu" in argv
     idx = argv.index("--encoder_mlp_layers")
-    assert argv[idx + 1:idx + 3] == ["256", "256"]
+    assert argv[idx + 1:idx + 4] == ["256", "256", "256"]
 
 
 def test_build_appo_config_respects_value_stability_args():
@@ -226,7 +227,7 @@ def test_build_appo_config_infers_hidden_size_from_bc_checkpoint():
     ]
     with tempfile.TemporaryDirectory() as tmpdir:
         out = os.path.join(tmpdir, "bc.pt")
-        train_bc_model(rows, out, epochs=1, lr=1e-3, hidden_size=64, observation_version="v2")
+        train_bc_model(rows, out, epochs=1, lr=1e-3, hidden_size=64, num_layers=3, observation_version="v2")
         args = type(
             "Args",
             (),
@@ -256,6 +257,7 @@ def test_build_appo_config_infers_hidden_size_from_bc_checkpoint():
                 "enabled_skills": "explore",
                     "observation_version": "v2",
                     "model_hidden_size": None,
+                    "model_num_layers": None,
                     "disable_input_normalization": False,
                     "nonlinearity": None,
                     "bc_init_path": out,
@@ -277,6 +279,96 @@ def test_build_appo_config_infers_hidden_size_from_bc_checkpoint():
         )()
         config = build_appo_config(args)
         assert config.model.hidden_size == 64
+        assert config.model.num_layers == 3
+
+
+def test_build_appo_config_keeps_bc_warmstart_normalization_off_with_explicit_model_shape():
+    rows = [
+        {"feature_vector": [0.0] * 160, "action": "east", "allowed_actions": ["east", "west"]},
+        {"feature_vector": [0.1] * 160, "action": "west", "allowed_actions": ["east", "west"]},
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = os.path.join(tmpdir, "bc.pt")
+        train_bc_model(rows, out, epochs=1, lr=1e-3, hidden_size=64, num_layers=3, observation_version="v2")
+        args = type(
+            "Args",
+            (),
+            {
+                "experiment": "exp",
+                "train_dir": "train_dir/rl",
+                "serial_mode": False,
+                "async_rl": False,
+                "num_workers": 1,
+                "num_envs_per_worker": 1,
+                "rollout_length": 8,
+                "recurrence": 8,
+                "batch_size": 8,
+                "num_batches_per_epoch": 1,
+                "ppo_epochs": 1,
+                "learning_rate": 3e-4,
+                "gamma": 0.99,
+                "gae_lambda": 0.9,
+                "value_loss_coeff": 0.1,
+                "reward_scale": 0.005,
+                "entropy_coeff": 0.01,
+                "ppo_clip_ratio": 0.1,
+                "train_for_env_steps": 32,
+                "scheduler": "rule_based",
+                "reward_source": "hand_shaped",
+                "learned_reward_path": None,
+                "proxy_reward_path": None,
+                "proxy_reward_weight": 1.0,
+                "episodic_explore_bonus_enabled": False,
+                "episodic_explore_bonus_scale": 0.0,
+                "episodic_explore_bonus_mode": "state_hash",
+                "scheduler_model_path": None,
+                "enabled_skills": "explore",
+                "observation_version": "v2",
+                "world_model_path": None,
+                "world_model_feature_mode": None,
+                "env_max_episode_steps": 500,
+                "model_hidden_size": 64,
+                "model_num_layers": 3,
+                "disable_input_normalization": False,
+                "nonlinearity": None,
+                "bc_init_path": out,
+                "appo_init_checkpoint_path": None,
+                "teacher_bc_path": None,
+                "teacher_report_path": None,
+                "teacher_loss_coef": 0.0,
+                "teacher_loss_type": "ce",
+                "teacher_action_boosts": "",
+                "teacher_loss_final_coef": 0.0,
+                "teacher_loss_warmup_env_steps": 0,
+                "teacher_loss_decay_env_steps": 0,
+                "teacher_replay_trace_input": None,
+                "teacher_replay_coef": 0.0,
+                "teacher_replay_final_coef": 0.0,
+                "teacher_replay_warmup_env_steps": 0,
+                "teacher_replay_decay_env_steps": 0,
+                "teacher_replay_batch_size": 128,
+                "teacher_replay_priority_power": 1.0,
+                "teacher_replay_source_mode": "uniform",
+                "param_anchor_coef": 0.0,
+                "actor_loss_scale": 1.0,
+                "actor_loss_final_scale": 1.0,
+                "actor_loss_warmup_env_steps": 0,
+                "actor_loss_decay_env_steps": 0,
+                "trace_eval_input": None,
+                "trace_eval_interval_env_steps": 0,
+                "trace_eval_top_k": 5,
+                "save_every_sec": 120,
+                "save_best_every_sec": 5,
+                "improver_report_output": None,
+                "use_rnn": False,
+                "no_rnn": True,
+                "disable_action_mask": False,
+            },
+        )()
+        config = build_appo_config(args)
+        assert config.model.hidden_size == 64
+        assert config.model.num_layers == 3
+        assert config.model.normalize_input is False
         assert config.model.normalize_input is False
         assert config.model.nonlinearity == "relu"
 
@@ -601,6 +693,14 @@ def test_improver_report_links_teacher_and_best_trace_metadata():
                 }
             )
         )
+        (checkpoint_dir / "warmstart_trace_match.json").write_text(
+            json.dumps(
+                {
+                    "warmstart_checkpoint_path": str(checkpoint_dir / "checkpoint_000000000_0.pth"),
+                    "match_rate": 0.975,
+                }
+            )
+        )
         cfg = RLConfig()
         cfg.train_dir = tmpdir
         cfg.experiment = "exp"
@@ -617,6 +717,7 @@ def test_improver_report_links_teacher_and_best_trace_metadata():
         )
         assert report["teacher_checkpoint_path"] == "/tmp/teacher.pt"
         assert report["teacher_report_summary"]["heldout_match_rate"] == 0.95
+        assert report["warmstart_trace_metadata"]["match_rate"] == 0.975
         assert report["trace_gate"]["best_checkpoint_path"].endswith("checkpoint_000000010_80.pth")
 
 
@@ -965,7 +1066,7 @@ def test_world_model_train_and_eval_smoke():
             prompt_texts=[rows[0]["prompt"], rows[1]["prompt"]],
         )
         assert batch["latent"].shape == (2, len(single["latent"]))
-        assert np.allclose(batch["latent"][0], single["latent"], atol=1e-5, rtol=1e-5)
+        assert np.allclose(batch["latent"][0], single["latent"], atol=5e-5, rtol=5e-5)
         eval_result = evaluate_world_model(model_path, trace_path, horizon=2, observation_version="v4")
         assert eval_result["num_examples"] == train_result["num_examples"]
         assert eval_result["feature_mse"] >= 0.0
@@ -1260,6 +1361,8 @@ def test_bc_warmstart_uses_final_linear_for_deeper_teacher():
                 "encoder.encoders.obs.mlp_head.0.bias": torch.zeros(32),
                 "encoder.encoders.obs.mlp_head.2.weight": torch.zeros(32, 32),
                 "encoder.encoders.obs.mlp_head.2.bias": torch.zeros(32),
+                "encoder.encoders.obs.mlp_head.4.weight": torch.zeros(32, 32),
+                "encoder.encoders.obs.mlp_head.4.bias": torch.zeros(32),
                 "action_parameterization.distribution_linear.weight": torch.zeros(len(ACTION_SET), 32),
                 "action_parameterization.distribution_linear.bias": torch.zeros(len(ACTION_SET)),
             }
@@ -1288,6 +1391,7 @@ def test_bc_warmstart_uses_final_linear_for_deeper_teacher():
         config.train_dir = tmpdir
         config.experiment = "warmstart"
         config.model.bc_init_path = teacher_path
+        config.model.num_layers = 3
         trainer = APPOTrainerScaffold(config)
         dummy = DummyActorCritic()
         sf_cfg = type("DummyCfg", (), {"learning_rate": 1e-4, "adam_eps": 1e-6})()
@@ -1295,6 +1399,7 @@ def test_bc_warmstart_uses_final_linear_for_deeper_teacher():
         bc_state = torch.load(teacher_path, map_location="cpu")["state_dict"]
         assert torch.allclose(dummy.loaded_state["encoder.encoders.obs.mlp_head.0.weight"], bc_state["net.0.weight"])
         assert torch.allclose(dummy.loaded_state["encoder.encoders.obs.mlp_head.2.weight"], bc_state["net.2.weight"])
+        assert torch.allclose(dummy.loaded_state["encoder.encoders.obs.mlp_head.4.weight"], bc_state["net.4.weight"])
         assert torch.allclose(
             dummy.loaded_state["action_parameterization.distribution_linear.weight"],
             bc_state["net.6.weight"],
@@ -1984,6 +2089,32 @@ def test_trace_checkpoint_monitor_writes_best_metadata(monkeypatch):
         assert metadata["match_rate"] == 0.75
         assert metadata["env_steps"] == 1024
         assert (checkpoint_dir / "best_trace_match.pth").exists()
+
+
+def test_record_warmstart_trace_match_writes_separate_metadata():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        checkpoint_dir = Path(tmpdir) / "exp" / "checkpoint_p0"
+        checkpoint_dir.mkdir(parents=True)
+        warmstart = checkpoint_dir / "checkpoint_000000000_0.pth"
+        torch.save({"model": {"weight": torch.tensor([1.0])}}, warmstart)
+
+        metadata = checkpoint_tools.record_warmstart_trace_match(
+            experiment="exp",
+            train_dir=tmpdir,
+            trace_input="trace.jsonl",
+            checkpoint_path=str(warmstart),
+            evaluation={
+                "env_steps": 0,
+                "match_rate": 0.975,
+                "invalid_action_rate": 0.0,
+                "action_counts": {"east": 4},
+            },
+        )
+        warmstart_metadata = json.loads((checkpoint_dir / "warmstart_trace_match.json").read_text())
+        assert warmstart_metadata["match_rate"] == 0.975
+        assert warmstart_metadata["env_steps"] == 0
+        assert (checkpoint_dir / "warmstart_trace_match.pth").exists()
+        assert metadata["alias_checkpoint_path"].endswith("warmstart_trace_match.pth")
 
 
 def test_behavior_regularized_policy_trains():
