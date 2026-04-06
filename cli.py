@@ -1044,6 +1044,7 @@ def cmd_rl_run_dagger(args):
         merge_policy=args.merge_policy,
         dagger_row_policy=args.dagger_row_policy,
         dagger_keep_match_ratio=args.dagger_keep_match_ratio,
+        dagger_confusion_pairs=args.dagger_confusion_pairs,
         epochs=args.epochs,
         lr=args.lr,
         hidden_size=args.hidden_size,
@@ -1078,6 +1079,7 @@ def cmd_rl_dagger_iterate(args):
         merge_policy=args.merge_policy,
         dagger_row_policy=args.dagger_row_policy,
         dagger_keep_match_ratio=args.dagger_keep_match_ratio,
+        dagger_confusion_pairs=args.dagger_confusion_pairs,
         epochs=args.epochs,
         lr=args.lr,
         hidden_size=args.hidden_size,
@@ -1672,6 +1674,8 @@ def main():
                              choices=['all', 'disagreement', 'loop_risk', 'failure_slice', 'weak_action', 'hard_only'])
     p_rl_dagger.add_argument('--dagger-keep-match-ratio', type=float, default=0.0,
                              help='Keep a small fraction of on-support DAgger rows as anchors after filtering')
+    p_rl_dagger.add_argument('--dagger-confusion-pairs', type=str, default='',
+                             help='Optional comma-separated behavior->teacher filters, e.g. east->south,south->east')
     p_rl_dagger.add_argument('--heldout-input', type=str, default=None,
                              help='Optional held-out trace JSONL for post-iteration evaluation')
     p_rl_dagger.add_argument('--epochs', type=int, default=20)
@@ -1705,6 +1709,7 @@ def main():
     p_rl_dagger_sched.add_argument('--dagger-row-policy', type=str, default='all',
                                    choices=['all', 'disagreement', 'loop_risk', 'failure_slice', 'weak_action', 'hard_only'])
     p_rl_dagger_sched.add_argument('--dagger-keep-match-ratio', type=float, default=0.0)
+    p_rl_dagger_sched.add_argument('--dagger-confusion-pairs', type=str, default='')
     p_rl_dagger_sched.add_argument('--heldout-input', type=str, default=None)
     p_rl_dagger_sched.add_argument('--epochs', type=int, default=20)
     p_rl_dagger_sched.add_argument('--lr', type=float, default=1e-3)

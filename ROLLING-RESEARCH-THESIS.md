@@ -758,6 +758,12 @@ More specifically:
   - `hard_only` collapsed back to full-state DAgger because every harvested row was flagged as loop-risk, then fell to `0.8625`,
   - `disagreement` kept only `221 / 1280` rows and still fell to `0.85`,
   - so targeted DAgger remains a live direction in principle, but the current row flags are not yet selective enough to support it; future DAgger work needs stricter failure-family triggers rather than broad student-rollout relabeling,
+- a follow-up exact confusion-pair probe made the DAgger story sharper:
+  - a new `dagger_confusion_pairs` selector now supports explicit `behavior_action -> teacher_action` filtering on relabeled student rows,
+  - broad disagreement harvests were mostly irrelevant confusions like `east -> west` and `north -> south`; the exact held-out `east <-> south` family was present but rare,
+  - harvesting `128 x 40` student steps and keeping only exact `east->south,south->east` disagreement rows produced `144` selected rows and recovered to `0.975` held-out trace match,
+  - that is much safer than broad DAgger, but it still does not beat the trusted `0.9875` teacher and the remaining held-out errors are still `east -> south`,
+  - so exact student-harvested failure-family relabeling is a better selector than broad disagreement, but still not sufficient by itself; the next data-refinement step likely needs offline hard-case teacher data rather than more generic online-rollout relabeling,
 - the most plausible next frontier is a more teacher-aware and behavior-constrained online improver.
 
 ## Practical Research Rules Going Forward

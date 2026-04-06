@@ -22,6 +22,31 @@ def _normalize_keep_ratio(keep_ratio: float) -> float:
     return max(0.0, min(1.0, keep_ratio))
 
 
+def _parse_confusion_pairs(spec: str | None) -> set[tuple[str, str]]:
+    if not spec:
+        return set()
+    pairs = set()
+    for raw_token in str(spec).split(","):
+        token = raw_token.strip()
+        if not token:
+            continue
+        if "->" not in token:
+            raise ValueError(f"Invalid confusion pair '{token}'; expected behavior->teacher")
+        behavior_action, teacher_action = token.split("->", 1)
+        behavior_action = behavior_action.strip()
+        teacher_action = teacher_action.strip()
+        if not behavior_action or not teacher_action:
+            raise ValueError(f"Invalid confusion pair '{token}'; expected non-empty behavior->teacher")
+        pairs.add((behavior_action, teacher_action))
+    return pairs
+
+
+def _matches_confusion_pairs(row: dict, confusion_pairs: set[tuple[str, str]]) -> bool:
+    if not confusion_pairs:
+        return True
+    return (str(row.get("behavior_action")), str(row.get("teacher_action"))) in confusion_pairs
+
+
 def _matches_row_selection_policy(row: dict, row_selection_policy: str) -> bool:
     if row_selection_policy not in ROW_SELECTION_POLICIES:
         raise ValueError(f"Unknown row_selection_policy: {row_selection_policy}")
@@ -41,8 +66,8 @@ def _matches_row_selection_policy(row: dict, row_selection_policy: str) -> bool:
     )
 
 
-def summarize_dagger_rows(rows: list[dict]) -> dict:
-    return {
+def summarize_dagger_rows(rows: list[dict], confusion_pairs: set[tuple[str, str]] | None = None) -> dict:
+    summary = {
         "rows": len(rows),
         "disagreement_rows": sum(int(bool(row.get("is_disagreement_candidate", False))) for row in rows),
         "loop_risk_rows": sum(int(bool(row.get("is_loop_risk", False))) for row in rows),
@@ -50,6 +75,9 @@ def summarize_dagger_rows(rows: list[dict]) -> dict:
         "weak_action_rows": sum(int(bool(row.get("is_weak_action", False))) for row in rows),
         "match_rows": sum(int(row.get("behavior_action") == row.get("teacher_action")) for row in rows),
     }
+    if confusion_pairs:
+        summary["confusion_pair_rows"] = sum(int(_matches_confusion_pairs(row, confusion_pairs)) for row in rows)
+    return summary
 
 
 def select_dagger_rows(
@@ -57,16 +85,18 @@ def select_dagger_rows(
     rows: list[dict],
     row_selection_policy: str,
     keep_match_ratio: float,
+    confusion_pairs: set[tuple[str, str]] | None,
     rng: random.Random,
 ) -> list[dict]:
     keep_match_ratio = _normalize_keep_ratio(keep_match_ratio)
-    if row_selection_policy == "all" and keep_match_ratio >= 1.0:
+    confusion_pairs = confusion_pairs or set()
+    if row_selection_policy == "all" and keep_match_ratio >= 1.0 and not confusion_pairs:
         return list(rows)
 
     selected = []
     anchor_rows = []
     for row in rows:
-        if _matches_row_selection_policy(row, row_selection_policy):
+        if _matches_row_selection_policy(row, row_selection_policy) and _matches_confusion_pairs(row, confusion_pairs):
             selected.append(row)
         else:
             anchor_rows.append(row)
@@ -167,6 +197,7 @@ def run_dagger_iteration(
     merge_policy: str = "uniform_merge",
     dagger_row_policy: str = "all",
     dagger_keep_match_ratio: float = 0.0,
+    dagger_confusion_pairs: str = "",
     epochs: int = 20,
     lr: float = 1e-3,
     hidden_size: int = 256,
@@ -199,10 +230,12 @@ def run_dagger_iteration(
 
     base_rows = load_trace_rows(base_trace_input)
     dagger_rows = load_trace_rows(dagger_trace_output)
+    confusion_pairs = _parse_confusion_pairs(dagger_confusion_pairs)
     selected_dagger_rows = select_dagger_rows(
         rows=dagger_rows,
         row_selection_policy=dagger_row_policy,
         keep_match_ratio=dagger_keep_match_ratio,
+        confusion_pairs=confusion_pairs,
         rng=random.Random(random_seed + 100_003),
     )
     merged_rows = build_merged_trace_rows(
@@ -254,8 +287,9 @@ def run_dagger_iteration(
         "selected_dagger_rows": len(selected_dagger_rows),
         "dagger_row_policy": dagger_row_policy,
         "dagger_keep_match_ratio": dagger_keep_match_ratio,
-        "dagger_row_summary": summarize_dagger_rows(dagger_rows),
-        "selected_dagger_row_summary": summarize_dagger_rows(selected_dagger_rows),
+        "dagger_confusion_pairs": sorted(f"{behavior}->{teacher}" for behavior, teacher in confusion_pairs),
+        "dagger_row_summary": summarize_dagger_rows(dagger_rows, confusion_pairs=confusion_pairs),
+        "selected_dagger_row_summary": summarize_dagger_rows(selected_dagger_rows, confusion_pairs=confusion_pairs),
         "merged_rows": len(merged_rows),
         "dagger_trace_verify": verify_trace_file(dagger_trace_output),
         "dagger_trace_summary": dagger_summary,
@@ -285,6 +319,7 @@ def run_dagger_schedule(
     merge_policy: str = "uniform_merge",
     dagger_row_policy: str = "all",
     dagger_keep_match_ratio: float = 0.0,
+    dagger_confusion_pairs: str = "",
     epochs: int = 20,
     lr: float = 1e-3,
     hidden_size: int = 256,
@@ -329,6 +364,7 @@ def run_dagger_schedule(
             merge_policy=merge_policy,
             dagger_row_policy=dagger_row_policy,
             dagger_keep_match_ratio=dagger_keep_match_ratio,
+            dagger_confusion_pairs=dagger_confusion_pairs,
             epochs=epochs,
             lr=lr,
             hidden_size=hidden_size,
@@ -373,6 +409,9 @@ def run_dagger_schedule(
         "merge_ratio": merge_ratio,
         "dagger_row_policy": dagger_row_policy,
         "dagger_keep_match_ratio": dagger_keep_match_ratio,
+        "dagger_confusion_pairs": sorted(
+            f"{behavior}->{teacher}" for behavior, teacher in _parse_confusion_pairs(dagger_confusion_pairs)
+        ),
         "distill_teacher_bc_path": distill_teacher_bc_path or teacher_bc_model_path,
         "distill_loss_coef": distill_loss_coef,
         "distill_temperature": distill_temperature,

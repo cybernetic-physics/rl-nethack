@@ -2759,6 +2759,17 @@ def test_run_dagger_iteration_filters_dagger_rows_before_merge(monkeypatch):
                     "teacher_action": "south",
                     "is_disagreement_candidate": True,
                 },
+                {
+                    "episode_id": "dagger:appo:0",
+                    "step": 2,
+                    "observation_version": "v4",
+                    "feature_vector": [0.0] * 302,
+                    "action": "west",
+                    "allowed_actions": ["west", "east"],
+                    "behavior_action": "east",
+                    "teacher_action": "west",
+                    "is_disagreement_candidate": True,
+                },
             ]
             for row in rows:
                 f.write(json.dumps(row) + "\n")
@@ -2798,6 +2809,17 @@ def test_run_dagger_iteration_filters_dagger_rows_before_merge(monkeypatch):
                 "teacher_action": "south",
                 "is_disagreement_candidate": True,
             },
+            {
+                "episode_id": "dagger:appo:0",
+                "step": 2,
+                "observation_version": "v4",
+                "feature_vector": [0.0] * 302,
+                "action": "west",
+                "allowed_actions": ["west", "east"],
+                "behavior_action": "east",
+                "teacher_action": "west",
+                "is_disagreement_candidate": True,
+            },
         ]
 
     def fake_build_merged_trace_rows(**kwargs):
@@ -2826,12 +2848,15 @@ def test_run_dagger_iteration_filters_dagger_rows_before_merge(monkeypatch):
             observation_version="v4",
             dagger_row_policy="disagreement",
             dagger_keep_match_ratio=0.0,
+            dagger_confusion_pairs="east->south",
         )
 
     assert len(captured["relabeled_rows"]) == 1
     assert captured["relabeled_rows"][0]["teacher_action"] == "south"
+    assert report["dagger_confusion_pairs"] == ["east->south"]
     assert report["selected_dagger_rows"] == 1
     assert report["selected_dagger_row_summary"]["disagreement_rows"] == 1
+    assert report["selected_dagger_row_summary"]["confusion_pair_rows"] == 1
 
 
 def test_rank_checkpoints_skips_unreadable_checkpoint(monkeypatch):
@@ -2935,6 +2960,7 @@ def test_select_dagger_rows_targets_hard_cases_and_keeps_match_anchor():
         rows=rows,
         row_selection_policy="hard_only",
         keep_match_ratio=0.5,
+        confusion_pairs=None,
         rng=random.Random(7),
     )
     assert len(selected) == 4
@@ -2944,10 +2970,22 @@ def test_select_dagger_rows_targets_hard_cases_and_keeps_match_anchor():
         rows=rows,
         row_selection_policy="disagreement",
         keep_match_ratio=0.0,
+        confusion_pairs=None,
         rng=random.Random(7),
     )
     assert len(disagreement_only) == 1
     assert disagreement_only[0]["teacher_action"] == "south"
+
+    pair_only = select_dagger_rows(
+        rows=rows,
+        row_selection_policy="disagreement",
+        keep_match_ratio=0.0,
+        confusion_pairs={("north", "south")},
+        rng=random.Random(7),
+    )
+    assert len(pair_only) == 1
+    assert pair_only[0]["behavior_action"] == "north"
+    assert pair_only[0]["teacher_action"] == "south"
 
 
 def test_trace_checkpoint_monitor_writes_best_metadata(monkeypatch):
