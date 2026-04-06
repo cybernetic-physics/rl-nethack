@@ -432,6 +432,8 @@ def cmd_rl_train_appo(args):
         )
     if getattr(args, "teacher_policy_logit_residual_scale", 1.0) != 1.0:
         argv.extend(["--teacher-policy-logit-residual-scale", str(args.teacher_policy_logit_residual_scale)])
+    if getattr(args, "teacher_policy_residual_logit_cap", 0.0) > 0.0:
+        argv.extend(["--teacher-policy-residual-logit-cap", str(args.teacher_policy_residual_logit_cap)])
     if getattr(args, "teacher_policy_blend_coef", 0.0) != 0.0:
         argv.extend(["--teacher-policy-blend-coef", str(args.teacher_policy_blend_coef)])
     if getattr(args, "teacher_policy_fallback_confidence", 0.0) != 0.0:
@@ -1501,6 +1503,8 @@ def main():
                       help='Optional env-step threshold before exact replay confusion-pair boosts become active')
     p_rl.add_argument('--teacher-policy-logit-residual-scale', type=float, default=1.0,
                       help='Logit-space residual scale in teacher + s*(student-teacher); 1.0 keeps the raw student policy')
+    p_rl.add_argument('--teacher-policy-residual-logit-cap', type=float, default=0.0,
+                      help='If >0, clip each action logit residual around the teacher prior during rollout-time action selection')
     p_rl.add_argument('--teacher-policy-blend-coef', type=float, default=0.0,
                       help='Blend coefficient for a teacher policy prior applied at action selection time')
     p_rl.add_argument('--teacher-policy-fallback-confidence', type=float, default=0.0,

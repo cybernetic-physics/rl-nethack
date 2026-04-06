@@ -110,6 +110,7 @@ def build_improver_report(
         "teacher_policy": {
             "prior_checkpoint_path": config.appo.teacher_prior_bc_path or config.appo.teacher_bc_path,
             "logit_residual_scale": config.appo.teacher_policy_logit_residual_scale,
+            "residual_logit_cap": config.appo.teacher_policy_residual_logit_cap,
             "blend_coef": config.appo.teacher_policy_blend_coef,
             "fallback_confidence": config.appo.teacher_policy_fallback_confidence,
             "disagreement_margin": config.appo.teacher_policy_disagreement_margin,

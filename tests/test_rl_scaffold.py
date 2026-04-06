@@ -203,6 +203,8 @@ def test_teacher_policy_blend_and_fallback_helpers():
     teacher_logits = torch.tensor([[0.0, 2.0, 1.0]], dtype=torch.float32)
     residual_logits = _teacher_policy_logit_residual(student_logits, teacher_logits, 0.25)
     assert torch.allclose(residual_logits, torch.tensor([[0.5, 1.75, 0.75]], dtype=torch.float32))
+    capped_residual_logits = _teacher_policy_logit_residual(student_logits, teacher_logits, 1.0, residual_cap=0.5)
+    assert torch.allclose(capped_residual_logits, torch.tensor([[0.5, 1.5, 0.5]], dtype=torch.float32))
 
     student_probs = torch.tensor(
         [
@@ -414,6 +416,7 @@ def test_cli_rl_train_appo_forwards_teacher_prior_controls(monkeypatch):
         teacher_replay_confusion_pair_boosts="east->south=3.0,south->east=3.0",
         teacher_replay_confusion_pair_start_env_steps=768,
         teacher_policy_logit_residual_scale=0.3,
+        teacher_policy_residual_logit_cap=0.5,
         teacher_policy_blend_coef=0.2,
         teacher_policy_fallback_confidence=0.6,
         teacher_policy_disagreement_margin=0.1,
@@ -439,6 +442,8 @@ def test_cli_rl_train_appo_forwards_teacher_prior_controls(monkeypatch):
     argv = captured["argv"]
     assert "--teacher-policy-logit-residual-scale" in argv
     assert argv[argv.index("--teacher-policy-logit-residual-scale") + 1] == "0.3"
+    assert "--teacher-policy-residual-logit-cap" in argv
+    assert argv[argv.index("--teacher-policy-residual-logit-cap") + 1] == "0.5"
     assert "--teacher-replay-action-boosts" in argv
     assert argv[argv.index("--teacher-replay-action-boosts") + 1] == "east=2.0,south=2.0"
     assert "--teacher-replay-current-disagreement-boost" in argv
@@ -481,6 +486,7 @@ def test_trainer_scaffold_includes_teacher_reg_args():
     config.appo.teacher_replay_confusion_pair_boosts = "east->south=3.0,south->east=3.0"
     config.appo.teacher_replay_confusion_pair_start_env_steps = 768
     config.appo.teacher_policy_logit_residual_scale = 0.3
+    config.appo.teacher_policy_residual_logit_cap = 0.5
     config.appo.teacher_policy_blend_coef = 0.15
     config.appo.teacher_policy_fallback_confidence = 0.55
     config.appo.teacher_policy_disagreement_margin = 0.1
@@ -508,6 +514,7 @@ def test_trainer_scaffold_includes_teacher_reg_args():
     assert "--teacher_replay_confusion_pair_boosts=east->south=3.0,south->east=3.0" in argv
     assert "--teacher_replay_confusion_pair_start_env_steps=768" in argv
     assert "--teacher_policy_logit_residual_scale=0.3" in argv
+    assert "--teacher_policy_residual_logit_cap=0.5" in argv
     assert "--teacher_policy_blend_coef=0.15" in argv
     assert "--teacher_policy_fallback_confidence=0.55" in argv
     assert "--teacher_policy_disagreement_margin=0.1" in argv
@@ -584,6 +591,7 @@ def test_build_appo_config_respects_value_stability_args():
             "teacher_replay_confusion_pair_boosts": "east->south=3.0,south->east=3.0",
             "teacher_replay_confusion_pair_start_env_steps": 768,
             "teacher_policy_logit_residual_scale": 0.3,
+            "teacher_policy_residual_logit_cap": 0.5,
             "teacher_policy_blend_coef": 0.2,
             "teacher_policy_fallback_confidence": 0.6,
             "teacher_policy_disagreement_margin": 0.1,
@@ -617,6 +625,7 @@ def test_build_appo_config_respects_value_stability_args():
     assert config.appo.teacher_replay_confusion_pair_start_env_steps == 768
     assert config.appo.teacher_prior_bc_path == "/tmp/prior.pt"
     assert config.appo.teacher_policy_logit_residual_scale == 0.3
+    assert config.appo.teacher_policy_residual_logit_cap == 0.5
     assert config.appo.teacher_policy_blend_coef == 0.2
     assert config.appo.teacher_policy_fallback_confidence == 0.6
     assert config.appo.teacher_policy_disagreement_margin == 0.1
@@ -1237,6 +1246,7 @@ def test_improver_report_links_teacher_and_best_trace_metadata():
         cfg.appo.teacher_replay_confusion_pair_boosts = "east->south=3.0,south->east=3.0"
         cfg.appo.teacher_replay_confusion_pair_start_env_steps = 768
         cfg.appo.teacher_policy_logit_residual_scale = 0.3
+        cfg.appo.teacher_policy_residual_logit_cap = 0.5
         cfg.appo.teacher_policy_blend_coef = 0.25
         cfg.appo.teacher_policy_fallback_confidence = 0.55
 
@@ -1269,6 +1279,7 @@ def test_improver_report_links_teacher_and_best_trace_metadata():
         assert report["replay_source"]["confusion_pair_boosts"] == "east->south=3.0,south->east=3.0"
         assert report["replay_source"]["confusion_pair_start_env_steps"] == 768
         assert report["teacher_policy"]["logit_residual_scale"] == 0.3
+        assert report["teacher_policy"]["residual_logit_cap"] == 0.5
         assert report["replay_source"]["action_boosts"] == "east=2.0,south=2.0"
         assert report["teacher_policy"]["blend_coef"] == 0.25
         assert report["teacher_policy"]["fallback_confidence"] == 0.55

@@ -71,6 +71,7 @@ class APPOTrainerScaffold:
             "teacher_replay_confusion_pair_boosts": self.config.appo.teacher_replay_confusion_pair_boosts,
             "teacher_replay_confusion_pair_start_env_steps": self.config.appo.teacher_replay_confusion_pair_start_env_steps,
             "teacher_policy_logit_residual_scale": self.config.appo.teacher_policy_logit_residual_scale,
+            "teacher_policy_residual_logit_cap": self.config.appo.teacher_policy_residual_logit_cap,
             "teacher_policy_blend_coef": self.config.appo.teacher_policy_blend_coef,
             "teacher_policy_fallback_confidence": self.config.appo.teacher_policy_fallback_confidence,
             "teacher_policy_disagreement_margin": self.config.appo.teacher_policy_disagreement_margin,
@@ -158,6 +159,7 @@ class APPOTrainerScaffold:
             f"--teacher_replay_confusion_pair_boosts={cfg.appo.teacher_replay_confusion_pair_boosts}",
             f"--teacher_replay_confusion_pair_start_env_steps={cfg.appo.teacher_replay_confusion_pair_start_env_steps}",
             f"--teacher_policy_logit_residual_scale={cfg.appo.teacher_policy_logit_residual_scale}",
+            f"--teacher_policy_residual_logit_cap={cfg.appo.teacher_policy_residual_logit_cap}",
             f"--teacher_policy_blend_coef={cfg.appo.teacher_policy_blend_coef}",
             f"--teacher_policy_fallback_confidence={cfg.appo.teacher_policy_fallback_confidence}",
             f"--teacher_policy_disagreement_margin={cfg.appo.teacher_policy_disagreement_margin}",
@@ -388,6 +390,11 @@ class APPOTrainerScaffold:
             "--teacher_policy_logit_residual_scale",
             type=float,
             default=self.config.appo.teacher_policy_logit_residual_scale,
+        )
+        parser.add_argument(
+            "--teacher_policy_residual_logit_cap",
+            type=float,
+            default=self.config.appo.teacher_policy_residual_logit_cap,
         )
         parser.add_argument("--teacher_policy_blend_coef", type=float, default=self.config.appo.teacher_policy_blend_coef)
         parser.add_argument(

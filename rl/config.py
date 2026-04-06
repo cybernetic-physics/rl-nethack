@@ -60,6 +60,7 @@ class APPOConfig:
     teacher_replay_confusion_pair_boosts: str = ""
     teacher_replay_confusion_pair_start_env_steps: int = 0
     teacher_policy_logit_residual_scale: float = 1.0
+    teacher_policy_residual_logit_cap: float = 0.0
     teacher_policy_blend_coef: float = 0.0
     teacher_policy_fallback_confidence: float = 0.0
     teacher_policy_disagreement_margin: float = 0.0

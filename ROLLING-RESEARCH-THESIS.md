@@ -820,6 +820,20 @@ More specifically:
     - active from the start, it improves late retention but hurts early teacher matching,
     - delayed to preserve early teacher matching, it turns back into ordinary preservation followed by hard drift,
   - the practical conclusion is that simple schedule tuning is no longer the right lever here; if exact failure-family replay signals matter, they likely need a different online improver or a richer replay source rather than more activation-shift probes,
+- a bounded residual teacher-base follow-up finally repaired the corrected constrained branch:
+  - a new `teacher_policy_residual_logit_cap` path now lets rollout-time acting use the teacher logits as the base policy with only a clipped per-action student residual around them,
+  - unlike the earlier global logit-residual probe, this keeps the teacher exact outside a small allowed delta band instead of globally interpolating toward the student,
+  - tested with `residual_logit_cap=0.5` on top of the corrected replay-to-raw-student baseline, the short gate became the strongest clean post-audit branch so far:
+    - warm-start stayed `0.9875`,
+    - best learned tied `0.9875` at `512`,
+    - retained late recovered to `0.9875`,
+    - final recovered to `0.9875`,
+  - this still is not a teacher-beating improver, because the branch only preserves the teacher rather than exceeding it,
+  - but it is a real branch improvement over the corrected replay baseline and important architectural evidence:
+    - the teacher should remain the acted base policy,
+    - the student should contribute only a bounded logit delta,
+    - and replay-to-raw-student-logits plus bounded residual acting is a cleaner default constrained stack than the earlier blend / scale / replay-weight variants,
+  - so the new most plausible next frontier is no longer “find a better replay weight.” It is to build genuine improvement signals on top of this bounded teacher-base stabilizer,
 - the most plausible next frontier is a more teacher-aware and behavior-constrained online improver.
 
 ## Practical Research Rules Going Forward

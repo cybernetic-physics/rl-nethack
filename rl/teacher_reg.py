@@ -215,6 +215,7 @@ def _resolve_teacher_prior_bc_paths(cfg: Any) -> list[str]:
 def _teacher_policy_prior_enabled(cfg: Any) -> bool:
     return bool(_resolve_teacher_prior_bc_paths(cfg)) and (
         float(getattr(cfg, "teacher_policy_logit_residual_scale", 1.0) or 1.0) != 1.0
+        or float(getattr(cfg, "teacher_policy_residual_logit_cap", 0.0) or 0.0) > 0.0
         or
         float(getattr(cfg, "teacher_policy_blend_coef", 0.0) or 0.0) > 0.0
         or float(getattr(cfg, "teacher_policy_fallback_confidence", 0.0) or 0.0) > 0.0
@@ -394,13 +395,17 @@ def _teacher_policy_logit_residual(
     student_logits: torch.Tensor,
     teacher_logits: torch.Tensor,
     residual_scale: float,
+    residual_cap: float = 0.0,
 ) -> torch.Tensor:
     scale = float(min(max(residual_scale, 0.0), 1.0))
-    if scale >= 1.0:
-        return student_logits
     if scale <= 0.0:
-        return teacher_logits
-    return teacher_logits + scale * (student_logits - teacher_logits)
+        residual = torch.zeros_like(student_logits)
+    else:
+        residual = scale * (student_logits - teacher_logits)
+    cap = float(max(residual_cap, 0.0))
+    if cap > 0.0:
+        residual = residual.clamp(min=-cap, max=cap)
+    return teacher_logits + residual
 
 
 def _teacher_policy_fallback_details(
@@ -453,6 +458,9 @@ def _ensure_teacher_prior_models(module: Any, device: torch.device) -> None:
     module._teacher_policy_logit_residual_scale = float(
         getattr(cfg, "teacher_policy_logit_residual_scale", 1.0) or 1.0
     )
+    module._teacher_policy_residual_logit_cap = float(
+        getattr(cfg, "teacher_policy_residual_logit_cap", 0.0) or 0.0
+    )
     module._teacher_policy_blend_coef = float(getattr(cfg, "teacher_policy_blend_coef", 0.0) or 0.0)
     module._teacher_policy_fallback_confidence = float(
         getattr(cfg, "teacher_policy_fallback_confidence", 0.0) or 0.0
@@ -488,6 +496,7 @@ def _apply_teacher_policy_prior(module: Any, action_logits: torch.Tensor) -> tup
         student_logits,
         teacher_logits,
         getattr(module, "_teacher_policy_logit_residual_scale", 1.0),
+        getattr(module, "_teacher_policy_residual_logit_cap", 0.0),
     )
     student_probs = torch.softmax(residual_logits, dim=-1)
     teacher_probs = torch.softmax(teacher_logits, dim=-1)
