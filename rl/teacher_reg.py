@@ -20,6 +20,20 @@ def _teacher_enabled(cfg: Any) -> bool:
     return bool(getattr(cfg, "teacher_bc_path", None)) and float(getattr(cfg, "teacher_loss_coef", 0.0) or 0.0) > 0.0
 
 
+def _scheduled_teacher_coef(self) -> float:
+    start = float(getattr(self, "teacher_loss_coef", 0.0) or 0.0)
+    final = float(getattr(self, "teacher_loss_final_coef", 0.0) or 0.0)
+    warmup = int(getattr(self, "teacher_loss_warmup_env_steps", 0) or 0)
+    decay = int(getattr(self, "teacher_loss_decay_env_steps", 0) or 0)
+    if decay <= 0:
+        return start
+    env_steps = int(getattr(self, "env_steps", 0) or 0)
+    if env_steps <= warmup:
+        return start
+    progress = min(1.0, max(0.0, (env_steps - warmup) / decay))
+    return start + (final - start) * progress
+
+
 def _anchor_named_parameters(self):
     actor_critic = getattr(self, "actor_critic", None)
     if actor_critic is None:
@@ -99,6 +113,9 @@ def patch_sample_factory_teacher_reg() -> None:
         self.teacher_action_boosts = _parse_teacher_action_boosts(
             str(getattr(self.cfg, "teacher_action_boosts", "") or "")
         )
+        self.teacher_loss_final_coef = float(getattr(self.cfg, "teacher_loss_final_coef", 0.0) or 0.0)
+        self.teacher_loss_warmup_env_steps = int(getattr(self.cfg, "teacher_loss_warmup_env_steps", 0) or 0)
+        self.teacher_loss_decay_env_steps = int(getattr(self.cfg, "teacher_loss_decay_env_steps", 0) or 0)
         self.param_anchor_coef = float(getattr(self.cfg, "param_anchor_coef", 0.0) or 0.0)
         self.param_anchor_tensors = {}
         if self.teacher_loss_type not in {"ce", "kl"}:
@@ -106,9 +123,9 @@ def patch_sample_factory_teacher_reg() -> None:
         if _teacher_enabled(self.cfg):
             if getattr(self.cfg, "use_rnn", False):
                 raise ValueError("Teacher-regularized APPO is only supported on the non-RNN path")
-            input_dim = observation_dim(getattr(self.cfg, "observation_version", "v1"))
             payload = torch.load(self.teacher_bc_path, map_location=self.device)
             metadata = payload.get("metadata", {})
+            input_dim = int(metadata.get("input_dim", observation_dim(getattr(self.cfg, "observation_version", "v1"))))
             hidden_size = int(metadata.get("hidden_size", 256))
             teacher = BCPolicyMLP(input_dim=input_dim, hidden_size=hidden_size)
             teacher.load_state_dict(payload["state_dict"])
@@ -161,7 +178,7 @@ def patch_sample_factory_teacher_reg() -> None:
                 teacher_loss_all = teacher_loss_all * weight
 
             teacher_loss = masked_select(teacher_loss_all, mb.valids, num_invalids).mean()
-            teacher_loss = teacher_loss * self.teacher_loss_coef
+            teacher_loss = teacher_loss * _scheduled_teacher_coef(self)
 
             student_actions = torch.argmax(student_logits, dim=-1)
             agreement_all = (student_actions == teacher_actions).float()

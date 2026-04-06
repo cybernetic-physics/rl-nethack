@@ -6,6 +6,8 @@ exists today.
 The short version:
 
 - this repo now has a **real APPO backend** for low-level RL training,
+- it now also has an **offline short-horizon world-model path** that can
+  augment policy features,
 - it also has:
   - supervised fine-tuning for a forward model,
   - gameplay rollout code for collecting training data,
@@ -22,6 +24,18 @@ repo still contains older non-RL and pre-RL systems.
 ## 1. What Is Actually Trained Today
 
 There are now **two distinct training paths** in the repo.
+
+The repo also now has a third learned component that sits between imitation and
+RL:
+
+- a **short-horizon latent world model**
+
+So the practical stack is now:
+
+1. forward-model SFT
+2. BC / behavior-reg teacher training
+3. world-model training and feature augmentation
+4. teacher-regularized APPO
 
 ### Path A: forward-model supervised training
 
@@ -82,6 +96,43 @@ The APPO path does have:
 
 So the repo now has **real learned RL**, but only in this new RL subtree.
 
+### Path C: short-horizon world-model training
+
+This is in:
+
+- [rl/world_model.py](/home/luc/rl-nethack/rl/world_model.py)
+- [rl/world_model_dataset.py](/home/luc/rl-nethack/rl/world_model_dataset.py)
+- [rl/train_world_model.py](/home/luc/rl-nethack/rl/train_world_model.py)
+- [rl/world_model_eval.py](/home/luc/rl-nethack/rl/world_model_eval.py)
+- [rl/world_model_features.py](/home/luc/rl-nethack/rl/world_model_features.py)
+
+This path trains a small MLP world model on trace rows. It is **not** a
+Dreamer-style end-to-end RL replacement. It is a short-horizon predictive model
+used to improve feature quality.
+
+The world model currently learns from trace tuples:
+
+- current feature vector
+- current action
+- current task / skill
+- future feature vector after `K` steps
+- cumulative reward over that short horizon
+- done-within-horizon flag
+
+The current model has:
+
+- an encoder producing a latent state
+- a transition model conditioned on action and skill
+- heads for:
+  - future features
+  - reward
+  - done
+  - current-feature reconstruction
+  - current-action classification
+
+That last pair matters: they were added specifically because a pure predictive
+latent was too weak as a policy feature.
+
 
 ## 2. What "Rollout" Means In This Repo
 
@@ -97,6 +148,17 @@ In this repo today, a "rollout" usually means:
 - or score task behavior.
 
 There are now four main rollout/training systems.
+
+With the world-model path added, there are effectively **five** systems:
+
+1. SFT data generation
+2. counterfactual branching
+3. task harness / task-greedy control
+4. BC / behavior-reg / teacher traces
+5. APPO RL
+
+The world model itself trains on trace datasets produced by those systems. It
+does not collect its own environment rollouts.
 
 
 ## 3. System A: LLM / Policy Data Generation
@@ -258,6 +320,173 @@ It defines shaped task rewards for:
 - `explore`
 - `survive`
 - `combat`
+
+## 6. System D: BC / Teacher Policies
+
+This is in:
+
+- [rl/train_bc.py](/home/luc/rl-nethack/rl/train_bc.py)
+- [rl/bc_model.py](/home/luc/rl-nethack/rl/bc_model.py)
+- [rl/evaluate_bc.py](/home/luc/rl-nethack/rl/evaluate_bc.py)
+- [rl/train_behavior_reg.py](/home/luc/rl-nethack/rl/train_behavior_reg.py)
+
+This path is still the strongest aligned policy path in the repo.
+
+What it does:
+
+- train a policy from trace rows with action masking
+- optionally use stronger offline behavior-regularized training
+- evaluate either:
+  - live in NLE, or
+  - deterministically on trace datasets
+
+The trusted metric is still deterministic trace match, not live reward.
+
+That matters for the world-model work too, because the world model is judged by
+whether it helps the teacher/policy match traces better, not by whether its raw
+prediction loss is low.
+
+
+## 7. System E: World-Model Feature Augmentation
+
+This is the new bridge between offline training and RL.
+
+### What it does
+
+The world model can now be used in three modes:
+
+- `replace`
+  - replace the original feature vector with the latent only
+- `concat`
+  - append the latent to the original feature vector
+- `concat_aux`
+  - append:
+    - the latent
+    - the action-logit auxiliary head
+    to the original feature vector
+
+`concat_aux` is the only mode that currently looks promising.
+
+### How it helps
+
+The world model helps the repo in a narrower way than a full model-based RL
+system.
+
+It helps by giving the policy a feature space that tries to encode:
+
+- short-horizon future structure
+- action-relevant latent structure
+- some current-state reconstruction pressure
+
+So in practice the world model is being used as:
+
+- **representation learning**
+- **feature augmentation**
+
+not as:
+
+- a standalone planner
+- a replacement RL algorithm
+
+### Why we added reconstruction and action heads
+
+The first world-model version only predicted short-horizon future outcomes.
+That produced latents that were too lossy for policy learning.
+
+Symptoms:
+
+- BC on latent-only traces collapsed badly
+- simple latent concatenation also underperformed
+
+So the current world model was changed to also predict:
+
+- current features
+- current action
+
+This makes the latent carry more policy-relevant information.
+
+### What is the current status?
+
+On older `v2` traces, world-model features are still weak.
+
+On the stronger `v4` teacher traces, `concat_aux` is finally good enough to be
+useful:
+
+- offline BC on held-out transformed traces reached about `0.9375` trace match
+
+That is strong enough to say the feature path works.
+
+But online RL still drifts once training starts. So the world model currently:
+
+- helps **representation**
+- does **not** yet solve objective drift in APPO
+
+
+## 8. How The Live RL Env Uses The World Model
+
+The live RL env path is:
+
+- [rl/sf_env.py](/home/luc/rl-nethack/rl/sf_env.py)
+- [rl/config.py](/home/luc/rl-nethack/rl/config.py)
+- [rl/train_appo.py](/home/luc/rl-nethack/rl/train_appo.py)
+- [rl/trainer.py](/home/luc/rl-nethack/rl/trainer.py)
+
+The env now supports:
+
+- `world_model_path`
+- `world_model_feature_mode`
+
+So APPO can train directly on:
+
+- the base observation encoding, or
+- the augmented observation produced by the world model
+
+This was the important integration step. Before that, the offline transformed
+trace path and the live env path were not actually using the same feature space.
+
+That mismatch is now fixed.
+
+
+## 9. What The World Model Does Not Do Yet
+
+The repo does **not** yet have:
+
+- imagination rollouts inside RL
+- Dreamer-style latent planning
+- MuZero-style search
+- skill-level world-model planning
+
+So if you are reading the code and asking "is this model-based RL now?",
+the honest answer is:
+
+- **not really**
+
+It is still mainly an imitation + teacher-regularized APPO repo, with a new
+world-model-assisted feature path.
+
+
+## 10. Current Practical Interpretation
+
+Today, the repo has:
+
+- a real APPO backend
+- a strong offline teacher path
+- a trusted deterministic trace metric
+- a working world-model feature augmentation path
+
+The main open problem is still:
+
+- online RL drifts away from the teacher too quickly
+
+So the world model currently helps us by improving the policy input space, but
+the repo is still bottlenecked by:
+
+- RL objective alignment
+- value/reward scaling at longer horizons
+- preserving the strong offline teacher during online updates
+
+That is why the world model is useful now, but not yet the main control
+mechanism.
 - `descend`
 - `resource`
 

@@ -28,6 +28,8 @@ def train_bc_model(
     lr: float = 1e-3,
     hidden_size: int = 256,
     observation_version: str = "v1",
+    world_model_path: str | None = None,
+    world_model_feature_mode: str | None = None,
 ) -> dict:
     if not rows:
         raise ValueError("No trace rows to train on")
@@ -78,6 +80,8 @@ def train_bc_model(
         "input_dim": input_dim,
         "hidden_size": hidden_size,
         "observation_version": observation_version,
+        "world_model_path": world_model_path,
+        "world_model_feature_mode": world_model_feature_mode,
         "final_loss": losses[-1],
         "train_accuracy": accuracy,
     }
@@ -93,6 +97,8 @@ def parse_args(argv=None):
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--hidden-size", type=int, default=256)
     parser.add_argument("--observation-version", type=str, default="v1")
+    parser.add_argument("--world-model-path", type=str, default=None)
+    parser.add_argument("--world-model-feature-mode", type=str, default=None)
     return parser.parse_args(argv)
 
 
@@ -106,6 +112,8 @@ def main(argv=None):
         lr=args.lr,
         hidden_size=args.hidden_size,
         observation_version=args.observation_version,
+        world_model_path=args.world_model_path,
+        world_model_feature_mode=args.world_model_feature_mode,
     )
     print(json.dumps(result, indent=2))
     return 0

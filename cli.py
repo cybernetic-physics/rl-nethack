@@ -15,6 +15,9 @@ Subcommands:
   rl-verify-traces -- Verify trace files and report if they are multi-turn
   rl-train-bc -- Train a behavior cloning policy from traces
   rl-evaluate-bc -- Evaluate a behavior cloning policy
+  rl-train-world-model -- Train a short-horizon latent world model on traces
+  rl-evaluate-world-model -- Evaluate a short-horizon latent world model
+  rl-transform-traces-world-model -- Rewrite trace features using a trained world model encoder
   rl-check-determinism -- Repeat the same evaluation and diff action traces
   rl-compare-actions -- Compare teacher, BC, and APPO on teacher-induced states
   rl-short-benchmark -- Train BC on a trace shard and run the fast debug checks
@@ -322,6 +325,7 @@ def cmd_rl_train_appo(args):
         "--num-batches-per-epoch", str(args.num_batches_per_epoch),
         "--ppo-epochs", str(args.ppo_epochs),
         "--learning-rate", str(args.learning_rate),
+        "--reward-scale", str(args.reward_scale),
         "--entropy-coeff", str(args.entropy_coeff),
         "--ppo-clip-ratio", str(args.ppo_clip_ratio),
         "--train-for-env-steps", str(args.train_for_env_steps),
@@ -331,6 +335,7 @@ def cmd_rl_train_appo(args):
         "--episodic-explore-bonus-mode", args.episodic_explore_bonus_mode,
         "--enabled-skills", args.enabled_skills,
         "--observation-version", args.observation_version,
+        "--env-max-episode-steps", str(args.env_max_episode_steps),
         "--trace-eval-top-k", str(args.trace_eval_top_k),
         "--no-rnn" if args.no_rnn else "",
         "--use-rnn" if getattr(args, "use_rnn", False) else "",
@@ -342,6 +347,10 @@ def cmd_rl_train_appo(args):
         argv.extend(["--learned-reward-path", args.learned_reward_path])
     if getattr(args, "model_hidden_size", None) is not None:
         argv.extend(["--model-hidden-size", str(args.model_hidden_size)])
+    if getattr(args, "world_model_path", None):
+        argv.extend(["--world-model-path", args.world_model_path])
+    if getattr(args, "world_model_feature_mode", None):
+        argv.extend(["--world-model-feature-mode", args.world_model_feature_mode])
     if getattr(args, "nonlinearity", None):
         argv.extend(["--nonlinearity", args.nonlinearity])
     if args.episodic_explore_bonus_enabled:
@@ -358,6 +367,12 @@ def cmd_rl_train_appo(args):
         argv.extend(["--teacher-loss-type", args.teacher_loss_type])
     if getattr(args, "teacher_action_boosts", ""):
         argv.extend(["--teacher-action-boosts", args.teacher_action_boosts])
+    if getattr(args, "teacher_loss_final_coef", 0.0):
+        argv.extend(["--teacher-loss-final-coef", str(args.teacher_loss_final_coef)])
+    if getattr(args, "teacher_loss_warmup_env_steps", 0):
+        argv.extend(["--teacher-loss-warmup-env-steps", str(args.teacher_loss_warmup_env_steps)])
+    if getattr(args, "teacher_loss_decay_env_steps", 0):
+        argv.extend(["--teacher-loss-decay-env-steps", str(args.teacher_loss_decay_env_steps)])
     if getattr(args, "param_anchor_coef", 0.0):
         argv.extend(["--param-anchor-coef", str(args.param_anchor_coef)])
     if args.trace_eval_input:
@@ -473,6 +488,10 @@ def cmd_rl_train_bc(args):
         "--hidden-size", str(args.hidden_size),
         "--observation-version", args.observation_version,
     ]
+    if args.world_model_path:
+        argv.extend(["--world-model-path", args.world_model_path])
+    if args.world_model_feature_mode:
+        argv.extend(["--world-model-feature-mode", args.world_model_feature_mode])
     return train_bc_main(argv)
 
 
@@ -495,6 +514,56 @@ def cmd_rl_evaluate_bc(args):
             max_steps=args.max_steps,
             compare_baseline=args.compare_baseline,
         )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_rl_train_world_model(args):
+    from rl.train_bc import load_trace_rows
+    from rl.train_world_model import train_world_model
+
+    rows = load_trace_rows(args.input)
+    result = train_world_model(
+        rows,
+        args.output,
+        horizon=args.horizon,
+        epochs=args.epochs,
+        lr=args.lr,
+        hidden_size=args.hidden_size,
+        latent_dim=args.latent_dim,
+        observation_version=args.observation_version,
+        reward_loss_coef=args.reward_loss_coef,
+        done_loss_coef=args.done_loss_coef,
+        reconstruction_loss_coef=args.reconstruction_loss_coef,
+        action_loss_coef=args.action_loss_coef,
+    )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_rl_evaluate_world_model(args):
+    from rl.world_model_eval import evaluate_world_model
+
+    result = evaluate_world_model(
+        args.model,
+        args.input,
+        horizon=args.horizon,
+        observation_version=args.observation_version,
+    )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_rl_transform_traces_world_model(args):
+    from rl.world_model_features import transform_trace_with_world_model
+
+    result = transform_trace_with_world_model(
+        args.input,
+        args.output,
+        args.model,
+        observation_version_suffix=args.version_suffix,
+        mode=args.mode,
+    )
     print(json.dumps(result, indent=2))
     return 0
 
@@ -1085,6 +1154,8 @@ def main():
                       help='APPO epochs per update')
     p_rl.add_argument('--learning-rate', type=float, default=3e-4,
                       help='APPO optimizer learning rate')
+    p_rl.add_argument('--reward-scale', type=float, default=0.1,
+                      help='Sample Factory reward scale applied before value learning')
     p_rl.add_argument('--entropy-coeff', type=float, default=0.01,
                       help='Entropy regularization coefficient')
     p_rl.add_argument('--ppo-clip-ratio', type=float, default=0.1,
@@ -1110,6 +1181,13 @@ def main():
                       help='Comma-separated skill list')
     p_rl.add_argument('--observation-version', type=str, default='v2',
                       help='Observation encoder version (v1, v2, or v3)')
+    p_rl.add_argument('--world-model-path', type=str, default=None,
+                      help='Optional trained world-model checkpoint used to augment online observations')
+    p_rl.add_argument('--world-model-feature-mode', type=str, default=None,
+                      choices=['replace', 'concat', 'concat_aux'],
+                      help='How to augment online observations with the world model')
+    p_rl.add_argument('--env-max-episode-steps', type=int, default=5000,
+                      help='Episode horizon for RL training/evaluation envs')
     p_rl.add_argument('--model-hidden-size', type=int, default=None,
                       help='Optional actor MLP width; defaults to teacher/BC hidden size when warm-starting')
     p_rl.add_argument('--disable-input-normalization', action='store_true',
@@ -1126,6 +1204,12 @@ def main():
                       help='Teacher regularization loss type')
     p_rl.add_argument('--teacher-action-boosts', type=str, default='',
                       help='Optional comma-separated action=multiplier boosts for teacher CE/KL, e.g. west=2.0,south=1.5')
+    p_rl.add_argument('--teacher-loss-final-coef', type=float, default=0.0,
+                      help='Optional final teacher coefficient after scheduled decay; 0 keeps static teacher loss')
+    p_rl.add_argument('--teacher-loss-warmup-env-steps', type=int, default=0,
+                      help='Optional env-step warmup before teacher-loss decay starts')
+    p_rl.add_argument('--teacher-loss-decay-env-steps', type=int, default=0,
+                      help='Optional env-step linear decay duration from teacher-loss-coef to teacher-loss-final-coef')
     p_rl.add_argument('--param-anchor-coef', type=float, default=0.0,
                       help='L2 anchor coefficient on warm-started encoder/policy parameters')
     p_rl.add_argument('--trace-eval-input', type=str, default=None,
@@ -1402,6 +1486,9 @@ def main():
     p_bc.add_argument('--lr', type=float, default=1e-3)
     p_bc.add_argument('--hidden-size', type=int, default=256)
     p_bc.add_argument('--observation-version', type=str, default='v1')
+    p_bc.add_argument('--world-model-path', type=str, default=None)
+    p_bc.add_argument('--world-model-feature-mode', type=str, default=None,
+                      choices=['replace', 'concat', 'concat_aux'])
 
     p_bc_eval = subparsers.add_parser('rl-evaluate-bc', help='Evaluate a behavior cloning policy')
     p_bc_eval.add_argument('--model', type=str, required=True)
@@ -1412,6 +1499,33 @@ def main():
     p_bc_eval.add_argument('--compare-baseline', action='store_true')
     p_bc_eval.add_argument('--trace-input', type=str, default=None,
                            help='Optional trace JSONL for deterministic policy evaluation')
+
+    p_wm = subparsers.add_parser('rl-train-world-model', help='Train a short-horizon latent world model on traces')
+    p_wm.add_argument('--input', type=str, required=True)
+    p_wm.add_argument('--output', type=str, required=True)
+    p_wm.add_argument('--horizon', type=int, default=8)
+    p_wm.add_argument('--epochs', type=int, default=20)
+    p_wm.add_argument('--lr', type=float, default=1e-3)
+    p_wm.add_argument('--hidden-size', type=int, default=256)
+    p_wm.add_argument('--latent-dim', type=int, default=128)
+    p_wm.add_argument('--observation-version', type=str, default=None)
+    p_wm.add_argument('--reward-loss-coef', type=float, default=1.0)
+    p_wm.add_argument('--done-loss-coef', type=float, default=0.5)
+    p_wm.add_argument('--reconstruction-loss-coef', type=float, default=1.0)
+    p_wm.add_argument('--action-loss-coef', type=float, default=0.25)
+
+    p_wm_eval = subparsers.add_parser('rl-evaluate-world-model', help='Evaluate a short-horizon latent world model')
+    p_wm_eval.add_argument('--model', type=str, required=True)
+    p_wm_eval.add_argument('--input', type=str, required=True)
+    p_wm_eval.add_argument('--horizon', type=int, default=8)
+    p_wm_eval.add_argument('--observation-version', type=str, default=None)
+
+    p_wm_xform = subparsers.add_parser('rl-transform-traces-world-model', help='Rewrite trace features using a trained world model encoder')
+    p_wm_xform.add_argument('--model', type=str, required=True)
+    p_wm_xform.add_argument('--input', type=str, required=True)
+    p_wm_xform.add_argument('--output', type=str, required=True)
+    p_wm_xform.add_argument('--version-suffix', type=str, default='wm')
+    p_wm_xform.add_argument('--mode', type=str, default='replace', choices=['replace', 'concat', 'concat_aux'])
 
     # --- manifest ---
     p_man = subparsers.add_parser('manifest', help='Build and save a training manifest')
@@ -1508,6 +1622,12 @@ def main():
             return cmd_rl_train_bc(args)
         elif args.command == 'rl-evaluate-bc':
             return cmd_rl_evaluate_bc(args)
+        elif args.command == 'rl-train-world-model':
+            return cmd_rl_train_world_model(args)
+        elif args.command == 'rl-evaluate-world-model':
+            return cmd_rl_evaluate_world_model(args)
+        elif args.command == 'rl-transform-traces-world-model':
+            return cmd_rl_transform_traces_world_model(args)
         elif args.command == 'manifest':
             return cmd_manifest(args)
         elif args.command == 'golden-generate':

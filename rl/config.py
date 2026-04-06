@@ -7,10 +7,12 @@ from dataclasses import asdict, dataclass, field
 class EnvConfig:
     env_id: str = "rl_nethack_skill"
     seed: int = 42
-    max_episode_steps: int = 200
+    max_episode_steps: int = 5000
     use_memory_tracker: bool = True
     active_skill_bootstrap: str = "explore"
     observation_version: str = "v1"
+    world_model_path: str | None = None
+    world_model_feature_mode: str | None = None
     enforce_action_mask: bool = True
     invalid_action_fallback: str = "wait"
 
@@ -41,6 +43,9 @@ class APPOConfig:
     teacher_loss_type: str = "ce"
     teacher_bc_path: str | None = None
     teacher_action_boosts: str = ""
+    teacher_loss_final_coef: float = 0.0
+    teacher_loss_warmup_env_steps: int = 0
+    teacher_loss_decay_env_steps: int = 0
     param_anchor_coef: float = 0.0
     trace_eval_input: str | None = None
     trace_eval_interval_env_steps: int = 0

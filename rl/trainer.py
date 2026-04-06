@@ -50,6 +50,9 @@ class APPOTrainerScaffold:
             "teacher_loss_coef": self.config.appo.teacher_loss_coef,
             "teacher_loss_type": self.config.appo.teacher_loss_type,
             "teacher_action_boosts": self.config.appo.teacher_action_boosts,
+            "teacher_loss_final_coef": self.config.appo.teacher_loss_final_coef,
+            "teacher_loss_warmup_env_steps": self.config.appo.teacher_loss_warmup_env_steps,
+            "teacher_loss_decay_env_steps": self.config.appo.teacher_loss_decay_env_steps,
             "param_anchor_coef": self.config.appo.param_anchor_coef,
             "trace_eval_input": self.config.appo.trace_eval_input,
             "trace_eval_interval_env_steps": self.config.appo.trace_eval_interval_env_steps,
@@ -58,6 +61,8 @@ class APPOTrainerScaffold:
             "episodic_explore_bonus_scale": self.config.reward.episodic_explore_bonus_scale,
             "episodic_explore_bonus_mode": self.config.reward.episodic_explore_bonus_mode,
             "observation_version": self.config.env.observation_version,
+            "world_model_path": self.config.env.world_model_path,
+            "world_model_feature_mode": self.config.env.world_model_feature_mode,
             "model": asdict(self.model_spec),
             "dependency_status": self.dependency_status(),
         }
@@ -105,6 +110,9 @@ class APPOTrainerScaffold:
             f"--teacher_loss_type={cfg.appo.teacher_loss_type}",
             f"--teacher_bc_path={cfg.appo.teacher_bc_path or ''}",
             f"--teacher_action_boosts={cfg.appo.teacher_action_boosts}",
+            f"--teacher_loss_final_coef={cfg.appo.teacher_loss_final_coef}",
+            f"--teacher_loss_warmup_env_steps={cfg.appo.teacher_loss_warmup_env_steps}",
+            f"--teacher_loss_decay_env_steps={cfg.appo.teacher_loss_decay_env_steps}",
             f"--param_anchor_coef={cfg.appo.param_anchor_coef}",
             f"--trace_eval_input={cfg.appo.trace_eval_input or ''}",
             f"--trace_eval_interval_env_steps={cfg.appo.trace_eval_interval_env_steps}",
@@ -112,6 +120,8 @@ class APPOTrainerScaffold:
             f"--use_rnn={str(cfg.model.use_lstm)}",
             f"--env_max_episode_steps={cfg.env.max_episode_steps}",
             f"--observation_version={cfg.env.observation_version}",
+            f"--world_model_path={cfg.env.world_model_path or ''}",
+            f"--world_model_feature_mode={cfg.env.world_model_feature_mode or ''}",
             f"--reward_source={cfg.reward.source}",
             f"--intrinsic_reward_weight={cfg.reward.intrinsic_weight}",
             f"--extrinsic_reward_weight={cfg.reward.extrinsic_weight}",
@@ -202,6 +212,8 @@ class APPOTrainerScaffold:
         parser, _ = parse_sf_args(argv)
         parser.add_argument("--env_max_episode_steps", type=int, default=self.config.env.max_episode_steps)
         parser.add_argument("--observation_version", type=str, default=self.config.env.observation_version)
+        parser.add_argument("--world_model_path", type=str, default=self.config.env.world_model_path)
+        parser.add_argument("--world_model_feature_mode", type=str, default=self.config.env.world_model_feature_mode)
         parser.add_argument("--reward_source", type=str, default=self.config.reward.source)
         parser.add_argument("--intrinsic_reward_weight", type=float, default=self.config.reward.intrinsic_weight)
         parser.add_argument("--extrinsic_reward_weight", type=float, default=self.config.reward.extrinsic_weight)
@@ -218,6 +230,9 @@ class APPOTrainerScaffold:
         parser.add_argument("--teacher_loss_coef", type=float, default=self.config.appo.teacher_loss_coef)
         parser.add_argument("--teacher_loss_type", type=str, default=self.config.appo.teacher_loss_type)
         parser.add_argument("--teacher_action_boosts", type=str, default=self.config.appo.teacher_action_boosts)
+        parser.add_argument("--teacher_loss_final_coef", type=float, default=self.config.appo.teacher_loss_final_coef)
+        parser.add_argument("--teacher_loss_warmup_env_steps", type=int, default=self.config.appo.teacher_loss_warmup_env_steps)
+        parser.add_argument("--teacher_loss_decay_env_steps", type=int, default=self.config.appo.teacher_loss_decay_env_steps)
         parser.add_argument("--param_anchor_coef", type=float, default=self.config.appo.param_anchor_coef)
         parser.add_argument("--trace_eval_input", type=str, default=self.config.appo.trace_eval_input)
         parser.add_argument("--trace_eval_interval_env_steps", type=int, default=self.config.appo.trace_eval_interval_env_steps)

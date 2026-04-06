@@ -73,8 +73,10 @@ def _load_checkpoint_payload(checkpoint_path: Path, torch_device: torch.device) 
 def _load_actor_critic(experiment: str, train_dir: str, device: str, checkpoint_path: str | None = None):
     argv = ["--algo=APPO", "--env=rl_nethack_skill", f"--experiment={experiment}", f"--train_dir={train_dir}", f"--device={device}"]
     parser, _ = parse_sf_args(argv)
-    parser.add_argument("--env_max_episode_steps", type=int, default=200)
+    parser.add_argument("--env_max_episode_steps", type=int, default=5000)
     parser.add_argument("--observation_version", type=str, default="v1")
+    parser.add_argument("--world_model_path", type=str, default=None)
+    parser.add_argument("--world_model_feature_mode", type=str, default=None)
     parser.add_argument("--reward_source", type=str, default="hand_shaped")
     parser.add_argument("--intrinsic_reward_weight", type=float, default=1.0)
     parser.add_argument("--extrinsic_reward_weight", type=float, default=0.0)
@@ -102,6 +104,8 @@ def _load_actor_critic(experiment: str, train_dir: str, device: str, checkpoint_
     env_cfg = RLConfig()
     env_cfg.env.max_episode_steps = cfg.env_max_episode_steps
     env_cfg.env.observation_version = getattr(cfg, "observation_version", "v1")
+    env_cfg.env.world_model_path = getattr(cfg, "world_model_path", None)
+    env_cfg.env.world_model_feature_mode = getattr(cfg, "world_model_feature_mode", None)
     env_cfg.options.enabled_skills = [s.strip() for s in str(cfg.enabled_skills).split(",") if s.strip()]
     env_cfg.options.scheduler = cfg.skill_scheduler
     env_cfg.options.scheduler_model_path = getattr(cfg, "scheduler_model_path", None)

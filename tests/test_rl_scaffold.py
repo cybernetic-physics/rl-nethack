@@ -15,7 +15,7 @@ from rl.sf_env import NethackSkillEnv
 from rl.options import build_skill_registry
 from rl.scheduler import SchedulerContext, build_scheduler
 from rl.trainer import APPOTrainerScaffold
-from rl.train_bc import train_bc_model
+from rl.train_bc import load_trace_rows, train_bc_model
 from rl.bc_model import load_bc_model
 from rl.debug_tools import check_policy_determinism, compare_actions_on_teacher_states
 from rl.trace_eval import evaluate_trace_policy, trace_disagreement_report
@@ -32,6 +32,13 @@ from rl.env_adapter import SkillEnvAdapter, EpisodeContext
 from rl.dagger import build_merged_trace_rows, run_dagger_schedule
 from rl.train_behavior_reg import train_behavior_regularized_policy
 from rl.train_appo import build_config as build_appo_config
+from rl.train_world_model import train_world_model
+from rl.world_model_dataset import build_world_model_examples, examples_to_arrays
+from rl.world_model_eval import evaluate_world_model
+from rl.world_model_features import (
+    transform_trace_with_world_model,
+    world_model_augmented_dim,
+)
 
 
 def test_skill_registry_contains_expected_skills():
@@ -70,6 +77,9 @@ def test_trainer_scaffold_includes_teacher_reg_args():
     config.appo.teacher_loss_coef = 0.25
     config.appo.teacher_loss_type = "ce"
     config.appo.teacher_action_boosts = "west=2.0,south=1.5"
+    config.appo.teacher_loss_final_coef = 0.002
+    config.appo.teacher_loss_warmup_env_steps = 1024
+    config.appo.teacher_loss_decay_env_steps = 4096
     config.appo.param_anchor_coef = 0.005
     config.appo.learning_rate = 1e-4
     config.appo.entropy_coeff = 0.0
@@ -83,6 +93,9 @@ def test_trainer_scaffold_includes_teacher_reg_args():
     assert "--teacher_loss_type=ce" in argv
     assert "--teacher_bc_path=/tmp/teacher.pt" in argv
     assert "--teacher_action_boosts=west=2.0,south=1.5" in argv
+    assert "--teacher_loss_final_coef=0.002" in argv
+    assert "--teacher_loss_warmup_env_steps=1024" in argv
+    assert "--teacher_loss_decay_env_steps=4096" in argv
     assert "--param_anchor_coef=0.005" in argv
     assert "--learning_rate=0.0001" in argv
     assert "--exploration_loss_coeff=0.0" in argv
@@ -137,6 +150,9 @@ def test_build_appo_config_infers_hidden_size_from_bc_checkpoint():
                 "teacher_loss_coef": 0.01,
                 "teacher_loss_type": "ce",
                 "teacher_action_boosts": "",
+                "teacher_loss_final_coef": 0.0,
+                "teacher_loss_warmup_env_steps": 0,
+                "teacher_loss_decay_env_steps": 0,
                 "param_anchor_coef": 0.0,
                 "trace_eval_input": None,
                 "trace_eval_interval_env_steps": 0,
@@ -327,6 +343,103 @@ def test_feature_encoder_v4_shape():
         "obs": obs,
     }
     assert encode_observation(timestep, version="v4").shape == (302,)
+
+
+def test_world_model_examples_build_k_step_windows():
+    rows = [
+        {
+            "episode_id": "ep0",
+            "step": 0,
+            "seed": 1,
+            "task": "explore",
+            "action": "north",
+            "reward": 0.1,
+            "done": False,
+            "observation_version": "v4",
+            "feature_vector": [0.0, 1.0, 2.0],
+        },
+        {
+            "episode_id": "ep0",
+            "step": 1,
+            "seed": 1,
+            "task": "explore",
+            "action": "east",
+            "reward": 0.2,
+            "done": False,
+            "observation_version": "v4",
+            "feature_vector": [1.0, 2.0, 3.0],
+        },
+        {
+            "episode_id": "ep0",
+            "step": 2,
+            "seed": 1,
+            "task": "explore",
+            "action": "south",
+            "reward": 0.3,
+            "done": False,
+            "observation_version": "v4",
+            "feature_vector": [2.0, 3.0, 4.0],
+        },
+    ]
+    examples = build_world_model_examples(rows, horizon=1, observation_version="v4")
+    assert len(examples) == 2
+    assert examples[0]["action_index"] == 0
+    assert examples[0]["task_index"] >= 0
+    assert examples[0]["cumulative_reward"] == 0.1
+    arrays = examples_to_arrays(examples)
+    assert arrays["features"].shape == (2, 3)
+    assert arrays["target_features"].shape == (2, 3)
+
+
+def test_world_model_train_and_eval_smoke():
+    rows = []
+    for step in range(6):
+        rows.append(
+            {
+                "episode_id": "ep0",
+                "step": step,
+                "seed": 42,
+                "task": "explore",
+                "action": "east" if step % 2 == 0 else "west",
+                "reward": float(step) / 10.0,
+                "done": step == 5,
+                "observation_version": "v4",
+                "feature_vector": [float(step), float(step + 1), float(step + 2), float(step % 2)],
+            }
+        )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        model_path = os.path.join(tmpdir, "world_model.pt")
+        trace_path = os.path.join(tmpdir, "trace.jsonl")
+        with open(trace_path, "w") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+        train_result = train_world_model(
+            rows,
+            model_path,
+            horizon=2,
+            epochs=2,
+            hidden_size=32,
+            latent_dim=16,
+            observation_version="v4",
+        )
+        assert train_result["num_examples"] > 0
+        eval_result = evaluate_world_model(model_path, trace_path, horizon=2, observation_version="v4")
+        assert eval_result["num_examples"] == train_result["num_examples"]
+        assert eval_result["feature_mse"] >= 0.0
+        latent_trace_path = os.path.join(tmpdir, "trace_latent.jsonl")
+        transform_result = transform_trace_with_world_model(trace_path, latent_trace_path, model_path, mode="concat")
+        assert transform_result["rows"] == len(rows)
+        transformed_rows = load_trace_rows(latent_trace_path)
+        assert len(transformed_rows[0]["feature_vector"]) == transform_result["original_feature_dim"] + transform_result["latent_dim"]
+        aux_trace_path = os.path.join(tmpdir, "trace_latent_aux.jsonl")
+        aux_result = transform_trace_with_world_model(trace_path, aux_trace_path, model_path, mode="concat_aux")
+        aux_rows = load_trace_rows(aux_trace_path)
+        assert len(aux_rows[0]["feature_vector"]) == (
+            aux_result["original_feature_dim"] + aux_result["latent_dim"] + aux_result["action_dim"]
+        )
+        assert world_model_augmented_dim(aux_result["original_feature_dim"], model_path, "concat_aux") == len(
+            aux_rows[0]["feature_vector"]
+        )
 
 
 def test_skill_env_masks_invalid_action_requests():

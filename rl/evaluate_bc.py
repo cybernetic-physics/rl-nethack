@@ -11,6 +11,8 @@ from rl.evaluate import LIVE_ENV_WARNING
 from rl.feature_encoder import encode_observation
 from rl.options import build_skill_registry
 from rl.timestep import build_policy_timestep
+from rl.world_model import load_world_model
+from rl.world_model_features import augment_feature_vector
 from src.memory_tracker import MemoryTracker
 from src.state_encoder import StateEncoder
 from src.task_harness import evaluate_task_policy
@@ -25,6 +27,11 @@ def evaluate_bc_policy(model_path: str, task: str, seeds: list[int], max_steps: 
     payload = torch.load(model_path, map_location="cpu")
     metadata = payload.get("metadata", {})
     observation_version = metadata.get("observation_version", "v1")
+    world_model_path = metadata.get("world_model_path")
+    world_model_feature_mode = metadata.get("world_model_feature_mode")
+    world_model_inference = (
+        load_world_model(world_model_path) if world_model_path and world_model_feature_mode else None
+    )
     episodes = []
 
     for seed in seeds:
@@ -55,6 +62,8 @@ def evaluate_bc_policy(model_path: str, task: str, seeds: list[int], max_steps: 
                 obs=obs,
             )
             features = encode_observation(timestep, version=observation_version)
+            if world_model_inference is not None and world_model_feature_mode:
+                features = augment_feature_vector(features, world_model_inference, mode=world_model_feature_mode)
             action_name = policy.act(features, allowed_actions=allowed_actions)
             obs, reward, terminated, truncated, _ = env.step(action_map.get(action_name, action_map["wait"]))
             memory.update(obs)

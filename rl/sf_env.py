@@ -11,6 +11,8 @@ from rl.config import RLConfig
 from rl.env_adapter import SkillEnvAdapter
 from rl.feature_encoder import ACTION_SET, encode_observation, observation_dim
 from rl.rewards import RewardInputs, build_reward_source
+from rl.world_model import load_world_model
+from rl.world_model_features import augment_feature_vector, world_model_augmented_dim
 
 
 @dataclass
@@ -34,10 +36,21 @@ class NethackSkillEnv(gym.Env):
         self.action_map = _build_action_map()
         self.reward_source = build_reward_source(config.reward.source, config.reward.learned_reward_path)
         self.observation_version = config.env.observation_version
+        self.world_model_path = config.env.world_model_path
+        self.world_model_feature_mode = config.env.world_model_feature_mode
+        self.world_model_inference = (
+            load_world_model(self.world_model_path) if self.world_model_path and self.world_model_feature_mode else None
+        )
         self.observation_space = spaces.Box(
             low=-10.0,
             high=10.0,
-            shape=(observation_dim(self.observation_version),),
+            shape=(
+                world_model_augmented_dim(
+                    observation_dim(self.observation_version),
+                    self.world_model_path,
+                    self.world_model_feature_mode,
+                ),
+            ),
             dtype=np.float32,
         )
         self.action_space = spaces.Discrete(len(ACTION_SET))
@@ -47,7 +60,7 @@ class NethackSkillEnv(gym.Env):
         del options
         self._episode_steps = 0
         timestep = self.adapter.reset(seed=seed)
-        obs = encode_observation(timestep, version=self.observation_version)
+        obs = self._encode_features(timestep)
         info = {
             "active_skill": timestep["active_skill"],
             "allowed_actions": timestep["allowed_actions"],
@@ -102,7 +115,7 @@ class NethackSkillEnv(gym.Env):
         self._episode_steps += 1
         if self._episode_steps >= self.config.env.max_episode_steps:
             truncated = True
-        obs = encode_observation(timestep, version=self.observation_version)
+        obs = self._encode_features(timestep)
         info = dict(info)
         info.update(
             {
@@ -122,6 +135,12 @@ class NethackSkillEnv(gym.Env):
         )
         return obs, float(total_reward), bool(terminated), bool(truncated), info
 
+    def _encode_features(self, timestep: dict) -> np.ndarray:
+        features = encode_observation(timestep, version=self.observation_version)
+        if self.world_model_inference is None or not self.world_model_feature_mode:
+            return features
+        return augment_feature_vector(features, self.world_model_inference, mode=self.world_model_feature_mode)
+
     def close(self):
         self.adapter.close()
 
@@ -135,6 +154,10 @@ def make_nethack_skill_env(full_env_name, cfg, env_config, render_mode=None, **k
         cfg, "active_skill_bootstrap", rl_config.env.active_skill_bootstrap
     )
     rl_config.env.observation_version = getattr(cfg, "observation_version", rl_config.env.observation_version)
+    rl_config.env.world_model_path = getattr(cfg, "world_model_path", rl_config.env.world_model_path)
+    rl_config.env.world_model_feature_mode = getattr(
+        cfg, "world_model_feature_mode", rl_config.env.world_model_feature_mode
+    )
     rl_config.env.enforce_action_mask = str(getattr(cfg, "enforce_action_mask", rl_config.env.enforce_action_mask)).lower() == "true"
     rl_config.env.invalid_action_fallback = getattr(cfg, "invalid_action_fallback", rl_config.env.invalid_action_fallback)
     rl_config.reward.source = getattr(cfg, "reward_source", rl_config.reward.source)
