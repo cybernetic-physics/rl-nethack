@@ -746,6 +746,12 @@ More specifically:
   - using `s=0.3` with the same split-base confidence fallback still tied `0.9875`, but only at `256`,
   - retained late and final checkpoints both settled at `0.9625`,
   - so logit-space residual mixing is substantially healthier than probability blending, but it is still weaker than the plain split-base confidence-fallback baseline and is not yet a real improver,
+- a replay audit plus targeted replay-weight probe sharpened the next bottleneck:
+  - the current trusted replay source `/tmp/x100_v4_train_traces.jsonl` has only `200` rows and no `behavior_action`, loop-risk, or failure annotations,
+  - that means current replay modes like `disagreement` and `mixed` are much weaker than they look; on this dataset they mostly collapse to static teacher-action weighting,
+  - a new `teacher_replay_action_boosts` path was added and tested with `east=2.0,south=2.0`, because the best split-base fallback branch only drifts on a tiny held-out `east <-> south` confusion pair,
+  - that branch still only tied `0.9875`, now at `1280`, and then fell to `0.9625` on both retained late checkpoints,
+  - so static teacher-action replay weighting is not enough; the next replay / DAgger gains need richer relabeled student-state data, not just different weights on the small teacher-only replay file,
 - the most plausible next frontier is a more teacher-aware and behavior-constrained online improver.
 
 ## Practical Research Rules Going Forward

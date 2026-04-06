@@ -412,6 +412,8 @@ def cmd_rl_train_appo(args):
         argv.extend(["--teacher-replay-priority-power", str(args.teacher_replay_priority_power)])
     if getattr(args, "teacher_replay_source_mode", "uniform") != "uniform":
         argv.extend(["--teacher-replay-source-mode", str(args.teacher_replay_source_mode)])
+    if getattr(args, "teacher_replay_action_boosts", ""):
+        argv.extend(["--teacher-replay-action-boosts", str(args.teacher_replay_action_boosts)])
     if getattr(args, "teacher_policy_logit_residual_scale", 1.0) != 1.0:
         argv.extend(["--teacher-policy-logit-residual-scale", str(args.teacher_policy_logit_residual_scale)])
     if getattr(args, "teacher_policy_blend_coef", 0.0) != 0.0:
@@ -1467,6 +1469,8 @@ def main():
                       help='Reserved replay priority exponent; 1.0 keeps uniform weighting until prioritized replay is enabled')
     p_rl.add_argument('--teacher-replay-source-mode', type=str, default='uniform',
                       help='Reserved replay source mode for prioritized replay experiments')
+    p_rl.add_argument('--teacher-replay-action-boosts', type=str, default='',
+                      help='Optional comma-separated teacher replay action=multiplier boosts, e.g. east=2.0,south=2.0')
     p_rl.add_argument('--teacher-policy-logit-residual-scale', type=float, default=1.0,
                       help='Logit-space residual scale in teacher + s*(student-teacher); 1.0 keeps the raw student policy')
     p_rl.add_argument('--teacher-policy-blend-coef', type=float, default=0.0,

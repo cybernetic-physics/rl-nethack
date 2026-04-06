@@ -40,12 +40,18 @@ def _row_replay_flags(row: dict) -> dict[str, float]:
     }
 
 
-def _replay_priority_weights(rows: list[dict], source_mode: str, priority_power: float) -> torch.Tensor:
+def _replay_priority_weights(
+    rows: list[dict],
+    source_mode: str,
+    priority_power: float,
+    action_boosts: dict[int, float] | None = None,
+) -> torch.Tensor:
     if source_mode not in {"uniform", "weak_action", "disagreement", "mixed"}:
         raise ValueError(f"Unsupported teacher replay source mode: {source_mode}")
 
     base = torch.ones(len(rows), dtype=torch.float32)
-    if source_mode == "uniform":
+    action_boosts = action_boosts or {}
+    if source_mode == "uniform" and not action_boosts:
         return base
 
     weights = []
@@ -55,12 +61,16 @@ def _replay_priority_weights(rows: list[dict], source_mode: str, priority_power:
         weak_action = flags["is_weak_action"]
         loop_risk = flags["is_loop_risk"]
         failure_slice = flags["is_failure_slice"]
-        if source_mode == "disagreement":
+        if source_mode == "uniform":
+            weight = 1.0
+        elif source_mode == "disagreement":
             weight = 1.0 + disagreement + 0.5 * loop_risk + 0.5 * failure_slice
         elif source_mode == "weak_action":
             weight = 1.0 + weak_action + 0.5 * disagreement
         else:  # mixed
             weight = 1.0 + disagreement + weak_action + 0.5 * loop_risk + 0.5 * failure_slice
+        action_idx = int(flags["teacher_action_index"])
+        weight *= float(action_boosts.get(action_idx, 1.0))
         weights.append(weight)
 
     weight_tensor = torch.tensor(weights, dtype=torch.float32)
@@ -72,7 +82,13 @@ def _replay_priority_weights(rows: list[dict], source_mode: str, priority_power:
     return weight_tensor
 
 
-def _load_teacher_replay_tensors(path: str, device: torch.device, source_mode: str, priority_power: float) -> dict[str, torch.Tensor]:
+def _load_teacher_replay_tensors(
+    path: str,
+    device: torch.device,
+    source_mode: str,
+    priority_power: float,
+    action_boosts: dict[int, float] | None = None,
+) -> dict[str, torch.Tensor]:
     rows = []
     with open(path, "r") as f:
         for line in f:
@@ -95,7 +111,12 @@ def _load_teacher_replay_tensors(path: str, device: torch.device, source_mode: s
         device=device,
     )
     flags = [_row_replay_flags(row) for row in rows]
-    weights = _replay_priority_weights(rows, source_mode=source_mode, priority_power=priority_power).to(device)
+    weights = _replay_priority_weights(
+        rows,
+        source_mode=source_mode,
+        priority_power=priority_power,
+        action_boosts=action_boosts,
+    ).to(device)
     return {
         "features": features,
         "actions": actions,
@@ -447,6 +468,9 @@ def patch_sample_factory_teacher_reg() -> None:
         self.teacher_replay_batch_size = int(getattr(self.cfg, "teacher_replay_batch_size", 128) or 128)
         self.teacher_replay_priority_power = float(getattr(self.cfg, "teacher_replay_priority_power", 1.0) or 1.0)
         self.teacher_replay_source_mode = str(getattr(self.cfg, "teacher_replay_source_mode", "uniform") or "uniform")
+        self.teacher_replay_action_boosts = _parse_teacher_action_boosts(
+            str(getattr(self.cfg, "teacher_replay_action_boosts", "") or "")
+        )
         self.param_anchor_coef = float(getattr(self.cfg, "param_anchor_coef", 0.0) or 0.0)
         self.actor_loss_scale = float(getattr(self.cfg, "actor_loss_scale", 1.0) or 1.0)
         self.actor_loss_final_scale = float(getattr(self.cfg, "actor_loss_final_scale", 1.0) or 1.0)
@@ -469,6 +493,7 @@ def patch_sample_factory_teacher_reg() -> None:
                 self.device,
                 source_mode=self.teacher_replay_source_mode,
                 priority_power=self.teacher_replay_priority_power,
+                action_boosts=self.teacher_replay_action_boosts,
             )
         if self.param_anchor_coef > 0.0:
             self.param_anchor_tensors = {
