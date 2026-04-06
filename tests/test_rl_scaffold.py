@@ -44,6 +44,8 @@ from rl.teacher_reg import (
     _mask_logits_with_action_mask,
     _parse_teacher_bc_paths,
     _parse_teacher_action_boosts,
+    _teacher_policy_blend,
+    _teacher_policy_fallback_mask,
     _scheduled_actor_loss_scale,
     _scheduled_teacher_replay_coef,
     _row_replay_flags,
@@ -181,6 +183,36 @@ def test_teacher_reg_masks_invalid_teacher_and_student_preferences():
     assert ACTION_SET[int(masked_actions[1].item())] == "south"
 
 
+def test_teacher_policy_blend_and_fallback_helpers():
+    student_probs = torch.tensor(
+        [
+            [0.70, 0.20, 0.10],
+            [0.40, 0.35, 0.25],
+        ],
+        dtype=torch.float32,
+    )
+    teacher_probs = torch.tensor(
+        [
+            [0.10, 0.80, 0.10],
+            [0.05, 0.90, 0.05],
+        ],
+        dtype=torch.float32,
+    )
+    blended = _teacher_policy_blend(student_probs, teacher_probs, 0.25)
+    assert torch.allclose(
+        blended,
+        torch.tensor(
+            [
+                [0.55, 0.35, 0.10],
+                [0.3125, 0.4875, 0.20],
+            ],
+            dtype=torch.float32,
+        ),
+    )
+    fallback_mask = _teacher_policy_fallback_mask(student_probs, 0.5)
+    assert fallback_mask.tolist() == [False, True]
+
+
 def test_cli_mine_reset_slice_forwards_signature(monkeypatch):
     captured = {}
 
@@ -282,6 +314,99 @@ def test_cli_train_bc_forwards_explicit_device(monkeypatch):
     assert "--select-by-heldout" in argv
 
 
+def test_cli_rl_train_appo_forwards_teacher_prior_controls(monkeypatch):
+    captured = {}
+
+    def fake_train(argv):
+        captured["argv"] = list(argv)
+        return 0
+
+    monkeypatch.setattr("rl.train_appo.main", fake_train)
+    args = argparse.Namespace(
+        experiment="exp",
+        train_dir="train_dir/rl",
+        serial_mode=False,
+        async_rl=False,
+        num_workers=1,
+        num_envs_per_worker=1,
+        rollout_length=8,
+        recurrence=8,
+        batch_size=8,
+        num_batches_per_epoch=1,
+        ppo_epochs=1,
+        learning_rate=3e-4,
+        gamma=0.99,
+        gae_lambda=0.9,
+        value_loss_coeff=0.1,
+        reward_scale=0.005,
+        entropy_coeff=0.01,
+        ppo_clip_ratio=0.1,
+        train_for_env_steps=32,
+        scheduler="rule_based",
+        reward_source="hand_shaped",
+        learned_reward_path=None,
+        proxy_reward_path=None,
+        proxy_reward_weight=1.0,
+        episodic_explore_bonus_enabled=False,
+        episodic_explore_bonus_scale=0.0,
+        episodic_explore_bonus_mode="state_hash",
+        scheduler_model_path=None,
+        enabled_skills="explore",
+        observation_version="v4",
+        world_model_path=None,
+        world_model_feature_mode=None,
+        env_max_episode_steps=500,
+        model_hidden_size=None,
+        model_num_layers=None,
+        separate_actor_critic=False,
+        disable_input_normalization=False,
+        nonlinearity=None,
+        bc_init_path="/tmp/teacher.pt",
+        appo_init_checkpoint_path=None,
+        teacher_bc_path="/tmp/teacher.pt",
+        teacher_report_path=None,
+        teacher_loss_coef=0.01,
+        teacher_loss_type="ce",
+        teacher_action_boosts="",
+        teacher_loss_final_coef=0.0,
+        teacher_loss_warmup_env_steps=0,
+        teacher_loss_decay_env_steps=0,
+        teacher_replay_trace_input=None,
+        teacher_replay_coef=0.0,
+        teacher_replay_final_coef=0.0,
+        teacher_replay_warmup_env_steps=0,
+        teacher_replay_decay_env_steps=0,
+        teacher_replay_batch_size=128,
+        teacher_replay_priority_power=1.0,
+        teacher_replay_source_mode="uniform",
+        teacher_policy_blend_coef=0.2,
+        teacher_policy_fallback_confidence=0.6,
+        param_anchor_coef=0.0,
+        actor_loss_scale=1.0,
+        actor_loss_final_scale=1.0,
+        actor_loss_warmup_env_steps=0,
+        actor_loss_decay_env_steps=0,
+        trace_eval_input=None,
+        trace_eval_interval_env_steps=0,
+        trace_eval_top_k=5,
+        save_every_sec=120,
+        save_best_every_sec=5,
+        no_rnn=True,
+        use_rnn=False,
+        disable_action_mask=False,
+        write_plan=None,
+        improver_report_output=None,
+        dry_run=False,
+    )
+    rc = cli_module.cmd_rl_train_appo(args)
+    assert rc == 0
+    argv = captured["argv"]
+    assert "--teacher-policy-blend-coef" in argv
+    assert argv[argv.index("--teacher-policy-blend-coef") + 1] == "0.2"
+    assert "--teacher-policy-fallback-confidence" in argv
+    assert argv[argv.index("--teacher-policy-fallback-confidence") + 1] == "0.6"
+
+
 def test_trainer_scaffold_renders_plan():
     config = RLConfig()
     trainer = APPOTrainerScaffold(config)
@@ -300,6 +425,8 @@ def test_trainer_scaffold_includes_teacher_reg_args():
     config.appo.teacher_loss_final_coef = 0.002
     config.appo.teacher_loss_warmup_env_steps = 1024
     config.appo.teacher_loss_decay_env_steps = 4096
+    config.appo.teacher_policy_blend_coef = 0.15
+    config.appo.teacher_policy_fallback_confidence = 0.55
     config.appo.param_anchor_coef = 0.005
     config.appo.learning_rate = 1e-4
     config.appo.entropy_coeff = 0.0
@@ -318,6 +445,8 @@ def test_trainer_scaffold_includes_teacher_reg_args():
     assert "--teacher_loss_final_coef=0.002" in argv
     assert "--teacher_loss_warmup_env_steps=1024" in argv
     assert "--teacher_loss_decay_env_steps=4096" in argv
+    assert "--teacher_policy_blend_coef=0.15" in argv
+    assert "--teacher_policy_fallback_confidence=0.55" in argv
     assert "--param_anchor_coef=0.005" in argv
     assert "--learning_rate=0.0001" in argv
     assert "--exploration_loss_coeff=0.0" in argv
@@ -385,6 +514,8 @@ def test_build_appo_config_respects_value_stability_args():
             "teacher_replay_batch_size": 128,
             "teacher_replay_priority_power": 1.7,
             "teacher_replay_source_mode": "disagreement",
+            "teacher_policy_blend_coef": 0.2,
+            "teacher_policy_fallback_confidence": 0.6,
             "param_anchor_coef": 0.0,
             "actor_loss_scale": 1.0,
             "actor_loss_final_scale": 1.0,
@@ -409,6 +540,8 @@ def test_build_appo_config_respects_value_stability_args():
     assert config.appo.teacher_replay_decay_env_steps == 256
     assert config.appo.teacher_replay_priority_power == 1.7
     assert config.appo.teacher_replay_source_mode == "disagreement"
+    assert config.appo.teacher_policy_blend_coef == 0.2
+    assert config.appo.teacher_policy_fallback_confidence == 0.6
     assert config.model.teacher_report_path == "/tmp/teacher_report.json"
     assert config.appo.improver_report_output == "/tmp/improver_report.json"
 

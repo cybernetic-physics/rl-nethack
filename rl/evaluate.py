@@ -15,6 +15,7 @@ from sample_factory.model.model_utils import get_rnn_size
 from rl.config import RLConfig
 from rl.feature_encoder import ACTION_SET
 from rl.sf_env import NethackSkillEnv
+from rl.teacher_reg import patch_sample_factory_teacher_reg
 from src.task_harness import evaluate_task_policy
 
 LIVE_ENV_WARNING = (
@@ -72,6 +73,7 @@ def _load_checkpoint_payload(checkpoint_path: Path, torch_device: torch.device) 
 
 def _load_actor_critic(experiment: str, train_dir: str, device: str, checkpoint_path: str | None = None):
     argv = ["--algo=APPO", "--env=rl_nethack_skill", f"--experiment={experiment}", f"--train_dir={train_dir}", f"--device={device}"]
+    patch_sample_factory_teacher_reg()
     parser, _ = parse_sf_args(argv)
     parser.add_argument("--env_max_episode_steps", type=int, default=5000)
     parser.add_argument("--observation_version", type=str, default="v1")
@@ -93,6 +95,8 @@ def _load_actor_critic(experiment: str, train_dir: str, device: str, checkpoint_
     parser.add_argument("--teacher_loss_coef", type=float, default=0.0)
     parser.add_argument("--teacher_loss_type", type=str, default="ce")
     parser.add_argument("--teacher_bc_path", type=str, default=None)
+    parser.add_argument("--teacher_policy_blend_coef", type=float, default=0.0)
+    parser.add_argument("--teacher_policy_fallback_confidence", type=float, default=0.0)
     parser.add_argument("--trace_eval_input", type=str, default=None)
     parser.add_argument("--trace_eval_interval_env_steps", type=int, default=0)
     parser.add_argument("--trace_eval_top_k", type=int, default=5)

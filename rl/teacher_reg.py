@@ -5,6 +5,8 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
+from sample_factory.algo.utils.action_distributions import get_action_distribution
+from sample_factory.algo.utils.tensor_dict import TensorDict
 
 from rl.bc_model import BCPolicyMLP
 from rl.feature_encoder import ACTION_SET, action_mask_slice, action_name_to_index
@@ -16,6 +18,9 @@ _ORIG_PREPARE_BATCH = None
 _ORIG_INIT = None
 _ORIG_CALC_LOSSES = None
 _ORIG_RECORD_SUMMARIES = None
+_ORIG_NORMALIZE_OBS = None
+_ORIG_SHARED_FORWARD_TAIL = None
+_ORIG_SEPARATE_FORWARD_TAIL = None
 
 
 def _row_replay_flags(row: dict) -> dict[str, float]:
@@ -105,6 +110,17 @@ def _load_teacher_replay_tensors(path: str, device: torch.device, source_mode: s
 
 def _teacher_enabled(cfg: Any) -> bool:
     return bool(_parse_teacher_bc_paths(getattr(cfg, "teacher_bc_path", None))) and float(getattr(cfg, "teacher_loss_coef", 0.0) or 0.0) > 0.0
+
+
+def _teacher_policy_prior_enabled(cfg: Any) -> bool:
+    return bool(_parse_teacher_bc_paths(getattr(cfg, "teacher_bc_path", None))) and (
+        float(getattr(cfg, "teacher_policy_blend_coef", 0.0) or 0.0) > 0.0
+        or float(getattr(cfg, "teacher_policy_fallback_confidence", 0.0) or 0.0) > 0.0
+    )
+
+
+def _teacher_model_enabled(cfg: Any) -> bool:
+    return _teacher_enabled(cfg) or _teacher_policy_prior_enabled(cfg)
 
 
 def _parse_teacher_bc_paths(raw: str | None) -> list[str]:
@@ -228,22 +244,110 @@ def _invalid_preference_fraction(logits: torch.Tensor, action_mask: torch.Tensor
     return invalid.float().mean()
 
 
+def _load_bc_teacher_model(teacher_path: str, device: torch.device) -> BCPolicyMLP:
+    payload = torch.load(teacher_path, map_location=device)
+    metadata = payload.get("metadata", {})
+    input_dim = int(metadata.get("input_dim", observation_dim(metadata.get("observation_version", "v1"))))
+    hidden_size = int(metadata.get("hidden_size", 256))
+    num_layers = int(metadata.get("num_layers", 2))
+    teacher = BCPolicyMLP(input_dim=input_dim, hidden_size=hidden_size, num_layers=num_layers)
+    teacher.load_state_dict(payload["state_dict"])
+    teacher.to(device)
+    teacher.eval()
+    for param in teacher.parameters():
+        param.requires_grad_(False)
+    return teacher
+
+
+def _teacher_policy_blend(student_probs: torch.Tensor, teacher_probs: torch.Tensor, blend_coef: float) -> torch.Tensor:
+    blend = float(min(max(blend_coef, 0.0), 1.0))
+    if blend <= 0.0:
+        return student_probs
+    return (1.0 - blend) * student_probs + blend * teacher_probs
+
+
+def _teacher_policy_fallback_mask(student_probs: torch.Tensor, confidence_threshold: float) -> torch.Tensor:
+    threshold = float(confidence_threshold)
+    if threshold <= 0.0:
+        return torch.zeros(student_probs.shape[0], dtype=torch.bool, device=student_probs.device)
+    return student_probs.max(dim=-1).values < threshold
+
+
+def _ensure_teacher_prior_models(module: Any, device: torch.device) -> None:
+    if getattr(module, "_teacher_prior_initialized", False):
+        return
+    cfg = getattr(module, "cfg", None)
+    module._teacher_prior_initialized = True
+    module._teacher_prior_policies = []
+    module._teacher_policy_blend_coef = float(getattr(cfg, "teacher_policy_blend_coef", 0.0) or 0.0)
+    module._teacher_policy_fallback_confidence = float(
+        getattr(cfg, "teacher_policy_fallback_confidence", 0.0) or 0.0
+    )
+    if cfg is None or not _teacher_policy_prior_enabled(cfg):
+        return
+    if bool(getattr(cfg, "normalize_input", False)):
+        raise ValueError("Teacher policy prior requires normalize_input=False")
+    teacher_paths = _parse_teacher_bc_paths(getattr(cfg, "teacher_bc_path", None))
+    module._teacher_prior_policies = [_load_bc_teacher_model(path, device) for path in teacher_paths]
+
+
+def _apply_teacher_policy_prior(module: Any, action_logits: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    _ensure_teacher_prior_models(module, action_logits.device)
+    teacher_policies = getattr(module, "_teacher_prior_policies", [])
+    if not teacher_policies:
+        zero = action_logits.new_zeros(())
+        return action_logits, zero, zero
+    raw_obs = getattr(module, "_teacher_prior_raw_obs", None)
+    if raw_obs is None:
+        zero = action_logits.new_zeros(())
+        return action_logits, zero, zero
+    raw_obs = raw_obs.to(action_logits.device)
+    allowed_action_mask = _action_mask_from_raw_obs(raw_obs)
+    with torch.no_grad():
+        teacher_logits_raw = torch.stack([teacher(raw_obs.float()) for teacher in teacher_policies], dim=0).mean(dim=0)
+    student_logits = _mask_logits_with_action_mask(action_logits, allowed_action_mask)
+    teacher_logits = _mask_logits_with_action_mask(teacher_logits_raw, allowed_action_mask)
+    student_probs = torch.softmax(student_logits, dim=-1)
+    teacher_probs = torch.softmax(teacher_logits, dim=-1)
+    blended_probs = _teacher_policy_blend(
+        student_probs,
+        teacher_probs,
+        getattr(module, "_teacher_policy_blend_coef", 0.0),
+    )
+    fallback_mask = _teacher_policy_fallback_mask(
+        student_probs,
+        getattr(module, "_teacher_policy_fallback_confidence", 0.0),
+    )
+    if fallback_mask.any():
+        blended_probs = blended_probs.clone()
+        blended_probs[fallback_mask] = teacher_probs[fallback_mask]
+    blended_logits = torch.log(blended_probs.clamp_min(1e-8))
+    prior_applied_fraction = action_logits.new_full((), 1.0)
+    fallback_fraction = fallback_mask.float().mean() if fallback_mask.numel() > 0 else action_logits.new_zeros(())
+    return blended_logits, prior_applied_fraction, fallback_fraction
+
+
 def patch_sample_factory_teacher_reg() -> None:
     global _PATCHED, _ORIG_PREPARE_BATCH, _ORIG_INIT, _ORIG_CALC_LOSSES, _ORIG_RECORD_SUMMARIES
+    global _ORIG_NORMALIZE_OBS, _ORIG_SHARED_FORWARD_TAIL, _ORIG_SEPARATE_FORWARD_TAIL
     if _PATCHED:
         return
 
     from sample_factory.algo.learning.learner import Learner
     from sample_factory.algo.utils.torch_utils import masked_select
+    from sample_factory.model.actor_critic import ActorCritic, ActorCriticSeparateWeights, ActorCriticSharedWeights
 
     _ORIG_PREPARE_BATCH = Learner._prepare_batch
     _ORIG_INIT = Learner.init
     _ORIG_CALC_LOSSES = Learner._calculate_losses
     _ORIG_RECORD_SUMMARIES = Learner._record_summaries
+    _ORIG_NORMALIZE_OBS = ActorCritic.normalize_obs
+    _ORIG_SHARED_FORWARD_TAIL = ActorCriticSharedWeights.forward_tail
+    _ORIG_SEPARATE_FORWARD_TAIL = ActorCriticSeparateWeights.forward_tail
 
     def _prepare_batch_with_raw_obs(self, batch):
         raw_obs = None
-        if _teacher_enabled(self.cfg):
+        if _teacher_model_enabled(self.cfg):
             raw_obs = batch["obs"]["obs"][:, :-1].reshape(-1, batch["obs"]["obs"].shape[-1]).clone()
         buff, experience_size, num_invalids = _ORIG_PREPARE_BATCH(self, batch)
         if raw_obs is not None:
@@ -255,6 +359,7 @@ def patch_sample_factory_teacher_reg() -> None:
         self.teacher_policy = None
         self.teacher_policies = []
         self.teacher_replay = None
+        self.teacher_loss_enabled = False
         self.teacher_loss_coef = float(getattr(self.cfg, "teacher_loss_coef", 0.0) or 0.0)
         self.teacher_loss_type = str(getattr(self.cfg, "teacher_loss_type", "ce") or "ce")
         self.teacher_bc_path = getattr(self.cfg, "teacher_bc_path", None)
@@ -280,23 +385,13 @@ def patch_sample_factory_teacher_reg() -> None:
         self.param_anchor_tensors = {}
         if self.teacher_loss_type not in {"ce", "kl"}:
             raise ValueError(f"Unsupported teacher_loss_type: {self.teacher_loss_type}")
-        if _teacher_enabled(self.cfg):
+        self.teacher_loss_enabled = _teacher_enabled(self.cfg)
+        if _teacher_model_enabled(self.cfg):
             if getattr(self.cfg, "use_rnn", False):
                 raise ValueError("Teacher-regularized APPO is only supported on the non-RNN path")
             teacher_paths = _parse_teacher_bc_paths(self.teacher_bc_path)
             for teacher_path in teacher_paths:
-                payload = torch.load(teacher_path, map_location=self.device)
-                metadata = payload.get("metadata", {})
-                input_dim = int(metadata.get("input_dim", observation_dim(getattr(self.cfg, "observation_version", "v1"))))
-                hidden_size = int(metadata.get("hidden_size", 256))
-                num_layers = int(metadata.get("num_layers", 2))
-                teacher = BCPolicyMLP(input_dim=input_dim, hidden_size=hidden_size, num_layers=num_layers)
-                teacher.load_state_dict(payload["state_dict"])
-                teacher.to(self.device)
-                teacher.eval()
-                for param in teacher.parameters():
-                    param.requires_grad_(False)
-                self.teacher_policies.append(teacher)
+                self.teacher_policies.append(_load_bc_teacher_model(teacher_path, self.device))
             self.teacher_policy = self.teacher_policies[0] if self.teacher_policies else None
         if self.teacher_replay_trace_input and max(self.teacher_replay_coef, self.teacher_replay_final_coef) > 0.0:
             self.teacher_replay = _load_teacher_replay_tensors(
@@ -322,9 +417,11 @@ def patch_sample_factory_teacher_reg() -> None:
         param_anchor_loss = torch.zeros((), device=self.device)
         teacher_invalid_preference_fraction = torch.zeros((), device=self.device)
         student_invalid_preference_fraction = torch.zeros((), device=self.device)
+        teacher_policy_prior_applied_fraction = torch.zeros((), device=self.device)
+        teacher_policy_fallback_fraction = torch.zeros((), device=self.device)
         actor_loss_scale = policy_loss.new_tensor(_scheduled_actor_loss_scale(self))
 
-        if self.teacher_policies:
+        if self.teacher_policies and self.teacher_loss_enabled:
             raw_obs = mb.get("raw_obs")
             if raw_obs is None:
                 raise RuntimeError("Teacher regularization requires raw_obs in the minibatch")
@@ -364,6 +461,13 @@ def patch_sample_factory_teacher_reg() -> None:
             student_actions = torch.argmax(student_logits, dim=-1)
             agreement_all = (student_actions == teacher_actions).float()
             teacher_agreement = masked_select(agreement_all, mb.valids, num_invalids).mean()
+            teacher_policy_prior_applied_fraction = policy_loss.new_tensor(
+                1.0 if _teacher_policy_prior_enabled(self.cfg) else 0.0
+            )
+            teacher_policy_fallback_fraction = _teacher_policy_fallback_mask(
+                torch.softmax(student_logits, dim=-1),
+                float(getattr(self.cfg, "teacher_policy_fallback_confidence", 0.0) or 0.0),
+            ).float().mean()
 
         if self.teacher_replay is not None and max(self.teacher_replay_coef, self.teacher_replay_final_coef) > 0.0:
             replay_size = self.teacher_replay["features"].shape[0]
@@ -410,6 +514,8 @@ def patch_sample_factory_teacher_reg() -> None:
         loss_summaries["param_anchor_loss"] = param_anchor_loss
         loss_summaries["teacher_invalid_preference_fraction"] = teacher_invalid_preference_fraction
         loss_summaries["student_invalid_preference_fraction"] = student_invalid_preference_fraction
+        loss_summaries["teacher_policy_prior_applied_fraction"] = teacher_policy_prior_applied_fraction
+        loss_summaries["teacher_policy_fallback_fraction"] = teacher_policy_fallback_fraction
         result[1] = actor_loss_scale * policy_loss + teacher_loss + teacher_replay_loss + param_anchor_loss
         result[6] = loss_summaries
         return tuple(result)
@@ -442,10 +548,58 @@ def patch_sample_factory_teacher_reg() -> None:
             stats.teacher_invalid_preference_fraction = float(train_loop_vars.teacher_invalid_preference_fraction.item())
         if hasattr(train_loop_vars, "student_invalid_preference_fraction"):
             stats.student_invalid_preference_fraction = float(train_loop_vars.student_invalid_preference_fraction.item())
+        if hasattr(train_loop_vars, "teacher_policy_prior_applied_fraction"):
+            stats.teacher_policy_prior_applied_fraction = float(train_loop_vars.teacher_policy_prior_applied_fraction.item())
+        if hasattr(train_loop_vars, "teacher_policy_fallback_fraction"):
+            stats.teacher_policy_fallback_fraction = float(train_loop_vars.teacher_policy_fallback_fraction.item())
         return stats
+
+    def _normalize_obs_with_teacher_prior(self, obs):
+        if isinstance(obs, dict) and "obs" in obs:
+            self._teacher_prior_raw_obs = obs["obs"].detach().clone()
+        return _ORIG_NORMALIZE_OBS(self, obs)
+
+    def _forward_tail_shared_with_teacher_prior(self, core_output, values_only: bool, sample_actions: bool):
+        decoder_output = self.decoder(core_output)
+        values = self.critic_linear(decoder_output).squeeze()
+        result = TensorDict(values=values)
+        if values_only:
+            return result
+        action_distribution_params, self.last_action_distribution = self.action_parameterization(decoder_output)
+        action_distribution_params, teacher_prior_fraction, teacher_fallback_fraction = _apply_teacher_policy_prior(
+            self, action_distribution_params
+        )
+        self.last_action_distribution = get_action_distribution(self.action_space, raw_logits=action_distribution_params)
+        result["action_logits"] = action_distribution_params
+        result["teacher_policy_prior_applied_fraction"] = teacher_prior_fraction
+        result["teacher_policy_fallback_fraction"] = teacher_fallback_fraction
+        self._maybe_sample_actions(sample_actions, result)
+        return result
+
+    def _forward_tail_separate_with_teacher_prior(self, core_output, values_only: bool, sample_actions: bool):
+        core_outputs = core_output.chunk(len(self.cores), dim=1)
+        critic_decoder_output = self.critic_decoder(core_outputs[1])
+        values = self.critic_linear(critic_decoder_output).squeeze()
+        result = TensorDict(values=values)
+        if values_only:
+            return result
+        actor_decoder_output = self.actor_decoder(core_outputs[0])
+        action_distribution_params, self.last_action_distribution = self.action_parameterization(actor_decoder_output)
+        action_distribution_params, teacher_prior_fraction, teacher_fallback_fraction = _apply_teacher_policy_prior(
+            self, action_distribution_params
+        )
+        self.last_action_distribution = get_action_distribution(self.action_space, raw_logits=action_distribution_params)
+        result["action_logits"] = action_distribution_params
+        result["teacher_policy_prior_applied_fraction"] = teacher_prior_fraction
+        result["teacher_policy_fallback_fraction"] = teacher_fallback_fraction
+        self._maybe_sample_actions(sample_actions, result)
+        return result
 
     Learner._prepare_batch = _prepare_batch_with_raw_obs
     Learner.init = _init_with_teacher
     Learner._calculate_losses = _calculate_losses_with_teacher
     Learner._record_summaries = _record_summaries_with_teacher
+    ActorCritic.normalize_obs = _normalize_obs_with_teacher_prior
+    ActorCriticSharedWeights.forward_tail = _forward_tail_shared_with_teacher_prior
+    ActorCriticSeparateWeights.forward_tail = _forward_tail_separate_with_teacher_prior
     _PATCHED = True

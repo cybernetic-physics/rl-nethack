@@ -718,6 +718,13 @@ More specifically:
   - after making teacher regularization mask-aware, the comparable short APPO probe improved from a best learned checkpoint of `0.975` back up to `0.9875`,
   - but a longer `4k`-step cheap gate still tied the teacher only briefly and then drifted to `0.8875`,
   - so the mask-aware fix is a real stabilizer, not yet a teacher-beating improver,
+- the first teacher-as-base fallback probes narrowed the next online direction:
+  - a new rollout-time teacher prior / fallback path is now implemented directly in the APPO actor path,
+  - fallback to the auxiliary distillation teachers tied the teacher briefly and then collapsed badly, down to `0.7625` and `0.7125` on the retained late checkpoints,
+  - fallback to the exact trusted `0.9875` teacher did not improve the best learned checkpoint, which fell to `0.975`,
+  - but it substantially improved late stability, with retained late checkpoints at `0.9625` and `0.95` instead of the previous `0.8875` / `0.8875`,
+  - this means "teacher as rollout-time base" is a real stabilizer only when the fallback base is the exact trusted teacher artifact,
+  - but raw confidence fallback alone is still preservation-oriented and not yet a real improver,
 - the most plausible next frontier is a more teacher-aware and behavior-constrained online improver.
 
 ## Practical Research Rules Going Forward
