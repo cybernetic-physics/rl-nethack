@@ -69,6 +69,7 @@ def parse_args(argv=None):
     parser.add_argument("--teacher-replay-priority-power", type=float, default=1.0)
     parser.add_argument("--teacher-replay-source-mode", type=str, default="uniform")
     parser.add_argument("--teacher-replay-action-boosts", type=str, default="")
+    parser.add_argument("--teacher-replay-current-disagreement-boost", type=float, default=1.0)
     parser.add_argument("--teacher-policy-logit-residual-scale", type=float, default=1.0)
     parser.add_argument("--teacher-policy-blend-coef", type=float, default=0.0)
     parser.add_argument("--teacher-policy-fallback-confidence", type=float, default=0.0)
@@ -215,6 +216,13 @@ def build_config(args) -> RLConfig:
     )
     config.appo.teacher_replay_action_boosts = str(
         getattr(args, "teacher_replay_action_boosts", config.appo.teacher_replay_action_boosts) or ""
+    )
+    config.appo.teacher_replay_current_disagreement_boost = float(
+        getattr(
+            args,
+            "teacher_replay_current_disagreement_boost",
+            config.appo.teacher_replay_current_disagreement_boost,
+        )
     )
     config.appo.teacher_policy_logit_residual_scale = float(
         getattr(args, "teacher_policy_logit_residual_scale", config.appo.teacher_policy_logit_residual_scale)

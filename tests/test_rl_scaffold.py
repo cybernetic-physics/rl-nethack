@@ -54,6 +54,7 @@ from rl.teacher_reg import (
     _scheduled_teacher_replay_coef,
     _row_replay_flags,
     _replay_priority_weights,
+    _weight_replay_losses_by_current_disagreement,
 )
 from rl.env_adapter import SkillEnvAdapter, EpisodeContext
 from rl.dagger import build_merged_trace_rows, run_dagger_iteration, run_dagger_schedule, select_dagger_rows
@@ -406,6 +407,7 @@ def test_cli_rl_train_appo_forwards_teacher_prior_controls(monkeypatch):
         teacher_replay_priority_power=1.0,
         teacher_replay_source_mode="uniform",
         teacher_replay_action_boosts="east=2.0,south=2.0",
+        teacher_replay_current_disagreement_boost=2.5,
         teacher_policy_logit_residual_scale=0.3,
         teacher_policy_blend_coef=0.2,
         teacher_policy_fallback_confidence=0.6,
@@ -434,6 +436,8 @@ def test_cli_rl_train_appo_forwards_teacher_prior_controls(monkeypatch):
     assert argv[argv.index("--teacher-policy-logit-residual-scale") + 1] == "0.3"
     assert "--teacher-replay-action-boosts" in argv
     assert argv[argv.index("--teacher-replay-action-boosts") + 1] == "east=2.0,south=2.0"
+    assert "--teacher-replay-current-disagreement-boost" in argv
+    assert argv[argv.index("--teacher-replay-current-disagreement-boost") + 1] == "2.5"
     assert "--teacher-policy-blend-coef" in argv
     assert argv[argv.index("--teacher-policy-blend-coef") + 1] == "0.2"
     assert "--teacher-policy-fallback-confidence" in argv
@@ -464,6 +468,7 @@ def test_trainer_scaffold_includes_teacher_reg_args():
     config.appo.teacher_loss_warmup_env_steps = 1024
     config.appo.teacher_loss_decay_env_steps = 4096
     config.appo.teacher_replay_action_boosts = "east=2.0,south=2.0"
+    config.appo.teacher_replay_current_disagreement_boost = 2.0
     config.appo.teacher_policy_logit_residual_scale = 0.3
     config.appo.teacher_policy_blend_coef = 0.15
     config.appo.teacher_policy_fallback_confidence = 0.55
@@ -488,6 +493,7 @@ def test_trainer_scaffold_includes_teacher_reg_args():
     assert "--teacher_loss_warmup_env_steps=1024" in argv
     assert "--teacher_loss_decay_env_steps=4096" in argv
     assert "--teacher_replay_action_boosts=east=2.0,south=2.0" in argv
+    assert "--teacher_replay_current_disagreement_boost=2.0" in argv
     assert "--teacher_policy_logit_residual_scale=0.3" in argv
     assert "--teacher_policy_blend_coef=0.15" in argv
     assert "--teacher_policy_fallback_confidence=0.55" in argv
@@ -561,6 +567,7 @@ def test_build_appo_config_respects_value_stability_args():
             "teacher_replay_priority_power": 1.7,
             "teacher_replay_source_mode": "disagreement",
             "teacher_replay_action_boosts": "east=2.0,south=2.0",
+            "teacher_replay_current_disagreement_boost": 2.5,
             "teacher_policy_logit_residual_scale": 0.3,
             "teacher_policy_blend_coef": 0.2,
             "teacher_policy_fallback_confidence": 0.6,
@@ -590,6 +597,7 @@ def test_build_appo_config_respects_value_stability_args():
     assert config.appo.teacher_replay_priority_power == 1.7
     assert config.appo.teacher_replay_source_mode == "disagreement"
     assert config.appo.teacher_replay_action_boosts == "east=2.0,south=2.0"
+    assert config.appo.teacher_replay_current_disagreement_boost == 2.5
     assert config.appo.teacher_prior_bc_path == "/tmp/prior.pt"
     assert config.appo.teacher_policy_logit_residual_scale == 0.3
     assert config.appo.teacher_policy_blend_coef == 0.2
@@ -952,6 +960,7 @@ def test_trainer_scaffold_includes_trace_eval_args():
     config.appo.teacher_replay_priority_power = 1.4
     config.appo.teacher_replay_source_mode = "mixed"
     config.appo.teacher_replay_action_boosts = "east=2.0,south=2.0"
+    config.appo.teacher_replay_current_disagreement_boost = 2.0
     config.appo.actor_loss_scale = 0.0
     config.appo.actor_loss_final_scale = 1.0
     config.appo.actor_loss_warmup_env_steps = 64
@@ -974,6 +983,7 @@ def test_trainer_scaffold_includes_trace_eval_args():
     assert "--teacher_replay_priority_power=1.4" in argv
     assert "--teacher_replay_source_mode=mixed" in argv
     assert "--teacher_replay_action_boosts=east=2.0,south=2.0" in argv
+    assert "--teacher_replay_current_disagreement_boost=2.0" in argv
     assert "--actor_loss_scale=0.0" in argv
     assert "--actor_loss_warmup_env_steps=64" in argv
     assert "--actor_loss_decay_env_steps=256" in argv
@@ -1194,6 +1204,7 @@ def test_improver_report_links_teacher_and_best_trace_metadata():
         cfg.appo.trace_eval_input = "/tmp/heldout.jsonl"
         cfg.appo.teacher_prior_bc_path = "/tmp/prior.pt"
         cfg.appo.teacher_replay_action_boosts = "east=2.0,south=2.0"
+        cfg.appo.teacher_replay_current_disagreement_boost = 2.0
         cfg.appo.teacher_policy_logit_residual_scale = 0.3
         cfg.appo.teacher_policy_blend_coef = 0.25
         cfg.appo.teacher_policy_fallback_confidence = 0.55
@@ -1223,6 +1234,7 @@ def test_improver_report_links_teacher_and_best_trace_metadata():
         assert report["best_trace_metadata"]["match_rate"] == 0.9375
         assert report["final_trace_metadata"]["match_rate"] == 0.9
         assert report["teacher_policy"]["prior_checkpoint_path"] == "/tmp/prior.pt"
+        assert report["replay_source"]["current_disagreement_boost"] == 2.0
         assert report["teacher_policy"]["logit_residual_scale"] == 0.3
         assert report["replay_source"]["action_boosts"] == "east=2.0,south=2.0"
         assert report["teacher_policy"]["blend_coef"] == 0.25
@@ -1320,6 +1332,27 @@ def test_replay_priority_weights_target_requested_rows():
     )
     assert boosted[0] > boosted[2]
     assert boosted[1] > boosted[0]
+
+
+def test_weight_replay_losses_by_current_disagreement_boosts_mismatched_rows():
+    replay_loss_all = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
+    student_replay_logits = torch.tensor(
+        [
+            [5.0, 1.0, 0.0],
+            [0.0, 1.0, 5.0],
+            [0.0, 4.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    replay_actions = torch.tensor([0, 1, 1], dtype=torch.long)
+    weighted, disagreement_fraction = _weight_replay_losses_by_current_disagreement(
+        replay_loss_all,
+        student_replay_logits,
+        replay_actions,
+        disagreement_boost=2.5,
+    )
+    assert torch.allclose(weighted, torch.tensor([1.0, 5.0, 3.0]))
+    assert round(disagreement_fraction.item(), 6) == round(1.0 / 3.0, 6)
 
 
 def test_forward_replay_action_logits_bypasses_teacher_prior_path_for_shared_weights():

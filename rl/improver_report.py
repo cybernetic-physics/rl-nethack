@@ -119,6 +119,7 @@ def build_improver_report(
             "source_mode": config.appo.teacher_replay_source_mode,
             "priority_power": config.appo.teacher_replay_priority_power,
             "action_boosts": config.appo.teacher_replay_action_boosts,
+            "current_disagreement_boost": config.appo.teacher_replay_current_disagreement_boost,
             "batch_size": config.appo.teacher_replay_batch_size,
             "coef": config.appo.teacher_replay_coef,
             "final_coef": config.appo.teacher_replay_final_coef,

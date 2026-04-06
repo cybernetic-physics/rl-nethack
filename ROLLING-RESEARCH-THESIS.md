@@ -789,6 +789,14 @@ More specifically:
     - retained late and final both recovered to `0.9125`,
   - this is still not a teacher-beating improver, because the tie is early preservation and late checkpoints remain below the teacher,
   - but it is important architectural evidence: replay supervision and rollout-time teacher shaping should be treated as separate modules, and replay-to-raw-student-logits is healthier than replay-through-teacher-prior variants,
+- a follow-up current-disagreement replay-weighting probe was negative:
+  - a new `teacher_replay_current_disagreement_boost` path now supports upweighting replay CE rows where the current student argmax still disagrees with the replay teacher action,
+  - this was tested conservatively on top of the corrected raw-student replay baseline with `current_disagreement_boost=2.0`,
+  - the comparable short gate then tied the teacher only earlier:
+    - warm-start stayed `0.9875`,
+    - best learned tied `0.9875` at `256`,
+    - retained late and final both fell to `0.8875`,
+  - so current-student disagreement weighting is not the right next replay lever on the tiny teacher-only replay file; it makes the branch more preservation-only and less stable late than plain replay-to-raw-student-logits,
 - the most plausible next frontier is a more teacher-aware and behavior-constrained online improver.
 
 ## Practical Research Rules Going Forward

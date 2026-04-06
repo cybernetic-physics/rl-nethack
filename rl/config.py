@@ -56,6 +56,7 @@ class APPOConfig:
     teacher_replay_priority_power: float = 1.0
     teacher_replay_source_mode: str = "uniform"
     teacher_replay_action_boosts: str = ""
+    teacher_replay_current_disagreement_boost: float = 1.0
     teacher_policy_logit_residual_scale: float = 1.0
     teacher_policy_blend_coef: float = 0.0
     teacher_policy_fallback_confidence: float = 0.0

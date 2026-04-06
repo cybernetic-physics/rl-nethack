@@ -145,6 +145,23 @@ def _forward_replay_action_logits(
     return replay_logits.masked_fill(replay_allowed_masks <= 0, -1e9)
 
 
+def _weight_replay_losses_by_current_disagreement(
+    replay_loss_all: torch.Tensor,
+    student_replay_logits: torch.Tensor,
+    replay_actions: torch.Tensor,
+    disagreement_boost: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    student_replay_actions = torch.argmax(student_replay_logits, dim=-1)
+    disagreement_mask = student_replay_actions != replay_actions
+    disagreement_fraction = disagreement_mask.float().mean() if disagreement_mask.numel() > 0 else replay_loss_all.new_zeros(())
+    disagreement_boost = float(disagreement_boost)
+    if disagreement_boost == 1.0:
+        return replay_loss_all, disagreement_fraction
+    disagreement_weight = replay_loss_all.new_full(replay_loss_all.shape, disagreement_boost)
+    weighted_loss = torch.where(disagreement_mask, replay_loss_all * disagreement_weight, replay_loss_all)
+    return weighted_loss, disagreement_fraction
+
+
 def _teacher_enabled(cfg: Any) -> bool:
     return bool(_parse_teacher_bc_paths(getattr(cfg, "teacher_bc_path", None))) and float(getattr(cfg, "teacher_loss_coef", 0.0) or 0.0) > 0.0
 
@@ -487,6 +504,9 @@ def patch_sample_factory_teacher_reg() -> None:
         self.teacher_replay_action_boosts = _parse_teacher_action_boosts(
             str(getattr(self.cfg, "teacher_replay_action_boosts", "") or "")
         )
+        self.teacher_replay_current_disagreement_boost = float(
+            getattr(self.cfg, "teacher_replay_current_disagreement_boost", 1.0) or 1.0
+        )
         self.param_anchor_coef = float(getattr(self.cfg, "param_anchor_coef", 0.0) or 0.0)
         self.actor_loss_scale = float(getattr(self.cfg, "actor_loss_scale", 1.0) or 1.0)
         self.actor_loss_final_scale = float(getattr(self.cfg, "actor_loss_final_scale", 1.0) or 1.0)
@@ -532,6 +552,7 @@ def patch_sample_factory_teacher_reg() -> None:
         teacher_policy_fallback_fraction = torch.zeros((), device=self.device)
         teacher_policy_disagreement_fraction = torch.zeros((), device=self.device)
         teacher_policy_weak_override_fraction = torch.zeros((), device=self.device)
+        teacher_replay_current_disagreement_fraction = torch.zeros((), device=self.device)
         actor_loss_scale = policy_loss.new_tensor(_scheduled_actor_loss_scale(self))
 
         if self.teacher_policies and self.teacher_loss_enabled:
@@ -603,8 +624,17 @@ def patch_sample_factory_teacher_reg() -> None:
                 replay_features,
                 replay_allowed_masks,
             )
+            teacher_replay_loss_all = F.cross_entropy(student_replay_logits, replay_actions, reduction="none")
+            teacher_replay_loss_all, teacher_replay_current_disagreement_fraction = (
+                _weight_replay_losses_by_current_disagreement(
+                    teacher_replay_loss_all,
+                    student_replay_logits,
+                    replay_actions,
+                    self.teacher_replay_current_disagreement_boost,
+                )
+            )
             teacher_replay_coef = teacher_replay_loss.new_tensor(_scheduled_teacher_replay_coef(self))
-            teacher_replay_loss = F.cross_entropy(student_replay_logits, replay_actions) * teacher_replay_coef
+            teacher_replay_loss = teacher_replay_loss_all.mean() * teacher_replay_coef
             loss_summaries["teacher_replay_disagreement_fraction"] = replay_disagreement_flags.mean()
             loss_summaries["teacher_replay_weak_action_fraction"] = replay_weak_action_flags.mean()
             loss_summaries["teacher_replay_loop_risk_fraction"] = replay_loop_risk_flags.mean()
@@ -635,6 +665,7 @@ def patch_sample_factory_teacher_reg() -> None:
         loss_summaries["teacher_policy_fallback_fraction"] = teacher_policy_fallback_fraction
         loss_summaries["teacher_policy_disagreement_fraction"] = teacher_policy_disagreement_fraction
         loss_summaries["teacher_policy_weak_override_fraction"] = teacher_policy_weak_override_fraction
+        loss_summaries["teacher_replay_current_disagreement_fraction"] = teacher_replay_current_disagreement_fraction
         result[1] = actor_loss_scale * policy_loss + teacher_loss + teacher_replay_loss + param_anchor_loss
         result[6] = loss_summaries
         return tuple(result)
@@ -661,6 +692,10 @@ def patch_sample_factory_teacher_reg() -> None:
             stats.teacher_replay_loop_risk_fraction = float(train_loop_vars.teacher_replay_loop_risk_fraction.item())
         if hasattr(train_loop_vars, "teacher_replay_failure_fraction"):
             stats.teacher_replay_failure_fraction = float(train_loop_vars.teacher_replay_failure_fraction.item())
+        if hasattr(train_loop_vars, "teacher_replay_current_disagreement_fraction"):
+            stats.teacher_replay_current_disagreement_fraction = float(
+                train_loop_vars.teacher_replay_current_disagreement_fraction.item()
+            )
         if hasattr(train_loop_vars, "param_anchor_loss"):
             stats.param_anchor_loss = float(train_loop_vars.param_anchor_loss.item())
         if hasattr(train_loop_vars, "teacher_invalid_preference_fraction"):
