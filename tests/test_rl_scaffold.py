@@ -1322,10 +1322,11 @@ def test_replay_priority_weights_target_requested_rows():
     assert boosted[1] > boosted[0]
 
 
-def test_forward_replay_action_logits_uses_replay_features_for_teacher_prior_raw_obs():
+def test_forward_replay_action_logits_bypasses_teacher_prior_path_for_shared_weights():
     class FakeActorCritic:
         def __init__(self):
             self._teacher_prior_raw_obs = torch.full((2, len(ACTION_SET)), 50.0)
+            self.decoder = lambda x: x + 1.0
 
         def forward_head(self, obs):
             return {"x": obs["obs"] + 1.0}
@@ -1333,8 +1334,11 @@ def test_forward_replay_action_logits_uses_replay_features_for_teacher_prior_raw
         def forward_core(self, x, *_args, **_kwargs):
             return {"x": x + 1.0}
 
-        def forward_tail(self, x, **_kwargs):
-            return {"action_logits": x + self._teacher_prior_raw_obs}
+        def action_parameterization(self, x):
+            return x + 1.0, object()
+
+        def forward_tail(self, *_args, **_kwargs):
+            raise AssertionError("Replay path should bypass teacher-prior forward_tail")
 
     actor_critic = FakeActorCritic()
     stale = actor_critic._teacher_prior_raw_obs.clone()
@@ -1353,7 +1357,36 @@ def test_forward_replay_action_logits_uses_replay_features_for_teacher_prior_raw
         dtype=torch.float32,
     )
     logits = _forward_replay_action_logits(actor_critic, features, allowed_masks)
-    expected = (features + 1.0 + 1.0 + features).masked_fill(allowed_masks <= 0, -1e9)
+    expected = (features + 1.0 + 1.0 + 1.0 + 1.0).masked_fill(allowed_masks <= 0, -1e9)
+    assert torch.allclose(logits, expected)
+    assert torch.allclose(actor_critic._teacher_prior_raw_obs, stale)
+
+
+def test_forward_replay_action_logits_bypasses_teacher_prior_path_for_separate_weights():
+    class FakeActorCritic:
+        def __init__(self):
+            self._teacher_prior_raw_obs = torch.full((2, len(ACTION_SET)), 50.0)
+            self.cores = [object(), object()]
+            self.actor_decoder = lambda x: x + 2.0
+
+        def forward_head(self, obs):
+            return {"x": torch.cat((obs["obs"] + 1.0, obs["obs"] + 3.0), dim=1)}
+
+        def forward_core(self, x, *_args, **_kwargs):
+            return {"x": x + 1.0}
+
+        def action_parameterization(self, x):
+            return x + 4.0, object()
+
+        def forward_tail(self, *_args, **_kwargs):
+            raise AssertionError("Replay path should bypass teacher-prior forward_tail")
+
+    actor_critic = FakeActorCritic()
+    stale = actor_critic._teacher_prior_raw_obs.clone()
+    features = torch.zeros((2, len(ACTION_SET)), dtype=torch.float32)
+    allowed_masks = torch.ones_like(features)
+    logits = _forward_replay_action_logits(actor_critic, features, allowed_masks)
+    expected = torch.full_like(features, 8.0)
     assert torch.allclose(logits, expected)
     assert torch.allclose(actor_critic._teacher_prior_raw_obs, stale)
 

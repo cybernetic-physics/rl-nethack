@@ -781,6 +781,14 @@ More specifically:
     - final fell all the way to `0.7000` at `4608`,
   - so the replay issue is no longer well explained by “wrong raw-observation tensor” alone,
   - the stronger hypothesis now is that replay CE should not be supervising the rollout-time teacher-prior / fallback policy head at all; it likely needs to target raw student logits before teacher-as-base shaping is applied,
+- a replay-target correction then partially recovered the branch:
+  - replay CE was changed to bypass the patched `forward_tail` path and supervise raw student logits before teacher prior / fallback is applied,
+  - that is the first post-audit replay change that clearly improved the corrected split-base family:
+    - warm-start stayed `0.9875`,
+    - best learned recovered to a teacher tie `0.9875` at `768`,
+    - retained late and final both recovered to `0.9125`,
+  - this is still not a teacher-beating improver, because the tie is early preservation and late checkpoints remain below the teacher,
+  - but it is important architectural evidence: replay supervision and rollout-time teacher shaping should be treated as separate modules, and replay-to-raw-student-logits is healthier than replay-through-teacher-prior variants,
 - the most plausible next frontier is a more teacher-aware and behavior-constrained online improver.
 
 ## Practical Research Rules Going Forward

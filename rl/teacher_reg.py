@@ -134,20 +134,14 @@ def _forward_replay_action_logits(
     replay_features: torch.Tensor,
     replay_allowed_masks: torch.Tensor,
 ) -> torch.Tensor:
-    sentinel = object()
-    prior_raw_obs = getattr(actor_critic, "_teacher_prior_raw_obs", sentinel)
-    actor_critic._teacher_prior_raw_obs = replay_features
-    try:
-        replay_logits = actor_critic.forward_head({"obs": replay_features})["x"]
-        replay_logits = actor_critic.forward_core(replay_logits, None, values_only=False)["x"]
-        replay_logits = actor_critic.forward_tail(
-            replay_logits, values_only=False, sample_actions=False
-        )["action_logits"]
-    finally:
-        if prior_raw_obs is sentinel:
-            delattr(actor_critic, "_teacher_prior_raw_obs")
-        else:
-            actor_critic._teacher_prior_raw_obs = prior_raw_obs
+    replay_core = actor_critic.forward_head({"obs": replay_features})["x"]
+    replay_core = actor_critic.forward_core(replay_core, None, values_only=False)["x"]
+    if hasattr(actor_critic, "decoder"):
+        replay_decoder = actor_critic.decoder(replay_core)
+    else:
+        core_outputs = replay_core.chunk(len(actor_critic.cores), dim=1)
+        replay_decoder = actor_critic.actor_decoder(core_outputs[0])
+    replay_logits, _ = actor_critic.action_parameterization(replay_decoder)
     return replay_logits.masked_fill(replay_allowed_masks <= 0, -1e9)
 
 
