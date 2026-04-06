@@ -62,6 +62,10 @@ class APPOTrainerScaffold:
             "teacher_replay_priority_power": self.config.appo.teacher_replay_priority_power,
             "teacher_replay_source_mode": self.config.appo.teacher_replay_source_mode,
             "param_anchor_coef": self.config.appo.param_anchor_coef,
+            "actor_loss_scale": self.config.appo.actor_loss_scale,
+            "actor_loss_final_scale": self.config.appo.actor_loss_final_scale,
+            "actor_loss_warmup_env_steps": self.config.appo.actor_loss_warmup_env_steps,
+            "actor_loss_decay_env_steps": self.config.appo.actor_loss_decay_env_steps,
             "trace_eval_input": self.config.appo.trace_eval_input,
             "trace_eval_interval_env_steps": self.config.appo.trace_eval_interval_env_steps,
             "trace_eval_top_k": self.config.appo.trace_eval_top_k,
@@ -73,6 +77,7 @@ class APPOTrainerScaffold:
             "observation_version": self.config.env.observation_version,
             "world_model_path": self.config.env.world_model_path,
             "world_model_feature_mode": self.config.env.world_model_feature_mode,
+            "appo_init_checkpoint_path": self.config.model.appo_init_checkpoint_path,
             "model": asdict(self.model_spec),
             "dependency_status": self.dependency_status(),
         }
@@ -83,7 +88,7 @@ class APPOTrainerScaffold:
     def build_sf_argv(self) -> list[str]:
         cfg = self.config
         worker_num_splits = 1 if cfg.serial_mode or cfg.rollout.num_envs_per_worker % 2 != 0 else 2
-        restart_behavior = "resume" if cfg.model.bc_init_path else "overwrite"
+        restart_behavior = "resume" if (cfg.model.bc_init_path or cfg.model.appo_init_checkpoint_path) else "overwrite"
         return [
             f"--algo=APPO",
             f"--env={cfg.env.env_id}",
@@ -132,6 +137,10 @@ class APPOTrainerScaffold:
             f"--teacher_replay_priority_power={cfg.appo.teacher_replay_priority_power}",
             f"--teacher_replay_source_mode={cfg.appo.teacher_replay_source_mode}",
             f"--param_anchor_coef={cfg.appo.param_anchor_coef}",
+            f"--actor_loss_scale={cfg.appo.actor_loss_scale}",
+            f"--actor_loss_final_scale={cfg.appo.actor_loss_final_scale}",
+            f"--actor_loss_warmup_env_steps={cfg.appo.actor_loss_warmup_env_steps}",
+            f"--actor_loss_decay_env_steps={cfg.appo.actor_loss_decay_env_steps}",
             f"--trace_eval_input={cfg.appo.trace_eval_input or ''}",
             f"--trace_eval_interval_env_steps={cfg.appo.trace_eval_interval_env_steps}",
             f"--trace_eval_top_k={cfg.appo.trace_eval_top_k}",
@@ -154,6 +163,7 @@ class APPOTrainerScaffold:
             f"--active_skill_bootstrap={cfg.env.active_skill_bootstrap}",
             f"--learned_reward_path={cfg.reward.learned_reward_path or ''}",
             f"--bc_init_path={cfg.model.bc_init_path or ''}",
+            f"--appo_init_checkpoint_path={cfg.model.appo_init_checkpoint_path or ''}",
             f"--enforce_action_mask={str(cfg.env.enforce_action_mask)}",
             f"--invalid_action_penalty={cfg.reward.invalid_action_penalty}",
             f"--invalid_action_fallback={cfg.env.invalid_action_fallback}",
@@ -188,6 +198,30 @@ class APPOTrainerScaffold:
             bc_state["net.4.bias"],
         )
         actor_critic.load_state_dict(model_state, strict=False)
+
+        checkpoint_dir = os.path.join(self.config.train_dir, self.config.experiment, "checkpoint_p0")
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        checkpoint_path = os.path.join(checkpoint_dir, "checkpoint_000000000_0.pth")
+        optimizer = torch.optim.Adam(actor_critic.parameters(), lr=sf_cfg.learning_rate, eps=sf_cfg.adam_eps)
+        atomic_torch_save(
+            checkpoint_path,
+            {
+                "best_performance": float("-inf"),
+                "curr_lr": float(sf_cfg.learning_rate),
+                "env_steps": 0,
+                "model": actor_critic.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "train_step": 0,
+            },
+        )
+        return checkpoint_path
+
+    def maybe_write_appo_warmstart_checkpoint(self, sf_cfg, actor_critic) -> str | None:
+        if not self.config.model.appo_init_checkpoint_path:
+            return None
+
+        payload = torch.load(self.config.model.appo_init_checkpoint_path, map_location="cpu", weights_only=False)
+        actor_critic.load_state_dict(payload["model"], strict=False)
 
         checkpoint_dir = os.path.join(self.config.train_dir, self.config.experiment, "checkpoint_p0")
         os.makedirs(checkpoint_dir, exist_ok=True)
@@ -246,6 +280,7 @@ class APPOTrainerScaffold:
         parser.add_argument("--active_skill_bootstrap", type=str, default=self.config.env.active_skill_bootstrap)
         parser.add_argument("--learned_reward_path", type=str, default=self.config.reward.learned_reward_path)
         parser.add_argument("--bc_init_path", type=str, default=self.config.model.bc_init_path)
+        parser.add_argument("--appo_init_checkpoint_path", type=str, default=self.config.model.appo_init_checkpoint_path)
         parser.add_argument("--teacher_bc_path", type=str, default=self.config.appo.teacher_bc_path)
         parser.add_argument("--teacher_loss_coef", type=float, default=self.config.appo.teacher_loss_coef)
         parser.add_argument("--teacher_loss_type", type=str, default=self.config.appo.teacher_loss_type)
@@ -262,6 +297,10 @@ class APPOTrainerScaffold:
         parser.add_argument("--teacher_replay_priority_power", type=float, default=self.config.appo.teacher_replay_priority_power)
         parser.add_argument("--teacher_replay_source_mode", type=str, default=self.config.appo.teacher_replay_source_mode)
         parser.add_argument("--param_anchor_coef", type=float, default=self.config.appo.param_anchor_coef)
+        parser.add_argument("--actor_loss_scale", type=float, default=self.config.appo.actor_loss_scale)
+        parser.add_argument("--actor_loss_final_scale", type=float, default=self.config.appo.actor_loss_final_scale)
+        parser.add_argument("--actor_loss_warmup_env_steps", type=int, default=self.config.appo.actor_loss_warmup_env_steps)
+        parser.add_argument("--actor_loss_decay_env_steps", type=int, default=self.config.appo.actor_loss_decay_env_steps)
         parser.add_argument("--trace_eval_input", type=str, default=self.config.appo.trace_eval_input)
         parser.add_argument("--trace_eval_interval_env_steps", type=int, default=self.config.appo.trace_eval_interval_env_steps)
         parser.add_argument("--trace_eval_top_k", type=int, default=self.config.appo.trace_eval_top_k)
@@ -273,12 +312,15 @@ class APPOTrainerScaffold:
         experiment_dir = os.path.join(self.config.train_dir, self.config.experiment)
         lock_path = os.path.join(experiment_dir, ".launch.lock")
         with experiment_lock(lock_path):
-            if self.config.model.bc_init_path and os.path.isdir(experiment_dir):
+            if (self.config.model.bc_init_path or self.config.model.appo_init_checkpoint_path) and os.path.isdir(experiment_dir):
                 shutil.rmtree(experiment_dir)
-            if self.config.model.bc_init_path:
+            if self.config.model.bc_init_path or self.config.model.appo_init_checkpoint_path:
                 env = make_nethack_skill_env(None, sf_cfg, None)
                 actor_critic = create_actor_critic(sf_cfg, spaces.Dict({"obs": env.observation_space}), env.action_space)
-                warmstart_checkpoint = self.maybe_write_bc_warmstart_checkpoint(sf_cfg, actor_critic)
+                if self.config.model.appo_init_checkpoint_path:
+                    warmstart_checkpoint = self.maybe_write_appo_warmstart_checkpoint(sf_cfg, actor_critic)
+                else:
+                    warmstart_checkpoint = self.maybe_write_bc_warmstart_checkpoint(sf_cfg, actor_critic)
                 env.close()
             monitor = None
             try:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 import torch
 
 from rl.config import RLConfig
@@ -45,6 +46,7 @@ def parse_args(argv=None):
     parser.add_argument("--disable-input-normalization", action="store_true")
     parser.add_argument("--nonlinearity", type=str, default=None, choices=["elu", "relu", "tanh"])
     parser.add_argument("--bc-init-path", type=str, default=None)
+    parser.add_argument("--appo-init-checkpoint-path", type=str, default=None)
     parser.add_argument("--teacher-bc-path", type=str, default=None)
     parser.add_argument("--teacher-loss-coef", type=float, default=0.01)
     parser.add_argument("--teacher-loss-type", type=str, default="ce", choices=["ce", "kl"])
@@ -61,6 +63,10 @@ def parse_args(argv=None):
     parser.add_argument("--teacher-replay-priority-power", type=float, default=1.0)
     parser.add_argument("--teacher-replay-source-mode", type=str, default="uniform")
     parser.add_argument("--param-anchor-coef", type=float, default=0.0)
+    parser.add_argument("--actor-loss-scale", type=float, default=1.0)
+    parser.add_argument("--actor-loss-final-scale", type=float, default=1.0)
+    parser.add_argument("--actor-loss-warmup-env-steps", type=int, default=0)
+    parser.add_argument("--actor-loss-decay-env-steps", type=int, default=0)
     parser.add_argument("--trace-eval-input", type=str, default=None)
     parser.add_argument("--trace-eval-interval-env-steps", type=int, default=0)
     parser.add_argument("--trace-eval-top-k", type=int, default=5)
@@ -109,6 +115,15 @@ def build_config(args) -> RLConfig:
     config.env.max_episode_steps = getattr(args, "env_max_episode_steps", config.env.max_episode_steps)
     if args.model_hidden_size is not None:
         config.model.hidden_size = args.model_hidden_size
+    elif getattr(args, "appo_init_checkpoint_path", None):
+        try:
+            payload = torch.load(args.appo_init_checkpoint_path, map_location="cpu", weights_only=False)
+            model_state = payload.get("model", {})
+            first_layer = model_state.get("encoder.encoders.obs.mlp_head.0.weight")
+            if first_layer is not None:
+                config.model.hidden_size = int(first_layer.shape[0])
+        except Exception:
+            pass
     elif args.bc_init_path:
         try:
             payload = torch.load(args.bc_init_path, map_location="cpu")
@@ -117,13 +132,38 @@ def build_config(args) -> RLConfig:
         except Exception:
             pass
     config.model.bc_init_path = args.bc_init_path
+    config.model.appo_init_checkpoint_path = getattr(args, "appo_init_checkpoint_path", None)
+    appo_init_config_path = None
+    if config.model.appo_init_checkpoint_path:
+        checkpoint_path = Path(config.model.appo_init_checkpoint_path)
+        try:
+            appo_init_config_path = checkpoint_path.parent.parent / "config.json"
+        except Exception:
+            appo_init_config_path = None
     nonlinearity = getattr(args, "nonlinearity", None)
     if nonlinearity is not None:
         config.model.nonlinearity = nonlinearity
+    elif appo_init_config_path and appo_init_config_path.exists():
+        try:
+            source_cfg = json.loads(appo_init_config_path.read_text())
+            config.model.nonlinearity = str(source_cfg.get("nonlinearity", config.model.nonlinearity))
+        except Exception:
+            pass
     elif args.bc_init_path:
         config.model.nonlinearity = "relu"
     disable_input_normalization = bool(getattr(args, "disable_input_normalization", False))
     config.model.normalize_input = not disable_input_normalization
+    if appo_init_config_path and appo_init_config_path.exists() and getattr(args, "disable_input_normalization", False) is False:
+        try:
+            source_cfg = json.loads(appo_init_config_path.read_text())
+            normalize_input = source_cfg.get("normalize_input", None)
+            if normalize_input is not None:
+                if isinstance(normalize_input, str):
+                    config.model.normalize_input = normalize_input.lower() == "true"
+                else:
+                    config.model.normalize_input = bool(normalize_input)
+        except Exception:
+            pass
     if args.bc_init_path and args.model_hidden_size is None and not disable_input_normalization:
         config.model.normalize_input = False
     config.appo.teacher_bc_path = args.teacher_bc_path or args.bc_init_path
@@ -154,6 +194,16 @@ def build_config(args) -> RLConfig:
         getattr(args, "teacher_replay_source_mode", config.appo.teacher_replay_source_mode)
     )
     config.appo.param_anchor_coef = args.param_anchor_coef
+    config.appo.actor_loss_scale = float(getattr(args, "actor_loss_scale", config.appo.actor_loss_scale))
+    config.appo.actor_loss_final_scale = float(
+        getattr(args, "actor_loss_final_scale", config.appo.actor_loss_final_scale)
+    )
+    config.appo.actor_loss_warmup_env_steps = int(
+        getattr(args, "actor_loss_warmup_env_steps", config.appo.actor_loss_warmup_env_steps)
+    )
+    config.appo.actor_loss_decay_env_steps = int(
+        getattr(args, "actor_loss_decay_env_steps", config.appo.actor_loss_decay_env_steps)
+    )
     config.appo.trace_eval_input = args.trace_eval_input
     config.appo.trace_eval_interval_env_steps = args.trace_eval_interval_env_steps
     config.appo.trace_eval_top_k = args.trace_eval_top_k

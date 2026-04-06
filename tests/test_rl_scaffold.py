@@ -23,14 +23,22 @@ from rl.evaluate import _load_checkpoint_payload
 from rl.traces import shard_trace_file, generate_dagger_traces, generate_multi_turn_traces, verify_trace_file
 from rl.checkpoint_tools import TraceCheckpointMonitor, write_trace_best_alias, rank_appo_checkpoints_by_trace
 import rl.checkpoint_tools as checkpoint_tools
+import rl.dagger as dagger_module
 from pathlib import Path
 import torch
 from rl.timestep import build_policy_timestep
 from rl.io_utils import experiment_lock
-from rl.teacher_reg import patch_sample_factory_teacher_reg, _parse_teacher_action_boosts, _scheduled_teacher_replay_coef
+from rl.teacher_reg import (
+    patch_sample_factory_teacher_reg,
+    _parse_teacher_action_boosts,
+    _scheduled_actor_loss_scale,
+    _scheduled_teacher_replay_coef,
+    _row_replay_flags,
+    _replay_priority_weights,
+)
 from rl.env_adapter import SkillEnvAdapter, EpisodeContext
-from rl.dagger import build_merged_trace_rows, run_dagger_schedule
-from rl.train_behavior_reg import train_behavior_regularized_policy
+from rl.dagger import build_merged_trace_rows, run_dagger_iteration, run_dagger_schedule
+from rl.train_behavior_reg import train_behavior_regularized_policy, _masked_behavior_targets
 from rl.train_appo import build_config as build_appo_config
 from rl.train_world_model import train_world_model
 from rl.world_model_dataset import build_world_model_examples, examples_to_arrays
@@ -162,6 +170,10 @@ def test_build_appo_config_respects_value_stability_args():
             "teacher_replay_priority_power": 1.7,
             "teacher_replay_source_mode": "disagreement",
             "param_anchor_coef": 0.0,
+            "actor_loss_scale": 1.0,
+            "actor_loss_final_scale": 1.0,
+            "actor_loss_warmup_env_steps": 0,
+            "actor_loss_decay_env_steps": 0,
             "trace_eval_input": None,
             "trace_eval_interval_env_steps": 0,
             "trace_eval_top_k": 5,
@@ -244,6 +256,75 @@ def test_build_appo_config_infers_hidden_size_from_bc_checkpoint():
         assert config.model.nonlinearity == "relu"
 
 
+def test_build_appo_config_records_appo_init_checkpoint():
+    args = type(
+        "Args",
+        (),
+        {
+            "experiment": "exp",
+            "train_dir": "train_dir/rl",
+            "serial_mode": False,
+            "async_rl": False,
+            "num_workers": 1,
+            "num_envs_per_worker": 1,
+            "rollout_length": 8,
+            "recurrence": 8,
+            "batch_size": 8,
+            "num_batches_per_epoch": 1,
+            "ppo_epochs": 1,
+            "learning_rate": 3e-4,
+            "gamma": 0.99,
+            "gae_lambda": 0.9,
+            "value_loss_coeff": 0.1,
+            "reward_scale": 0.005,
+            "entropy_coeff": 0.01,
+            "ppo_clip_ratio": 0.1,
+            "train_for_env_steps": 32,
+            "scheduler": "rule_based",
+            "reward_source": "hand_shaped",
+            "learned_reward_path": None,
+            "episodic_explore_bonus_enabled": False,
+            "episodic_explore_bonus_scale": 0.0,
+            "episodic_explore_bonus_mode": "state_hash",
+            "scheduler_model_path": None,
+            "enabled_skills": "explore",
+            "observation_version": "v4",
+            "world_model_path": None,
+            "world_model_feature_mode": None,
+            "env_max_episode_steps": 500,
+            "model_hidden_size": None,
+            "disable_input_normalization": False,
+            "nonlinearity": None,
+            "bc_init_path": None,
+            "appo_init_checkpoint_path": "/tmp/best_trace_match.pth",
+            "teacher_bc_path": None,
+            "teacher_loss_coef": 0.01,
+            "teacher_loss_type": "ce",
+            "teacher_action_boosts": "",
+            "teacher_loss_final_coef": 0.0,
+            "teacher_loss_warmup_env_steps": 0,
+            "teacher_loss_decay_env_steps": 0,
+            "teacher_replay_trace_input": None,
+            "teacher_replay_coef": 0.0,
+            "teacher_replay_final_coef": 0.0,
+            "teacher_replay_warmup_env_steps": 0,
+            "teacher_replay_decay_env_steps": 0,
+            "teacher_replay_batch_size": 128,
+            "teacher_replay_priority_power": 1.0,
+            "teacher_replay_source_mode": "uniform",
+            "param_anchor_coef": 0.0,
+            "trace_eval_input": None,
+            "trace_eval_interval_env_steps": 0,
+            "trace_eval_top_k": 5,
+            "use_rnn": False,
+            "no_rnn": True,
+            "disable_action_mask": False,
+        },
+    )()
+    config = build_appo_config(args)
+    assert config.model.appo_init_checkpoint_path == "/tmp/best_trace_match.pth"
+
+
 def test_parse_teacher_action_boosts():
     boosts = _parse_teacher_action_boosts("west=2.0,south=1.5")
     assert boosts == {3: 2.0, 1: 1.5}
@@ -273,8 +354,13 @@ def test_trainer_scaffold_includes_trace_eval_args():
     config.appo.teacher_replay_decay_env_steps = 512
     config.appo.teacher_replay_priority_power = 1.4
     config.appo.teacher_replay_source_mode = "mixed"
+    config.appo.actor_loss_scale = 0.0
+    config.appo.actor_loss_final_scale = 1.0
+    config.appo.actor_loss_warmup_env_steps = 64
+    config.appo.actor_loss_decay_env_steps = 256
     config.appo.save_every_sec = 9
     config.appo.save_best_every_sec = 3
+    config.model.appo_init_checkpoint_path = "/tmp/seed_checkpoint.pth"
     trainer = APPOTrainerScaffold(config)
     argv = trainer.build_sf_argv()
     assert "--trace_eval_input=data/trace.jsonl" in argv
@@ -287,6 +373,10 @@ def test_trainer_scaffold_includes_trace_eval_args():
     assert "--teacher_replay_decay_env_steps=512" in argv
     assert "--teacher_replay_priority_power=1.4" in argv
     assert "--teacher_replay_source_mode=mixed" in argv
+    assert "--actor_loss_scale=0.0" in argv
+    assert "--actor_loss_warmup_env_steps=64" in argv
+    assert "--actor_loss_decay_env_steps=256" in argv
+    assert "--appo_init_checkpoint_path=/tmp/seed_checkpoint.pth" in argv
     assert "--save_every_sec=9" in argv
     assert "--save_best_every_sec=3" in argv
 
@@ -315,6 +405,60 @@ def test_scheduled_teacher_replay_coef_decays_linearly():
     assert round(_scheduled_teacher_replay_coef(learner), 6) == 0.0125
     learner.env_steps = 500
     assert round(_scheduled_teacher_replay_coef(learner), 6) == 0.005
+
+
+def test_scheduled_actor_loss_scale_decays_linearly():
+    learner = type(
+        "DummyLearner",
+        (),
+        {
+            "actor_loss_scale": 0.0,
+            "actor_loss_final_scale": 1.0,
+            "actor_loss_warmup_env_steps": 100,
+            "actor_loss_decay_env_steps": 300,
+            "env_steps": 0,
+        },
+    )()
+    assert _scheduled_actor_loss_scale(learner) == 0.0
+    learner.env_steps = 100
+    assert _scheduled_actor_loss_scale(learner) == 0.0
+    learner.env_steps = 250
+    assert round(_scheduled_actor_loss_scale(learner), 6) == 0.5
+    learner.env_steps = 500
+    assert round(_scheduled_actor_loss_scale(learner), 6) == 1.0
+
+
+def test_row_replay_flags_detect_disagreement_and_weak_action():
+    flags = _row_replay_flags(
+        {
+            "action": "south",
+            "teacher_action": "south",
+            "behavior_action": "east",
+            "repeated_state_count": 1,
+            "repeated_action_count": 0,
+            "reward": -1.0,
+            "done": True,
+        }
+    )
+    assert flags["is_disagreement_candidate"] == 1.0
+    assert flags["is_weak_action"] == 1.0
+    assert flags["is_loop_risk"] == 1.0
+    assert flags["is_failure_slice"] == 1.0
+
+
+def test_replay_priority_weights_target_requested_rows():
+    rows = [
+        {"action": "east", "teacher_action": "east", "behavior_action": "east"},
+        {"action": "south", "teacher_action": "south", "behavior_action": "east"},
+        {"action": "west", "teacher_action": "west", "behavior_action": "west", "repeated_state_count": 1},
+    ]
+    disagreement = _replay_priority_weights(rows, source_mode="disagreement", priority_power=1.0)
+    weak = _replay_priority_weights(rows, source_mode="weak_action", priority_power=1.0)
+    mixed = _replay_priority_weights(rows, source_mode="mixed", priority_power=1.5)
+    assert disagreement[1] > disagreement[0]
+    assert weak[1] > weak[0]
+    assert weak[2] > weak[0]
+    assert mixed[2] > mixed[0]
 
 
 def test_skill_env_reset_and_step():
@@ -985,6 +1129,47 @@ def test_generate_dagger_traces_wall_avoidance_runs():
         assert "teacher_match_rate" in summary
 
 
+def test_run_dagger_iteration_accepts_appo_checkpoint_without_experiment(monkeypatch):
+    calls = {}
+
+    def fake_generate_dagger_traces(**kwargs):
+        calls["appo_checkpoint_path"] = kwargs["appo_checkpoint_path"]
+        with open(kwargs["output_path"], "w") as f:
+            f.write(json.dumps({"episode_id": "dagger:appo:0", "step": 0, "step_index": 0, "observation_version": "v4", "features": [0.0], "action_index": 0}) + "\n")
+        return {"episodes": 1, "rows": 1}
+
+    def fake_load_trace_rows(path):
+        return [{"observation_version": "v4", "action_index": 0}]
+
+    def fake_build_merged_trace_rows(**kwargs):
+        return [{"observation_version": "v4", "action_index": 0}]
+
+    def fake_train_bc_model(rows, bc_output, **kwargs):
+        assert kwargs["observation_version"] == "v4"
+        return {"rows": len(rows), "bc_output": bc_output}
+
+    def fake_evaluate_trace_policy(*args, **kwargs):
+        return {"summary": {"match_rate": 0.5}}
+
+    monkeypatch.setattr(dagger_module, "generate_dagger_traces", fake_generate_dagger_traces)
+    monkeypatch.setattr(dagger_module, "load_trace_rows", fake_load_trace_rows)
+    monkeypatch.setattr(dagger_module, "build_merged_trace_rows", fake_build_merged_trace_rows)
+    monkeypatch.setattr(dagger_module, "train_bc_model", fake_train_bc_model)
+    monkeypatch.setattr(dagger_module, "evaluate_trace_policy", fake_evaluate_trace_policy)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        report = run_dagger_iteration(
+            base_trace_input=os.path.join(tmpdir, "base.jsonl"),
+            dagger_trace_output=os.path.join(tmpdir, "dagger.jsonl"),
+            bc_output=os.path.join(tmpdir, "bc.pt"),
+            student_policy="appo",
+            appo_checkpoint_path=os.path.join(tmpdir, "checkpoint.pth"),
+            observation_version="v4",
+        )
+        assert calls["appo_checkpoint_path"].endswith("checkpoint.pth")
+        assert report["dagger_trace_summary"]["episodes"] == 1
+
+
 def test_rank_checkpoints_skips_unreadable_checkpoint(monkeypatch):
     checkpoints = [Path("/tmp/valid.pth"), Path("/tmp/broken.pth")]
 
@@ -1147,6 +1332,20 @@ def test_behavior_regularized_policy_trains():
         assert os.path.exists(out)
         eval_summary = evaluate_trace_policy(trace_path, "bc", bc_model_path=out, summary_only=True)["summary"]
         assert eval_summary["rows"] == 2
+
+
+def test_behavior_reg_masks_and_renormalizes_behavior_targets():
+    action_masks = torch.tensor(
+        [
+            [1.0, 0.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    prior = torch.tensor([0.6, 0.2, 0.1, 0.1], dtype=torch.float32)
+    targets = _masked_behavior_targets(action_masks, prior)
+    assert torch.allclose(targets[0], torch.tensor([0.85714287, 0.0, 0.14285715, 0.0]), atol=1e-6)
+    assert torch.allclose(targets[1], torch.tensor([0.0, 0.6666667, 0.0, 0.33333334]), atol=1e-6)
 
 
 def test_run_dagger_schedule_produces_iteration_report():

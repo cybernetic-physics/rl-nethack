@@ -105,8 +105,8 @@ def run_dagger_iteration(
 ) -> dict:
     if student_policy == "bc" and not bc_model_path:
         raise ValueError("bc_model_path is required for student_policy=bc")
-    if student_policy == "appo" and not appo_experiment:
-        raise ValueError("appo_experiment is required for student_policy=appo")
+    if student_policy == "appo" and not (appo_experiment or appo_checkpoint_path):
+        raise ValueError("appo_experiment or appo_checkpoint_path is required for student_policy=appo")
 
     dagger_summary = generate_dagger_traces(
         output_path=dagger_trace_output,
@@ -134,13 +134,14 @@ def run_dagger_iteration(
 
     _write_rows(merged_trace_output, merged_rows)
 
+    train_observation_version = merged_rows[0].get("observation_version", observation_version) if merged_rows else observation_version
     train_result = train_bc_model(
         merged_rows,
         bc_output,
         epochs=epochs,
         lr=lr,
         hidden_size=hidden_size,
-        observation_version=observation_version,
+        observation_version=train_observation_version,
     )
     base_eval = evaluate_trace_policy(base_trace_input, "bc", bc_model_path=bc_output, summary_only=True)
     heldout_eval = (

@@ -364,6 +364,8 @@ def cmd_rl_train_appo(args):
         argv.extend(["--scheduler-model-path", args.scheduler_model_path])
     if args.bc_init_path:
         argv.extend(["--bc-init-path", args.bc_init_path])
+    if getattr(args, "appo_init_checkpoint_path", None):
+        argv.extend(["--appo-init-checkpoint-path", args.appo_init_checkpoint_path])
     if args.teacher_bc_path:
         argv.extend(["--teacher-bc-path", args.teacher_bc_path])
     if args.teacher_loss_coef:
@@ -396,6 +398,14 @@ def cmd_rl_train_appo(args):
         argv.extend(["--teacher-replay-source-mode", str(args.teacher_replay_source_mode)])
     if getattr(args, "param_anchor_coef", 0.0):
         argv.extend(["--param-anchor-coef", str(args.param_anchor_coef)])
+    if getattr(args, "actor_loss_scale", 1.0) != 1.0:
+        argv.extend(["--actor-loss-scale", str(args.actor_loss_scale)])
+    if getattr(args, "actor_loss_final_scale", 1.0) != 1.0:
+        argv.extend(["--actor-loss-final-scale", str(args.actor_loss_final_scale)])
+    if getattr(args, "actor_loss_warmup_env_steps", 0):
+        argv.extend(["--actor-loss-warmup-env-steps", str(args.actor_loss_warmup_env_steps)])
+    if getattr(args, "actor_loss_decay_env_steps", 0):
+        argv.extend(["--actor-loss-decay-env-steps", str(args.actor_loss_decay_env_steps)])
     if args.trace_eval_input:
         argv.extend(["--trace-eval-input", args.trace_eval_input])
     if args.trace_eval_interval_env_steps:
@@ -1223,6 +1233,8 @@ def main():
                       help='Actor MLP nonlinearity; BC warm-start defaults to relu')
     p_rl.add_argument('--bc-init-path', type=str, default=None,
                       help='Optional BC checkpoint used to warm start APPO')
+    p_rl.add_argument('--appo-init-checkpoint-path', type=str, default=None,
+                      help='Optional APPO checkpoint used to warm start a fresh APPO experiment')
     p_rl.add_argument('--teacher-bc-path', type=str, default=None,
                       help='Optional frozen BC teacher checkpoint used for auxiliary teacher regularization')
     p_rl.add_argument('--teacher-loss-coef', type=float, default=0.01,
@@ -1255,6 +1267,14 @@ def main():
                       help='Reserved replay source mode for prioritized replay experiments')
     p_rl.add_argument('--param-anchor-coef', type=float, default=0.0,
                       help='L2 anchor coefficient on warm-started encoder/policy parameters')
+    p_rl.add_argument('--actor-loss-scale', type=float, default=1.0,
+                      help='Scale multiplier applied to the PPO actor loss')
+    p_rl.add_argument('--actor-loss-final-scale', type=float, default=1.0,
+                      help='Optional final actor-loss scale after scheduled decay')
+    p_rl.add_argument('--actor-loss-warmup-env-steps', type=int, default=0,
+                      help='Env-step warmup before actor-loss scale decay starts')
+    p_rl.add_argument('--actor-loss-decay-env-steps', type=int, default=0,
+                      help='Env-step linear decay duration from actor-loss-scale to actor-loss-final-scale')
     p_rl.add_argument('--trace-eval-input', type=str, default=None,
                       help='Optional trusted trace JSONL used for in-training checkpoint selection')
     p_rl.add_argument('--trace-eval-interval-env-steps', type=int, default=0,

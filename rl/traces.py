@@ -19,6 +19,8 @@ from rl.options import build_skill_registry
 from rl.scheduler import SchedulerContext, build_scheduler
 from rl.sf_env import NethackSkillEnv
 from rl.timestep import build_policy_timestep
+from rl.world_model import load_world_model
+from rl.world_model_features import augment_feature_vector
 from src.data_generator import build_messages, wall_avoidance_policy
 from src.evaluator import parse_prediction
 from src.memory_tracker import MemoryTracker
@@ -27,14 +29,25 @@ from src.task_harness import select_task_action
 from src.task_rewards import observation_hash, snapshot_memory
 
 
-def _load_appo_eval_bundle(appo_experiment: str, appo_train_dir: str, checkpoint_path: str | None = None) -> dict:
+def _load_appo_eval_bundle(appo_experiment: str | None, appo_train_dir: str, checkpoint_path: str | None = None) -> dict:
     from rl.evaluate import _load_actor_critic
     import torch
     from sample_factory.algo.utils.rl_utils import prepare_and_normalize_obs
     from sample_factory.model.model_utils import get_rnn_size
 
+    experiment = appo_experiment
+    if not experiment and checkpoint_path:
+        checkpoint = os.path.abspath(checkpoint_path)
+        checkpoint_dir = os.path.dirname(checkpoint)
+        if os.path.basename(checkpoint_dir).startswith("checkpoint_p"):
+            experiment = os.path.basename(os.path.dirname(checkpoint_dir))
+        else:
+            experiment = os.path.basename(checkpoint_dir)
+    if not experiment:
+        raise ValueError("appo_experiment or checkpoint_path is required to load APPO evaluation bundle")
+
     cfg, env_eval, actor_critic, device = _load_actor_critic(
-        appo_experiment,
+        experiment,
         appo_train_dir,
         device="cpu",
         checkpoint_path=checkpoint_path,
@@ -144,7 +157,7 @@ def _select_trace_policy_action(
         for idx, name in enumerate(ACTION_SET):
             if name not in set(info.get("allowed_actions", allowed_actions)):
                 raw_logits[0, idx] = -1e9
-        action_idx = int(np.argmax(raw_logits.cpu().numpy(), axis=1)[0])
+        action_idx = int(np.argmax(raw_logits.detach().cpu().numpy(), axis=1)[0])
         action_name = ACTION_SET[action_idx]
         return action_name, [], policy_outputs["new_rnn_states"], timestep
 
@@ -446,6 +459,14 @@ def generate_multi_turn_traces(
                     "steps_in_skill": timestep["steps_in_skill"],
                     "recent_action_count": len(timestep["recent_actions"]),
                     "recent_position_count": len(timestep["recent_positions"]),
+                    "repeated_state_count": timestep["repeated_state_count"],
+                    "revisited_recent_tile_count": timestep["revisited_recent_tile_count"],
+                    "repeated_action_count": timestep["repeated_action_count"],
+                    "teacher_action_index": ACTION_SET.index(action_name) if action_name in ACTION_SET else ACTION_SET.index("wait"),
+                    "is_weak_action": action_name in {"south", "west", "search"},
+                    "is_loop_risk": timestep["repeated_state_count"] > 0 or timestep["repeated_action_count"] > 0,
+                    "is_failure_slice": bool((terminated or truncated) and float(reward) < 0.0),
+                    "is_disagreement_candidate": False,
                     "planner_trace": planner_trace,
                 }
                 records.append(record)
@@ -489,8 +510,8 @@ def generate_dagger_traces(
         raise ValueError("student_policy must be one of: bc, appo, wall_avoidance")
     if student_policy == "bc" and not bc_model_path:
         raise ValueError("bc_model_path is required for student_policy=bc")
-    if student_policy == "appo" and not appo_experiment:
-        raise ValueError("appo_experiment is required for student_policy=appo")
+    if student_policy == "appo" and not (appo_experiment or appo_checkpoint_path):
+        raise ValueError("appo_experiment or appo_checkpoint_path is required for student_policy=appo")
 
     os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
     encoder = StateEncoder()
@@ -499,8 +520,15 @@ def generate_dagger_traces(
     scheduler = build_scheduler("rule_based")
 
     appo_eval = None
+    world_model_inference = None
+    feature_observation_version = observation_version
     if student_policy == "appo":
         appo_eval = _load_appo_eval_bundle(appo_experiment, appo_train_dir, checkpoint_path=appo_checkpoint_path)
+        wm_path = getattr(appo_eval["cfg"], "world_model_path", None)
+        wm_mode = getattr(appo_eval["cfg"], "world_model_feature_mode", None)
+        if wm_path and wm_mode:
+            world_model_inference = load_world_model(wm_path)
+            feature_observation_version = f"{observation_version}+wm_{wm_mode}"
 
     bc_policy = None
     bc_observation_version = observation_version
@@ -518,22 +546,33 @@ def generate_dagger_traces(
 
     for ep_idx in range(num_episodes):
             seed = seed_start + ep_idx
-            env = nle.env.NLE()
-            obs, _ = env.reset(seed=seed)
-            memory = MemoryTracker()
-            memory.update(obs)
-            memory.detect_rooms()
-            state = encoder.encode_full(obs)
-            recent_state_hashes = [observation_hash(obs)]
-            recent_positions = [state["position"]]
-            info = {}
             if student_policy == "appo":
+                env_config = RLConfig()
+                env_config.env.observation_version = str(getattr(appo_eval["cfg"], "observation_version", observation_version))
+                env_config.env.max_episode_steps = int(getattr(appo_eval["cfg"], "env_max_episode_steps", env_config.env.max_episode_steps))
+                env_config.env.world_model_path = getattr(appo_eval["cfg"], "world_model_path", None)
+                env_config.env.world_model_feature_mode = getattr(appo_eval["cfg"], "world_model_feature_mode", None)
+                env = NethackSkillEnv(env_config)
+                obs, info = env.reset(seed=seed)
+                memory = env.adapter.memory
+                state = env.adapter._encode_state(env.adapter.obs)
                 rnn_states = appo_eval["torch"].zeros(
                     [1, appo_eval["get_rnn_size"](appo_eval["cfg"])],
                     dtype=appo_eval["torch"].float32,
                     device=appo_eval["device"],
                 )
+                recent_state_hashes = [observation_hash(env.adapter.obs)]
+                recent_positions = [state["position"]]
             else:
+                env = nle.env.NLE()
+                obs, _ = env.reset(seed=seed)
+                memory = MemoryTracker()
+                memory.update(obs)
+                memory.detect_rooms()
+                state = encoder.encode_full(obs)
+                recent_state_hashes = [observation_hash(obs)]
+                recent_positions = [state["position"]]
+                info = {}
                 rnn_states = None
 
             recent_actions: list[str] = []
@@ -541,7 +580,7 @@ def generate_dagger_traces(
             steps = 0
 
             for step in range(max_steps):
-                raw_obs = obs
+                raw_obs = env.adapter.obs if student_policy == "appo" else obs
                 state = encoder.encode_full(raw_obs)
                 student_action, _, rnn_states, timestep = _select_trace_policy_action(
                     policy=student_policy,
@@ -566,8 +605,8 @@ def generate_dagger_traces(
                     appo_rnn_states=rnn_states,
                 )
                 teacher_action, teacher_trace = select_task_action(
-                    env=env,
-                    obs_before=obs,
+                    env=env.adapter.env if student_policy == "appo" else env,
+                    obs_before=raw_obs,
                     state_before=state,
                     memory_before=memory,
                     task=task,
@@ -582,10 +621,15 @@ def generate_dagger_traces(
                     student_action = "wait"
                 prompt_text = encoder.format_prompt(state, teacher_action)
                 obs_before = raw_obs
-                obs_after, reward, terminated, truncated, info = env.step(action_map[student_action])
-                raw_obs_after = obs_after
-                memory.update(obs_after)
-                memory.detect_rooms()
+                if student_policy == "appo":
+                    obs_after, reward, terminated, truncated, info = env.step(ACTION_SET.index(student_action))
+                    raw_obs_after = env.adapter.obs
+                    memory = env.adapter.memory
+                else:
+                    obs_after, reward, terminated, truncated, info = env.step(action_map[student_action])
+                    raw_obs_after = obs_after
+                    memory.update(obs_after)
+                    memory.detect_rooms()
 
                 delta = encoder.encode_delta(obs_before, raw_obs_after, teacher_action)
                 next_hash = observation_hash(raw_obs_after)
@@ -608,13 +652,29 @@ def generate_dagger_traces(
                     "done": bool(terminated or truncated),
                     "obs_hash": observation_hash(obs_before),
                     "next_obs_hash": next_hash,
-                    "feature_vector": encode_observation(timestep, version=observation_version).tolist(),
-                    "observation_version": observation_version,
+                    "feature_vector": (
+                        augment_feature_vector(
+                            encode_observation(timestep, version=observation_version),
+                            world_model_inference,
+                            mode=getattr(appo_eval["cfg"], "world_model_feature_mode", None),
+                        ).tolist()
+                        if student_policy == "appo" and world_model_inference is not None
+                        else encode_observation(timestep, version=observation_version).tolist()
+                    ),
+                    "observation_version": feature_observation_version,
                     "memory_total_explored_before": timestep["memory_total_explored"],
                     "rooms_discovered_before": timestep["rooms_discovered"],
                     "steps_in_skill": timestep["steps_in_skill"],
                     "recent_action_count": len(timestep["recent_actions"]),
                     "recent_position_count": len(timestep["recent_positions"]),
+                    "repeated_state_count": timestep["repeated_state_count"],
+                    "revisited_recent_tile_count": timestep["revisited_recent_tile_count"],
+                    "repeated_action_count": timestep["repeated_action_count"],
+                    "teacher_action_index": ACTION_SET.index(teacher_action) if teacher_action in ACTION_SET else ACTION_SET.index("wait"),
+                    "is_weak_action": teacher_action in {"south", "west", "search"},
+                    "is_loop_risk": timestep["repeated_state_count"] > 0 or timestep["repeated_action_count"] > 0,
+                    "is_failure_slice": bool((terminated or truncated) and float(reward) < 0.0),
+                    "is_disagreement_candidate": student_action != teacher_action,
                     "planner_trace": teacher_trace,
                 }
                 records.append(record)

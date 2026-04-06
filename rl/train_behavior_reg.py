@@ -14,6 +14,16 @@ from rl.train_bc import load_trace_rows
 from rl.trace_eval import evaluate_trace_policy
 
 
+def _masked_behavior_targets(
+    action_masks: torch.Tensor,
+    behavior_prior: torch.Tensor,
+) -> torch.Tensor:
+    masked_prior = behavior_prior.unsqueeze(0) * action_masks
+    row_sums = masked_prior.sum(dim=1, keepdim=True)
+    fallback = action_masks / action_masks.sum(dim=1, keepdim=True).clamp_min(1.0)
+    return torch.where(row_sums > 0, masked_prior / row_sums.clamp_min(1e-8), fallback)
+
+
 def train_behavior_regularized_policy(
     rows: list[dict],
     output_path: str,
@@ -60,6 +70,7 @@ def train_behavior_regularized_policy(
 
     action_counts = torch.bincount(y, minlength=len(ACTION_SET)).float()
     behavior_prior = (action_counts / max(1.0, float(action_counts.sum()))).clamp_min(1e-8)
+    behavior_targets = _masked_behavior_targets(action_masks, behavior_prior)
     class_weights = torch.ones(len(ACTION_SET), dtype=torch.float32, device=device)
     if class_balance_power > 0.0:
         normalized_counts = behavior_prior.clamp_min(1e-6)
@@ -82,7 +93,7 @@ def train_behavior_regularized_policy(
         imitation_loss = F.cross_entropy(masked_logits, y, weight=class_weights)
         behavior_reg = F.kl_div(
             F.log_softmax(masked_logits, dim=-1),
-            behavior_prior.unsqueeze(0).expand_as(masked_logits),
+            behavior_targets,
             reduction="batchmean",
             log_target=False,
         )

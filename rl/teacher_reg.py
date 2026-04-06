@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 
 from rl.bc_model import BCPolicyMLP
-from rl.feature_encoder import ACTION_SET
+from rl.feature_encoder import ACTION_SET, action_name_to_index
 from rl.feature_encoder import observation_dim
 
 
@@ -18,7 +18,56 @@ _ORIG_CALC_LOSSES = None
 _ORIG_RECORD_SUMMARIES = None
 
 
-def _load_teacher_replay_tensors(path: str, device: torch.device) -> dict[str, torch.Tensor]:
+def _row_replay_flags(row: dict) -> dict[str, float]:
+    weak_actions = {"south", "west", "search"}
+    behavior_action = row.get("behavior_action")
+    teacher_action = row.get("teacher_action", row.get("action"))
+    repeated_state_count = int(row.get("repeated_state_count", 0) or 0)
+    repeated_action_count = int(row.get("repeated_action_count", 0) or 0)
+    reward = float(row.get("reward", 0.0) or 0.0)
+    done = bool(row.get("done", False))
+    return {
+        "is_disagreement_candidate": 1.0 if behavior_action is not None and behavior_action != teacher_action else 0.0,
+        "is_weak_action": 1.0 if teacher_action in weak_actions else 0.0,
+        "is_loop_risk": 1.0 if repeated_state_count > 0 or repeated_action_count > 0 else 0.0,
+        "is_failure_slice": 1.0 if done and reward < 0.0 else 0.0,
+        "teacher_action_index": float(action_name_to_index(teacher_action or "wait")),
+    }
+
+
+def _replay_priority_weights(rows: list[dict], source_mode: str, priority_power: float) -> torch.Tensor:
+    if source_mode not in {"uniform", "weak_action", "disagreement", "mixed"}:
+        raise ValueError(f"Unsupported teacher replay source mode: {source_mode}")
+
+    base = torch.ones(len(rows), dtype=torch.float32)
+    if source_mode == "uniform":
+        return base
+
+    weights = []
+    for row in rows:
+        flags = _row_replay_flags(row)
+        disagreement = flags["is_disagreement_candidate"]
+        weak_action = flags["is_weak_action"]
+        loop_risk = flags["is_loop_risk"]
+        failure_slice = flags["is_failure_slice"]
+        if source_mode == "disagreement":
+            weight = 1.0 + disagreement + 0.5 * loop_risk + 0.5 * failure_slice
+        elif source_mode == "weak_action":
+            weight = 1.0 + weak_action + 0.5 * disagreement
+        else:  # mixed
+            weight = 1.0 + disagreement + weak_action + 0.5 * loop_risk + 0.5 * failure_slice
+        weights.append(weight)
+
+    weight_tensor = torch.tensor(weights, dtype=torch.float32)
+    priority_power = max(0.0, float(priority_power))
+    if priority_power != 1.0:
+        weight_tensor = weight_tensor.pow(priority_power)
+    if float(weight_tensor.sum().item()) <= 0.0:
+        return base
+    return weight_tensor
+
+
+def _load_teacher_replay_tensors(path: str, device: torch.device, source_mode: str, priority_power: float) -> dict[str, torch.Tensor]:
     rows = []
     with open(path, "r") as f:
         for line in f:
@@ -40,10 +89,17 @@ def _load_teacher_replay_tensors(path: str, device: torch.device) -> dict[str, t
         dtype=torch.float32,
         device=device,
     )
+    flags = [_row_replay_flags(row) for row in rows]
+    weights = _replay_priority_weights(rows, source_mode=source_mode, priority_power=priority_power).to(device)
     return {
         "features": features,
         "actions": actions,
         "allowed_masks": allowed_masks,
+        "weights": weights,
+        "disagreement_flags": torch.tensor([flag["is_disagreement_candidate"] for flag in flags], dtype=torch.float32, device=device),
+        "weak_action_flags": torch.tensor([flag["is_weak_action"] for flag in flags], dtype=torch.float32, device=device),
+        "loop_risk_flags": torch.tensor([flag["is_loop_risk"] for flag in flags], dtype=torch.float32, device=device),
+        "failure_flags": torch.tensor([flag["is_failure_slice"] for flag in flags], dtype=torch.float32, device=device),
     }
 
 
@@ -70,6 +126,22 @@ def _scheduled_teacher_replay_coef(self) -> float:
     final = float(getattr(self, "teacher_replay_final_coef", 0.0) or 0.0)
     warmup = int(getattr(self, "teacher_replay_warmup_env_steps", 0) or 0)
     decay = int(getattr(self, "teacher_replay_decay_env_steps", 0) or 0)
+    if decay <= 0:
+        return start
+    env_steps = int(getattr(self, "env_steps", 0) or 0)
+    if env_steps <= warmup:
+        return start
+    progress = min(1.0, max(0.0, (env_steps - warmup) / decay))
+    return start + (final - start) * progress
+
+
+def _scheduled_actor_loss_scale(self) -> float:
+    start_raw = getattr(self, "actor_loss_scale", None)
+    start = 1.0 if start_raw is None else float(start_raw)
+    final_raw = getattr(self, "actor_loss_final_scale", None)
+    final = start if final_raw is None else float(final_raw)
+    warmup = int(getattr(self, "actor_loss_warmup_env_steps", 0) or 0)
+    decay = int(getattr(self, "actor_loss_decay_env_steps", 0) or 0)
     if decay <= 0:
         return start
     env_steps = int(getattr(self, "env_steps", 0) or 0)
@@ -171,6 +243,10 @@ def patch_sample_factory_teacher_reg() -> None:
         self.teacher_replay_priority_power = float(getattr(self.cfg, "teacher_replay_priority_power", 1.0) or 1.0)
         self.teacher_replay_source_mode = str(getattr(self.cfg, "teacher_replay_source_mode", "uniform") or "uniform")
         self.param_anchor_coef = float(getattr(self.cfg, "param_anchor_coef", 0.0) or 0.0)
+        self.actor_loss_scale = float(getattr(self.cfg, "actor_loss_scale", 1.0) or 1.0)
+        self.actor_loss_final_scale = float(getattr(self.cfg, "actor_loss_final_scale", 1.0) or 1.0)
+        self.actor_loss_warmup_env_steps = int(getattr(self.cfg, "actor_loss_warmup_env_steps", 0) or 0)
+        self.actor_loss_decay_env_steps = int(getattr(self.cfg, "actor_loss_decay_env_steps", 0) or 0)
         self.param_anchor_tensors = {}
         if self.teacher_loss_type not in {"ce", "kl"}:
             raise ValueError(f"Unsupported teacher_loss_type: {self.teacher_loss_type}")
@@ -189,7 +265,12 @@ def patch_sample_factory_teacher_reg() -> None:
                 param.requires_grad_(False)
             self.teacher_policy = teacher
         if self.teacher_replay_trace_input and max(self.teacher_replay_coef, self.teacher_replay_final_coef) > 0.0:
-            self.teacher_replay = _load_teacher_replay_tensors(self.teacher_replay_trace_input, self.device)
+            self.teacher_replay = _load_teacher_replay_tensors(
+                self.teacher_replay_trace_input,
+                self.device,
+                source_mode=self.teacher_replay_source_mode,
+                priority_power=self.teacher_replay_priority_power,
+            )
         if self.param_anchor_coef > 0.0:
             self.param_anchor_tensors = {
                 name: param.detach().clone().to(self.device)
@@ -205,6 +286,7 @@ def patch_sample_factory_teacher_reg() -> None:
         teacher_replay_loss = torch.zeros((), device=self.device)
         teacher_replay_coef = torch.zeros((), device=self.device)
         param_anchor_loss = torch.zeros((), device=self.device)
+        actor_loss_scale = policy_loss.new_tensor(_scheduled_actor_loss_scale(self))
 
         if self.teacher_policy is not None:
             raw_obs = mb.get("raw_obs")
@@ -245,10 +327,14 @@ def patch_sample_factory_teacher_reg() -> None:
         if self.teacher_replay is not None and max(self.teacher_replay_coef, self.teacher_replay_final_coef) > 0.0:
             replay_size = self.teacher_replay["features"].shape[0]
             batch_size = min(self.teacher_replay_batch_size, replay_size)
-            replay_indices = torch.randint(0, replay_size, (batch_size,), device=self.device)
+            replay_indices = torch.multinomial(self.teacher_replay["weights"], batch_size, replacement=True)
             replay_features = self.teacher_replay["features"][replay_indices]
             replay_actions = self.teacher_replay["actions"][replay_indices]
             replay_allowed_masks = self.teacher_replay["allowed_masks"][replay_indices]
+            replay_disagreement_flags = self.teacher_replay["disagreement_flags"][replay_indices]
+            replay_weak_action_flags = self.teacher_replay["weak_action_flags"][replay_indices]
+            replay_loop_risk_flags = self.teacher_replay["loop_risk_flags"][replay_indices]
+            replay_failure_flags = self.teacher_replay["failure_flags"][replay_indices]
             student_replay_logits = self.actor_critic.forward_head({"obs": replay_features})["x"]
             student_replay_logits = self.actor_critic.forward_core(student_replay_logits, None, values_only=False)["x"]
             student_replay_logits = self.actor_critic.forward_tail(
@@ -257,6 +343,10 @@ def patch_sample_factory_teacher_reg() -> None:
             student_replay_logits = student_replay_logits.masked_fill(replay_allowed_masks <= 0, -1e9)
             teacher_replay_coef = teacher_replay_loss.new_tensor(_scheduled_teacher_replay_coef(self))
             teacher_replay_loss = F.cross_entropy(student_replay_logits, replay_actions) * teacher_replay_coef
+            loss_summaries["teacher_replay_disagreement_fraction"] = replay_disagreement_flags.mean()
+            loss_summaries["teacher_replay_weak_action_fraction"] = replay_weak_action_flags.mean()
+            loss_summaries["teacher_replay_loop_risk_fraction"] = replay_loop_risk_flags.mean()
+            loss_summaries["teacher_replay_failure_fraction"] = replay_failure_flags.mean()
 
         if self.param_anchor_coef > 0.0 and self.param_anchor_tensors:
             anchor_terms = []
@@ -275,8 +365,9 @@ def patch_sample_factory_teacher_reg() -> None:
         loss_summaries["teacher_replay_priority_power"] = teacher_replay_loss.new_tensor(
             float(getattr(self, "teacher_replay_priority_power", 1.0) or 1.0)
         )
+        loss_summaries["actor_loss_scale"] = actor_loss_scale
         loss_summaries["param_anchor_loss"] = param_anchor_loss
-        result[1] = policy_loss + teacher_loss + teacher_replay_loss + param_anchor_loss
+        result[1] = actor_loss_scale * policy_loss + teacher_loss + teacher_replay_loss + param_anchor_loss
         result[6] = loss_summaries
         return tuple(result)
 
@@ -292,6 +383,16 @@ def patch_sample_factory_teacher_reg() -> None:
             stats.teacher_replay_coef = float(train_loop_vars.teacher_replay_coef.item())
         if hasattr(train_loop_vars, "teacher_replay_priority_power"):
             stats.teacher_replay_priority_power = float(train_loop_vars.teacher_replay_priority_power.item())
+        if hasattr(train_loop_vars, "actor_loss_scale"):
+            stats.actor_loss_scale = float(train_loop_vars.actor_loss_scale.item())
+        if hasattr(train_loop_vars, "teacher_replay_disagreement_fraction"):
+            stats.teacher_replay_disagreement_fraction = float(train_loop_vars.teacher_replay_disagreement_fraction.item())
+        if hasattr(train_loop_vars, "teacher_replay_weak_action_fraction"):
+            stats.teacher_replay_weak_action_fraction = float(train_loop_vars.teacher_replay_weak_action_fraction.item())
+        if hasattr(train_loop_vars, "teacher_replay_loop_risk_fraction"):
+            stats.teacher_replay_loop_risk_fraction = float(train_loop_vars.teacher_replay_loop_risk_fraction.item())
+        if hasattr(train_loop_vars, "teacher_replay_failure_fraction"):
+            stats.teacher_replay_failure_fraction = float(train_loop_vars.teacher_replay_failure_fraction.item())
         if hasattr(train_loop_vars, "param_anchor_loss"):
             stats.param_anchor_loss = float(train_loop_vars.param_anchor_loss.item())
         return stats
