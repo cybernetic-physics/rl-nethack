@@ -46,6 +46,7 @@ from rl.teacher_reg import (
     _parse_teacher_action_boosts,
     _resolve_teacher_prior_bc_paths,
     _teacher_policy_blend,
+    _teacher_policy_fallback_details,
     _teacher_policy_fallback_mask,
     _scheduled_actor_loss_scale,
     _scheduled_teacher_replay_coef,
@@ -219,6 +220,15 @@ def test_teacher_policy_blend_and_fallback_helpers():
     )
     fallback_mask = _teacher_policy_fallback_mask(student_probs, 0.5)
     assert fallback_mask.tolist() == [False, True]
+    disagreement_fallback_mask, disagreement_mask, weak_override_mask = _teacher_policy_fallback_details(
+        student_probs,
+        0.0,
+        teacher_probs=teacher_probs,
+        disagreement_margin=0.15,
+    )
+    assert disagreement_mask.tolist() == [True, True]
+    assert weak_override_mask.tolist() == [False, True]
+    assert disagreement_fallback_mask.tolist() == [False, True]
 
 
 def test_cli_mine_reset_slice_forwards_signature(monkeypatch):
@@ -390,6 +400,7 @@ def test_cli_rl_train_appo_forwards_teacher_prior_controls(monkeypatch):
         teacher_replay_source_mode="uniform",
         teacher_policy_blend_coef=0.2,
         teacher_policy_fallback_confidence=0.6,
+        teacher_policy_disagreement_margin=0.1,
         param_anchor_coef=0.0,
         actor_loss_scale=1.0,
         actor_loss_final_scale=1.0,
@@ -414,6 +425,8 @@ def test_cli_rl_train_appo_forwards_teacher_prior_controls(monkeypatch):
     assert argv[argv.index("--teacher-policy-blend-coef") + 1] == "0.2"
     assert "--teacher-policy-fallback-confidence" in argv
     assert argv[argv.index("--teacher-policy-fallback-confidence") + 1] == "0.6"
+    assert "--teacher-policy-disagreement-margin" in argv
+    assert argv[argv.index("--teacher-policy-disagreement-margin") + 1] == "0.1"
     assert "--teacher-prior-bc-path" in argv
     assert argv[argv.index("--teacher-prior-bc-path") + 1] == "/tmp/prior.pt"
 
@@ -439,6 +452,7 @@ def test_trainer_scaffold_includes_teacher_reg_args():
     config.appo.teacher_loss_decay_env_steps = 4096
     config.appo.teacher_policy_blend_coef = 0.15
     config.appo.teacher_policy_fallback_confidence = 0.55
+    config.appo.teacher_policy_disagreement_margin = 0.1
     config.appo.param_anchor_coef = 0.005
     config.appo.learning_rate = 1e-4
     config.appo.entropy_coeff = 0.0
@@ -460,6 +474,7 @@ def test_trainer_scaffold_includes_teacher_reg_args():
     assert "--teacher_loss_decay_env_steps=4096" in argv
     assert "--teacher_policy_blend_coef=0.15" in argv
     assert "--teacher_policy_fallback_confidence=0.55" in argv
+    assert "--teacher_policy_disagreement_margin=0.1" in argv
     assert "--param_anchor_coef=0.005" in argv
     assert "--learning_rate=0.0001" in argv
     assert "--exploration_loss_coeff=0.0" in argv
@@ -530,6 +545,7 @@ def test_build_appo_config_respects_value_stability_args():
             "teacher_replay_source_mode": "disagreement",
             "teacher_policy_blend_coef": 0.2,
             "teacher_policy_fallback_confidence": 0.6,
+            "teacher_policy_disagreement_margin": 0.1,
             "param_anchor_coef": 0.0,
             "actor_loss_scale": 1.0,
             "actor_loss_final_scale": 1.0,
@@ -557,6 +573,7 @@ def test_build_appo_config_respects_value_stability_args():
     assert config.appo.teacher_prior_bc_path == "/tmp/prior.pt"
     assert config.appo.teacher_policy_blend_coef == 0.2
     assert config.appo.teacher_policy_fallback_confidence == 0.6
+    assert config.appo.teacher_policy_disagreement_margin == 0.1
     assert config.model.teacher_report_path == "/tmp/teacher_report.json"
     assert config.appo.improver_report_output == "/tmp/improver_report.json"
 

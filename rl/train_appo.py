@@ -70,6 +70,7 @@ def parse_args(argv=None):
     parser.add_argument("--teacher-replay-source-mode", type=str, default="uniform")
     parser.add_argument("--teacher-policy-blend-coef", type=float, default=0.0)
     parser.add_argument("--teacher-policy-fallback-confidence", type=float, default=0.0)
+    parser.add_argument("--teacher-policy-disagreement-margin", type=float, default=0.0)
     parser.add_argument("--param-anchor-coef", type=float, default=0.0)
     parser.add_argument("--actor-loss-scale", type=float, default=1.0)
     parser.add_argument("--actor-loss-final-scale", type=float, default=1.0)
@@ -215,6 +216,9 @@ def build_config(args) -> RLConfig:
     )
     config.appo.teacher_policy_fallback_confidence = float(
         getattr(args, "teacher_policy_fallback_confidence", config.appo.teacher_policy_fallback_confidence)
+    )
+    config.appo.teacher_policy_disagreement_margin = float(
+        getattr(args, "teacher_policy_disagreement_margin", config.appo.teacher_policy_disagreement_margin)
     )
     config.appo.param_anchor_coef = args.param_anchor_coef
     config.appo.actor_loss_scale = float(getattr(args, "actor_loss_scale", config.appo.actor_loss_scale))

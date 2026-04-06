@@ -731,6 +731,11 @@ More specifically:
   - more importantly, a retained late checkpoint at `4352` also matched `0.9875`, which is better than both the no-fallback mask-aware branch and the single-teacher fallback branch,
   - but the final retained checkpoint still fell to `0.975`, and no learned checkpoint exceeded the trusted teacher,
   - so decoupled teacher base plus auxiliary supervision is the strongest stabilizer variant yet, but it is still not a teacher-beating improver,
+- a follow-up disagreement-only gate weakened that line again:
+  - a new `teacher_policy_disagreement_margin` gate was added so the student could only keep a disagreeing override when it beat the teacher-preferred action by a minimum probability margin,
+  - with confidence fallback disabled and disagreement-margin gating alone enabled, the short split-base probe still tied `0.9875`, but only at `1024`,
+  - retained late checkpoints then collapsed to `0.7875` and `0.7625`,
+  - so disagreement-only gating is strong negative evidence: the confidence-based teacher anchor was doing essential stabilization work, and replacing it with a weaker disagreement-only rule makes the branch much worse,
 - the most plausible next frontier is a more teacher-aware and behavior-constrained online improver.
 
 ## Practical Research Rules Going Forward

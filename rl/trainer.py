@@ -68,6 +68,7 @@ class APPOTrainerScaffold:
             "teacher_replay_source_mode": self.config.appo.teacher_replay_source_mode,
             "teacher_policy_blend_coef": self.config.appo.teacher_policy_blend_coef,
             "teacher_policy_fallback_confidence": self.config.appo.teacher_policy_fallback_confidence,
+            "teacher_policy_disagreement_margin": self.config.appo.teacher_policy_disagreement_margin,
             "param_anchor_coef": self.config.appo.param_anchor_coef,
             "actor_loss_scale": self.config.appo.actor_loss_scale,
             "actor_loss_final_scale": self.config.appo.actor_loss_final_scale,
@@ -149,6 +150,7 @@ class APPOTrainerScaffold:
             f"--teacher_replay_source_mode={cfg.appo.teacher_replay_source_mode}",
             f"--teacher_policy_blend_coef={cfg.appo.teacher_policy_blend_coef}",
             f"--teacher_policy_fallback_confidence={cfg.appo.teacher_policy_fallback_confidence}",
+            f"--teacher_policy_disagreement_margin={cfg.appo.teacher_policy_disagreement_margin}",
             f"--param_anchor_coef={cfg.appo.param_anchor_coef}",
             f"--actor_loss_scale={cfg.appo.actor_loss_scale}",
             f"--actor_loss_final_scale={cfg.appo.actor_loss_final_scale}",
@@ -361,6 +363,11 @@ class APPOTrainerScaffold:
             "--teacher_policy_fallback_confidence",
             type=float,
             default=self.config.appo.teacher_policy_fallback_confidence,
+        )
+        parser.add_argument(
+            "--teacher_policy_disagreement_margin",
+            type=float,
+            default=self.config.appo.teacher_policy_disagreement_margin,
         )
         parser.add_argument("--param_anchor_coef", type=float, default=self.config.appo.param_anchor_coef)
         parser.add_argument("--actor_loss_scale", type=float, default=self.config.appo.actor_loss_scale)

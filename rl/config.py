@@ -57,6 +57,7 @@ class APPOConfig:
     teacher_replay_source_mode: str = "uniform"
     teacher_policy_blend_coef: float = 0.0
     teacher_policy_fallback_confidence: float = 0.0
+    teacher_policy_disagreement_margin: float = 0.0
     param_anchor_coef: float = 0.0
     actor_loss_scale: float = 1.0
     actor_loss_final_scale: float = 1.0

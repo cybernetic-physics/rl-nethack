@@ -123,6 +123,7 @@ def _teacher_policy_prior_enabled(cfg: Any) -> bool:
     return bool(_resolve_teacher_prior_bc_paths(cfg)) and (
         float(getattr(cfg, "teacher_policy_blend_coef", 0.0) or 0.0) > 0.0
         or float(getattr(cfg, "teacher_policy_fallback_confidence", 0.0) or 0.0) > 0.0
+        or float(getattr(cfg, "teacher_policy_disagreement_margin", 0.0) or 0.0) > 0.0
     )
 
 
@@ -273,11 +274,45 @@ def _teacher_policy_blend(student_probs: torch.Tensor, teacher_probs: torch.Tens
     return (1.0 - blend) * student_probs + blend * teacher_probs
 
 
-def _teacher_policy_fallback_mask(student_probs: torch.Tensor, confidence_threshold: float) -> torch.Tensor:
+def _teacher_policy_fallback_details(
+    student_probs: torch.Tensor,
+    confidence_threshold: float,
+    teacher_probs: torch.Tensor | None = None,
+    disagreement_margin: float = 0.0,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     threshold = float(confidence_threshold)
-    if threshold <= 0.0:
-        return torch.zeros(student_probs.shape[0], dtype=torch.bool, device=student_probs.device)
-    return student_probs.max(dim=-1).values < threshold
+    confidence_mask = torch.zeros(student_probs.shape[0], dtype=torch.bool, device=student_probs.device)
+    if threshold > 0.0:
+        confidence_mask = student_probs.max(dim=-1).values < threshold
+
+    disagreement_mask = torch.zeros_like(confidence_mask)
+    weak_override_mask = torch.zeros_like(confidence_mask)
+    margin = float(disagreement_margin)
+    if teacher_probs is not None:
+        student_actions = torch.argmax(student_probs, dim=-1)
+        teacher_actions = torch.argmax(teacher_probs, dim=-1)
+        disagreement_mask = student_actions != teacher_actions
+        if margin > 0.0:
+            student_top_probs = student_probs.gather(-1, student_actions.unsqueeze(-1)).squeeze(-1)
+            teacher_action_probs = student_probs.gather(-1, teacher_actions.unsqueeze(-1)).squeeze(-1)
+            weak_override_mask = disagreement_mask & ((student_top_probs - teacher_action_probs) < margin)
+
+    return confidence_mask | weak_override_mask, disagreement_mask, weak_override_mask
+
+
+def _teacher_policy_fallback_mask(
+    student_probs: torch.Tensor,
+    confidence_threshold: float,
+    teacher_probs: torch.Tensor | None = None,
+    disagreement_margin: float = 0.0,
+) -> torch.Tensor:
+    fallback_mask, _, _ = _teacher_policy_fallback_details(
+        student_probs,
+        confidence_threshold,
+        teacher_probs=teacher_probs,
+        disagreement_margin=disagreement_margin,
+    )
+    return fallback_mask
 
 
 def _ensure_teacher_prior_models(module: Any, device: torch.device) -> None:
@@ -289,6 +324,9 @@ def _ensure_teacher_prior_models(module: Any, device: torch.device) -> None:
     module._teacher_policy_blend_coef = float(getattr(cfg, "teacher_policy_blend_coef", 0.0) or 0.0)
     module._teacher_policy_fallback_confidence = float(
         getattr(cfg, "teacher_policy_fallback_confidence", 0.0) or 0.0
+    )
+    module._teacher_policy_disagreement_margin = float(
+        getattr(cfg, "teacher_policy_disagreement_margin", 0.0) or 0.0
     )
     if cfg is None or not _teacher_policy_prior_enabled(cfg):
         return
@@ -321,9 +359,11 @@ def _apply_teacher_policy_prior(module: Any, action_logits: torch.Tensor) -> tup
         teacher_probs,
         getattr(module, "_teacher_policy_blend_coef", 0.0),
     )
-    fallback_mask = _teacher_policy_fallback_mask(
+    fallback_mask, _, _ = _teacher_policy_fallback_details(
         student_probs,
         getattr(module, "_teacher_policy_fallback_confidence", 0.0),
+        teacher_probs=teacher_probs,
+        disagreement_margin=getattr(module, "_teacher_policy_disagreement_margin", 0.0),
     )
     if fallback_mask.any():
         blended_probs = blended_probs.clone()
@@ -426,6 +466,8 @@ def patch_sample_factory_teacher_reg() -> None:
         student_invalid_preference_fraction = torch.zeros((), device=self.device)
         teacher_policy_prior_applied_fraction = torch.zeros((), device=self.device)
         teacher_policy_fallback_fraction = torch.zeros((), device=self.device)
+        teacher_policy_disagreement_fraction = torch.zeros((), device=self.device)
+        teacher_policy_weak_override_fraction = torch.zeros((), device=self.device)
         actor_loss_scale = policy_loss.new_tensor(_scheduled_actor_loss_scale(self))
 
         if self.teacher_policies and self.teacher_loss_enabled:
@@ -471,10 +513,15 @@ def patch_sample_factory_teacher_reg() -> None:
             teacher_policy_prior_applied_fraction = policy_loss.new_tensor(
                 1.0 if _teacher_policy_prior_enabled(self.cfg) else 0.0
             )
-            teacher_policy_fallback_fraction = _teacher_policy_fallback_mask(
+            fallback_mask, disagreement_mask, weak_override_mask = _teacher_policy_fallback_details(
                 torch.softmax(student_logits, dim=-1),
                 float(getattr(self.cfg, "teacher_policy_fallback_confidence", 0.0) or 0.0),
-            ).float().mean()
+                teacher_probs=torch.softmax(teacher_logits, dim=-1),
+                disagreement_margin=float(getattr(self.cfg, "teacher_policy_disagreement_margin", 0.0) or 0.0),
+            )
+            teacher_policy_fallback_fraction = fallback_mask.float().mean()
+            teacher_policy_disagreement_fraction = disagreement_mask.float().mean()
+            teacher_policy_weak_override_fraction = weak_override_mask.float().mean()
 
         if self.teacher_replay is not None and max(self.teacher_replay_coef, self.teacher_replay_final_coef) > 0.0:
             replay_size = self.teacher_replay["features"].shape[0]
@@ -523,6 +570,8 @@ def patch_sample_factory_teacher_reg() -> None:
         loss_summaries["student_invalid_preference_fraction"] = student_invalid_preference_fraction
         loss_summaries["teacher_policy_prior_applied_fraction"] = teacher_policy_prior_applied_fraction
         loss_summaries["teacher_policy_fallback_fraction"] = teacher_policy_fallback_fraction
+        loss_summaries["teacher_policy_disagreement_fraction"] = teacher_policy_disagreement_fraction
+        loss_summaries["teacher_policy_weak_override_fraction"] = teacher_policy_weak_override_fraction
         result[1] = actor_loss_scale * policy_loss + teacher_loss + teacher_replay_loss + param_anchor_loss
         result[6] = loss_summaries
         return tuple(result)
@@ -559,6 +608,10 @@ def patch_sample_factory_teacher_reg() -> None:
             stats.teacher_policy_prior_applied_fraction = float(train_loop_vars.teacher_policy_prior_applied_fraction.item())
         if hasattr(train_loop_vars, "teacher_policy_fallback_fraction"):
             stats.teacher_policy_fallback_fraction = float(train_loop_vars.teacher_policy_fallback_fraction.item())
+        if hasattr(train_loop_vars, "teacher_policy_disagreement_fraction"):
+            stats.teacher_policy_disagreement_fraction = float(train_loop_vars.teacher_policy_disagreement_fraction.item())
+        if hasattr(train_loop_vars, "teacher_policy_weak_override_fraction"):
+            stats.teacher_policy_weak_override_fraction = float(train_loop_vars.teacher_policy_weak_override_fraction.item())
         return stats
 
     def _normalize_obs_with_teacher_prior(self, obs):

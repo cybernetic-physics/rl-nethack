@@ -416,6 +416,8 @@ def cmd_rl_train_appo(args):
         argv.extend(["--teacher-policy-blend-coef", str(args.teacher_policy_blend_coef)])
     if getattr(args, "teacher_policy_fallback_confidence", 0.0) != 0.0:
         argv.extend(["--teacher-policy-fallback-confidence", str(args.teacher_policy_fallback_confidence)])
+    if getattr(args, "teacher_policy_disagreement_margin", 0.0) != 0.0:
+        argv.extend(["--teacher-policy-disagreement-margin", str(args.teacher_policy_disagreement_margin)])
     if getattr(args, "param_anchor_coef", None) is not None:
         argv.extend(["--param-anchor-coef", str(args.param_anchor_coef)])
     if getattr(args, "actor_loss_scale", None) is not None:
@@ -1467,6 +1469,8 @@ def main():
                       help='Blend coefficient for a teacher policy prior applied at action selection time')
     p_rl.add_argument('--teacher-policy-fallback-confidence', type=float, default=0.0,
                       help='If >0, replace low-confidence student decisions with the teacher prior when max_prob falls below this threshold')
+    p_rl.add_argument('--teacher-policy-disagreement-margin', type=float, default=0.0,
+                      help='If >0, require this minimum student probability advantage over the teacher-preferred action before a disagreement override is allowed')
     p_rl.add_argument('--param-anchor-coef', type=float, default=0.0,
                       help='L2 anchor coefficient on warm-started encoder/policy parameters')
     p_rl.add_argument('--actor-loss-scale', type=float, default=1.0,
