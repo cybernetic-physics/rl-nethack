@@ -22,6 +22,9 @@ def parse_args(argv=None):
     parser.add_argument("--num-batches-per-epoch", type=int, default=1)
     parser.add_argument("--ppo-epochs", type=int, default=1)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument("--gamma", type=float, default=0.999)
+    parser.add_argument("--gae-lambda", type=float, default=0.95)
+    parser.add_argument("--value-loss-coeff", type=float, default=0.5)
     parser.add_argument("--reward-scale", type=float, default=0.1)
     parser.add_argument("--entropy-coeff", type=float, default=0.01)
     parser.add_argument("--ppo-clip-ratio", type=float, default=0.1)
@@ -49,10 +52,20 @@ def parse_args(argv=None):
     parser.add_argument("--teacher-loss-final-coef", type=float, default=0.0)
     parser.add_argument("--teacher-loss-warmup-env-steps", type=int, default=0)
     parser.add_argument("--teacher-loss-decay-env-steps", type=int, default=0)
+    parser.add_argument("--teacher-replay-trace-input", type=str, default=None)
+    parser.add_argument("--teacher-replay-coef", type=float, default=0.0)
+    parser.add_argument("--teacher-replay-final-coef", type=float, default=0.0)
+    parser.add_argument("--teacher-replay-warmup-env-steps", type=int, default=0)
+    parser.add_argument("--teacher-replay-decay-env-steps", type=int, default=0)
+    parser.add_argument("--teacher-replay-batch-size", type=int, default=128)
+    parser.add_argument("--teacher-replay-priority-power", type=float, default=1.0)
+    parser.add_argument("--teacher-replay-source-mode", type=str, default="uniform")
     parser.add_argument("--param-anchor-coef", type=float, default=0.0)
     parser.add_argument("--trace-eval-input", type=str, default=None)
     parser.add_argument("--trace-eval-interval-env-steps", type=int, default=0)
     parser.add_argument("--trace-eval-top-k", type=int, default=5)
+    parser.add_argument("--save-every-sec", type=int, default=120)
+    parser.add_argument("--save-best-every-sec", type=int, default=5)
     parser.add_argument("--no-rnn", action="store_true")
     parser.add_argument("--use-rnn", action="store_true")
     parser.add_argument("--disable-action-mask", action="store_true")
@@ -75,6 +88,9 @@ def build_config(args) -> RLConfig:
     config.appo.num_batches_per_epoch = args.num_batches_per_epoch
     config.appo.ppo_epochs = args.ppo_epochs
     config.appo.learning_rate = float(getattr(args, "learning_rate", config.appo.learning_rate))
+    config.appo.gamma = float(getattr(args, "gamma", config.appo.gamma))
+    config.appo.gae_lambda = float(getattr(args, "gae_lambda", config.appo.gae_lambda))
+    config.appo.value_loss_coeff = float(getattr(args, "value_loss_coeff", config.appo.value_loss_coeff))
     config.appo.reward_scale = float(getattr(args, "reward_scale", config.appo.reward_scale))
     config.appo.entropy_coeff = float(getattr(args, "entropy_coeff", config.appo.entropy_coeff))
     config.appo.ppo_clip_ratio = float(getattr(args, "ppo_clip_ratio", config.appo.ppo_clip_ratio))
@@ -117,10 +133,32 @@ def build_config(args) -> RLConfig:
     config.appo.teacher_loss_final_coef = args.teacher_loss_final_coef
     config.appo.teacher_loss_warmup_env_steps = args.teacher_loss_warmup_env_steps
     config.appo.teacher_loss_decay_env_steps = args.teacher_loss_decay_env_steps
+    config.appo.teacher_replay_trace_input = getattr(args, "teacher_replay_trace_input", None)
+    config.appo.teacher_replay_coef = float(getattr(args, "teacher_replay_coef", config.appo.teacher_replay_coef))
+    config.appo.teacher_replay_final_coef = float(
+        getattr(args, "teacher_replay_final_coef", config.appo.teacher_replay_final_coef)
+    )
+    config.appo.teacher_replay_warmup_env_steps = int(
+        getattr(args, "teacher_replay_warmup_env_steps", config.appo.teacher_replay_warmup_env_steps)
+    )
+    config.appo.teacher_replay_decay_env_steps = int(
+        getattr(args, "teacher_replay_decay_env_steps", config.appo.teacher_replay_decay_env_steps)
+    )
+    config.appo.teacher_replay_batch_size = int(
+        getattr(args, "teacher_replay_batch_size", config.appo.teacher_replay_batch_size)
+    )
+    config.appo.teacher_replay_priority_power = float(
+        getattr(args, "teacher_replay_priority_power", config.appo.teacher_replay_priority_power)
+    )
+    config.appo.teacher_replay_source_mode = str(
+        getattr(args, "teacher_replay_source_mode", config.appo.teacher_replay_source_mode)
+    )
     config.appo.param_anchor_coef = args.param_anchor_coef
     config.appo.trace_eval_input = args.trace_eval_input
     config.appo.trace_eval_interval_env_steps = args.trace_eval_interval_env_steps
     config.appo.trace_eval_top_k = args.trace_eval_top_k
+    config.appo.save_every_sec = int(getattr(args, "save_every_sec", config.appo.save_every_sec))
+    config.appo.save_best_every_sec = int(getattr(args, "save_best_every_sec", config.appo.save_best_every_sec))
     config.model.use_lstm = bool(args.use_rnn and not args.no_rnn)
     if not config.model.use_lstm:
         config.rollout.recurrence = 1

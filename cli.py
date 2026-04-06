@@ -325,6 +325,9 @@ def cmd_rl_train_appo(args):
         "--num-batches-per-epoch", str(args.num_batches_per_epoch),
         "--ppo-epochs", str(args.ppo_epochs),
         "--learning-rate", str(args.learning_rate),
+        "--gamma", str(args.gamma),
+        "--gae-lambda", str(args.gae_lambda),
+        "--value-loss-coeff", str(args.value_loss_coeff),
         "--reward-scale", str(args.reward_scale),
         "--entropy-coeff", str(args.entropy_coeff),
         "--ppo-clip-ratio", str(args.ppo_clip_ratio),
@@ -337,6 +340,8 @@ def cmd_rl_train_appo(args):
         "--observation-version", args.observation_version,
         "--env-max-episode-steps", str(args.env_max_episode_steps),
         "--trace-eval-top-k", str(args.trace_eval_top_k),
+        "--save-every-sec", str(args.save_every_sec),
+        "--save-best-every-sec", str(args.save_best_every_sec),
         "--no-rnn" if args.no_rnn else "",
         "--use-rnn" if getattr(args, "use_rnn", False) else "",
         "--disable-input-normalization" if getattr(args, "disable_input_normalization", False) else "",
@@ -373,6 +378,22 @@ def cmd_rl_train_appo(args):
         argv.extend(["--teacher-loss-warmup-env-steps", str(args.teacher_loss_warmup_env_steps)])
     if getattr(args, "teacher_loss_decay_env_steps", 0):
         argv.extend(["--teacher-loss-decay-env-steps", str(args.teacher_loss_decay_env_steps)])
+    if getattr(args, "teacher_replay_trace_input", None):
+        argv.extend(["--teacher-replay-trace-input", args.teacher_replay_trace_input])
+    if getattr(args, "teacher_replay_coef", 0.0):
+        argv.extend(["--teacher-replay-coef", str(args.teacher_replay_coef)])
+    if getattr(args, "teacher_replay_final_coef", 0.0):
+        argv.extend(["--teacher-replay-final-coef", str(args.teacher_replay_final_coef)])
+    if getattr(args, "teacher_replay_warmup_env_steps", 0):
+        argv.extend(["--teacher-replay-warmup-env-steps", str(args.teacher_replay_warmup_env_steps)])
+    if getattr(args, "teacher_replay_decay_env_steps", 0):
+        argv.extend(["--teacher-replay-decay-env-steps", str(args.teacher_replay_decay_env_steps)])
+    if getattr(args, "teacher_replay_batch_size", None) is not None:
+        argv.extend(["--teacher-replay-batch-size", str(args.teacher_replay_batch_size)])
+    if getattr(args, "teacher_replay_priority_power", 1.0) != 1.0:
+        argv.extend(["--teacher-replay-priority-power", str(args.teacher_replay_priority_power)])
+    if getattr(args, "teacher_replay_source_mode", "uniform") != "uniform":
+        argv.extend(["--teacher-replay-source-mode", str(args.teacher_replay_source_mode)])
     if getattr(args, "param_anchor_coef", 0.0):
         argv.extend(["--param-anchor-coef", str(args.param_anchor_coef)])
     if args.trace_eval_input:
@@ -1154,6 +1175,12 @@ def main():
                       help='APPO epochs per update')
     p_rl.add_argument('--learning-rate', type=float, default=3e-4,
                       help='APPO optimizer learning rate')
+    p_rl.add_argument('--gamma', type=float, default=0.999,
+                      help='Discount factor for return/value targets')
+    p_rl.add_argument('--gae-lambda', type=float, default=0.95,
+                      help='GAE lambda used by APPO')
+    p_rl.add_argument('--value-loss-coeff', type=float, default=0.5,
+                      help='Value loss coefficient; lowering this can stabilize long-horizon teacher-constrained runs')
     p_rl.add_argument('--reward-scale', type=float, default=0.1,
                       help='Sample Factory reward scale applied before value learning')
     p_rl.add_argument('--entropy-coeff', type=float, default=0.01,
@@ -1210,6 +1237,22 @@ def main():
                       help='Optional env-step warmup before teacher-loss decay starts')
     p_rl.add_argument('--teacher-loss-decay-env-steps', type=int, default=0,
                       help='Optional env-step linear decay duration from teacher-loss-coef to teacher-loss-final-coef')
+    p_rl.add_argument('--teacher-replay-trace-input', type=str, default=None,
+                      help='Optional trusted trace JSONL used for supervised teacher replay during RL')
+    p_rl.add_argument('--teacher-replay-coef', type=float, default=0.0,
+                      help='Coefficient for supervised teacher replay loss')
+    p_rl.add_argument('--teacher-replay-final-coef', type=float, default=0.0,
+                      help='Optional final replay coefficient after scheduled decay; 0 keeps static replay loss')
+    p_rl.add_argument('--teacher-replay-warmup-env-steps', type=int, default=0,
+                      help='Optional env-step warmup before teacher replay decay starts')
+    p_rl.add_argument('--teacher-replay-decay-env-steps', type=int, default=0,
+                      help='Optional env-step linear decay duration from teacher-replay-coef to teacher-replay-final-coef')
+    p_rl.add_argument('--teacher-replay-batch-size', type=int, default=128,
+                      help='Replay minibatch size drawn from the trusted trace set')
+    p_rl.add_argument('--teacher-replay-priority-power', type=float, default=1.0,
+                      help='Reserved replay priority exponent; 1.0 keeps uniform weighting until prioritized replay is enabled')
+    p_rl.add_argument('--teacher-replay-source-mode', type=str, default='uniform',
+                      help='Reserved replay source mode for prioritized replay experiments')
     p_rl.add_argument('--param-anchor-coef', type=float, default=0.0,
                       help='L2 anchor coefficient on warm-started encoder/policy parameters')
     p_rl.add_argument('--trace-eval-input', type=str, default=None,
@@ -1218,6 +1261,10 @@ def main():
                       help='If >0, periodically evaluate new checkpoints on the trusted trace set during training')
     p_rl.add_argument('--trace-eval-top-k', type=int, default=5,
                       help='Trace ranking top-k metadata depth during training')
+    p_rl.add_argument('--save-every-sec', type=int, default=120,
+                      help='Checkpoint save cadence in seconds')
+    p_rl.add_argument('--save-best-every-sec', type=int, default=5,
+                      help='Best-checkpoint save cadence in seconds')
     p_rl.add_argument('--no-rnn', action='store_true',
                       help='Disable the GRU core. Teacher-reg baseline uses the non-RNN path')
     p_rl.add_argument('--use-rnn', action='store_true',

@@ -53,10 +53,20 @@ class APPOTrainerScaffold:
             "teacher_loss_final_coef": self.config.appo.teacher_loss_final_coef,
             "teacher_loss_warmup_env_steps": self.config.appo.teacher_loss_warmup_env_steps,
             "teacher_loss_decay_env_steps": self.config.appo.teacher_loss_decay_env_steps,
+            "teacher_replay_trace_input": self.config.appo.teacher_replay_trace_input,
+            "teacher_replay_coef": self.config.appo.teacher_replay_coef,
+            "teacher_replay_final_coef": self.config.appo.teacher_replay_final_coef,
+            "teacher_replay_warmup_env_steps": self.config.appo.teacher_replay_warmup_env_steps,
+            "teacher_replay_decay_env_steps": self.config.appo.teacher_replay_decay_env_steps,
+            "teacher_replay_batch_size": self.config.appo.teacher_replay_batch_size,
+            "teacher_replay_priority_power": self.config.appo.teacher_replay_priority_power,
+            "teacher_replay_source_mode": self.config.appo.teacher_replay_source_mode,
             "param_anchor_coef": self.config.appo.param_anchor_coef,
             "trace_eval_input": self.config.appo.trace_eval_input,
             "trace_eval_interval_env_steps": self.config.appo.trace_eval_interval_env_steps,
             "trace_eval_top_k": self.config.appo.trace_eval_top_k,
+            "save_every_sec": self.config.appo.save_every_sec,
+            "save_best_every_sec": self.config.appo.save_best_every_sec,
             "episodic_explore_bonus_enabled": self.config.reward.episodic_explore_bonus_enabled,
             "episodic_explore_bonus_scale": self.config.reward.episodic_explore_bonus_scale,
             "episodic_explore_bonus_mode": self.config.reward.episodic_explore_bonus_mode,
@@ -113,10 +123,20 @@ class APPOTrainerScaffold:
             f"--teacher_loss_final_coef={cfg.appo.teacher_loss_final_coef}",
             f"--teacher_loss_warmup_env_steps={cfg.appo.teacher_loss_warmup_env_steps}",
             f"--teacher_loss_decay_env_steps={cfg.appo.teacher_loss_decay_env_steps}",
+            f"--teacher_replay_trace_input={cfg.appo.teacher_replay_trace_input or ''}",
+            f"--teacher_replay_coef={cfg.appo.teacher_replay_coef}",
+            f"--teacher_replay_final_coef={cfg.appo.teacher_replay_final_coef}",
+            f"--teacher_replay_warmup_env_steps={cfg.appo.teacher_replay_warmup_env_steps}",
+            f"--teacher_replay_decay_env_steps={cfg.appo.teacher_replay_decay_env_steps}",
+            f"--teacher_replay_batch_size={cfg.appo.teacher_replay_batch_size}",
+            f"--teacher_replay_priority_power={cfg.appo.teacher_replay_priority_power}",
+            f"--teacher_replay_source_mode={cfg.appo.teacher_replay_source_mode}",
             f"--param_anchor_coef={cfg.appo.param_anchor_coef}",
             f"--trace_eval_input={cfg.appo.trace_eval_input or ''}",
             f"--trace_eval_interval_env_steps={cfg.appo.trace_eval_interval_env_steps}",
             f"--trace_eval_top_k={cfg.appo.trace_eval_top_k}",
+            f"--save_every_sec={cfg.appo.save_every_sec}",
+            f"--save_best_every_sec={cfg.appo.save_best_every_sec}",
             f"--use_rnn={str(cfg.model.use_lstm)}",
             f"--env_max_episode_steps={cfg.env.max_episode_steps}",
             f"--observation_version={cfg.env.observation_version}",
@@ -233,6 +253,14 @@ class APPOTrainerScaffold:
         parser.add_argument("--teacher_loss_final_coef", type=float, default=self.config.appo.teacher_loss_final_coef)
         parser.add_argument("--teacher_loss_warmup_env_steps", type=int, default=self.config.appo.teacher_loss_warmup_env_steps)
         parser.add_argument("--teacher_loss_decay_env_steps", type=int, default=self.config.appo.teacher_loss_decay_env_steps)
+        parser.add_argument("--teacher_replay_trace_input", type=str, default=self.config.appo.teacher_replay_trace_input)
+        parser.add_argument("--teacher_replay_coef", type=float, default=self.config.appo.teacher_replay_coef)
+        parser.add_argument("--teacher_replay_final_coef", type=float, default=self.config.appo.teacher_replay_final_coef)
+        parser.add_argument("--teacher_replay_warmup_env_steps", type=int, default=self.config.appo.teacher_replay_warmup_env_steps)
+        parser.add_argument("--teacher_replay_decay_env_steps", type=int, default=self.config.appo.teacher_replay_decay_env_steps)
+        parser.add_argument("--teacher_replay_batch_size", type=int, default=self.config.appo.teacher_replay_batch_size)
+        parser.add_argument("--teacher_replay_priority_power", type=float, default=self.config.appo.teacher_replay_priority_power)
+        parser.add_argument("--teacher_replay_source_mode", type=str, default=self.config.appo.teacher_replay_source_mode)
         parser.add_argument("--param_anchor_coef", type=float, default=self.config.appo.param_anchor_coef)
         parser.add_argument("--trace_eval_input", type=str, default=self.config.appo.trace_eval_input)
         parser.add_argument("--trace_eval_interval_env_steps", type=int, default=self.config.appo.trace_eval_interval_env_steps)

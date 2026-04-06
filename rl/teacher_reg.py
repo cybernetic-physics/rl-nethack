@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import torch
 import torch.nn.functional as F
 
 from rl.bc_model import BCPolicyMLP
+from rl.feature_encoder import ACTION_SET
 from rl.feature_encoder import observation_dim
 
 
@@ -14,6 +16,35 @@ _ORIG_PREPARE_BATCH = None
 _ORIG_INIT = None
 _ORIG_CALC_LOSSES = None
 _ORIG_RECORD_SUMMARIES = None
+
+
+def _load_teacher_replay_tensors(path: str, device: torch.device) -> dict[str, torch.Tensor]:
+    rows = []
+    with open(path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    if not rows:
+        raise ValueError(f"No teacher replay rows found in {path}")
+    input_dims = {len(row.get("feature_vector", [])) for row in rows}
+    if len(input_dims) != 1:
+        raise ValueError(f"Mixed feature dimensions in teacher replay rows: {sorted(input_dims)}")
+    features = torch.tensor([row["feature_vector"] for row in rows], dtype=torch.float32, device=device)
+    actions = torch.tensor([ACTION_SET.index(row["action"]) for row in rows], dtype=torch.long, device=device)
+    allowed_masks = torch.tensor(
+        [
+            [1.0 if name in row.get("allowed_actions", ACTION_SET) else 0.0 for name in ACTION_SET]
+            for row in rows
+        ],
+        dtype=torch.float32,
+        device=device,
+    )
+    return {
+        "features": features,
+        "actions": actions,
+        "allowed_masks": allowed_masks,
+    }
 
 
 def _teacher_enabled(cfg: Any) -> bool:
@@ -25,6 +56,20 @@ def _scheduled_teacher_coef(self) -> float:
     final = float(getattr(self, "teacher_loss_final_coef", 0.0) or 0.0)
     warmup = int(getattr(self, "teacher_loss_warmup_env_steps", 0) or 0)
     decay = int(getattr(self, "teacher_loss_decay_env_steps", 0) or 0)
+    if decay <= 0:
+        return start
+    env_steps = int(getattr(self, "env_steps", 0) or 0)
+    if env_steps <= warmup:
+        return start
+    progress = min(1.0, max(0.0, (env_steps - warmup) / decay))
+    return start + (final - start) * progress
+
+
+def _scheduled_teacher_replay_coef(self) -> float:
+    start = float(getattr(self, "teacher_replay_coef", 0.0) or 0.0)
+    final = float(getattr(self, "teacher_replay_final_coef", 0.0) or 0.0)
+    warmup = int(getattr(self, "teacher_replay_warmup_env_steps", 0) or 0)
+    decay = int(getattr(self, "teacher_replay_decay_env_steps", 0) or 0)
     if decay <= 0:
         return start
     env_steps = int(getattr(self, "env_steps", 0) or 0)
@@ -107,6 +152,7 @@ def patch_sample_factory_teacher_reg() -> None:
     def _init_with_teacher(self):
         model_init = _ORIG_INIT(self)
         self.teacher_policy = None
+        self.teacher_replay = None
         self.teacher_loss_coef = float(getattr(self.cfg, "teacher_loss_coef", 0.0) or 0.0)
         self.teacher_loss_type = str(getattr(self.cfg, "teacher_loss_type", "ce") or "ce")
         self.teacher_bc_path = getattr(self.cfg, "teacher_bc_path", None)
@@ -116,6 +162,14 @@ def patch_sample_factory_teacher_reg() -> None:
         self.teacher_loss_final_coef = float(getattr(self.cfg, "teacher_loss_final_coef", 0.0) or 0.0)
         self.teacher_loss_warmup_env_steps = int(getattr(self.cfg, "teacher_loss_warmup_env_steps", 0) or 0)
         self.teacher_loss_decay_env_steps = int(getattr(self.cfg, "teacher_loss_decay_env_steps", 0) or 0)
+        self.teacher_replay_trace_input = getattr(self.cfg, "teacher_replay_trace_input", None)
+        self.teacher_replay_coef = float(getattr(self.cfg, "teacher_replay_coef", 0.0) or 0.0)
+        self.teacher_replay_final_coef = float(getattr(self.cfg, "teacher_replay_final_coef", 0.0) or 0.0)
+        self.teacher_replay_warmup_env_steps = int(getattr(self.cfg, "teacher_replay_warmup_env_steps", 0) or 0)
+        self.teacher_replay_decay_env_steps = int(getattr(self.cfg, "teacher_replay_decay_env_steps", 0) or 0)
+        self.teacher_replay_batch_size = int(getattr(self.cfg, "teacher_replay_batch_size", 128) or 128)
+        self.teacher_replay_priority_power = float(getattr(self.cfg, "teacher_replay_priority_power", 1.0) or 1.0)
+        self.teacher_replay_source_mode = str(getattr(self.cfg, "teacher_replay_source_mode", "uniform") or "uniform")
         self.param_anchor_coef = float(getattr(self.cfg, "param_anchor_coef", 0.0) or 0.0)
         self.param_anchor_tensors = {}
         if self.teacher_loss_type not in {"ce", "kl"}:
@@ -134,6 +188,8 @@ def patch_sample_factory_teacher_reg() -> None:
             for param in teacher.parameters():
                 param.requires_grad_(False)
             self.teacher_policy = teacher
+        if self.teacher_replay_trace_input and max(self.teacher_replay_coef, self.teacher_replay_final_coef) > 0.0:
+            self.teacher_replay = _load_teacher_replay_tensors(self.teacher_replay_trace_input, self.device)
         if self.param_anchor_coef > 0.0:
             self.param_anchor_tensors = {
                 name: param.detach().clone().to(self.device)
@@ -146,6 +202,8 @@ def patch_sample_factory_teacher_reg() -> None:
         action_distribution, policy_loss, exploration_loss, kl_old, kl_loss, value_loss, loss_summaries = result
         teacher_loss = torch.zeros((), device=self.device)
         teacher_agreement = torch.zeros((), device=self.device)
+        teacher_replay_loss = torch.zeros((), device=self.device)
+        teacher_replay_coef = torch.zeros((), device=self.device)
         param_anchor_loss = torch.zeros((), device=self.device)
 
         if self.teacher_policy is not None:
@@ -184,6 +242,22 @@ def patch_sample_factory_teacher_reg() -> None:
             agreement_all = (student_actions == teacher_actions).float()
             teacher_agreement = masked_select(agreement_all, mb.valids, num_invalids).mean()
 
+        if self.teacher_replay is not None and max(self.teacher_replay_coef, self.teacher_replay_final_coef) > 0.0:
+            replay_size = self.teacher_replay["features"].shape[0]
+            batch_size = min(self.teacher_replay_batch_size, replay_size)
+            replay_indices = torch.randint(0, replay_size, (batch_size,), device=self.device)
+            replay_features = self.teacher_replay["features"][replay_indices]
+            replay_actions = self.teacher_replay["actions"][replay_indices]
+            replay_allowed_masks = self.teacher_replay["allowed_masks"][replay_indices]
+            student_replay_logits = self.actor_critic.forward_head({"obs": replay_features})["x"]
+            student_replay_logits = self.actor_critic.forward_core(student_replay_logits, None, values_only=False)["x"]
+            student_replay_logits = self.actor_critic.forward_tail(
+                student_replay_logits, values_only=False, sample_actions=False
+            )["action_logits"]
+            student_replay_logits = student_replay_logits.masked_fill(replay_allowed_masks <= 0, -1e9)
+            teacher_replay_coef = teacher_replay_loss.new_tensor(_scheduled_teacher_replay_coef(self))
+            teacher_replay_loss = F.cross_entropy(student_replay_logits, replay_actions) * teacher_replay_coef
+
         if self.param_anchor_coef > 0.0 and self.param_anchor_tensors:
             anchor_terms = []
             for name, param in _anchor_named_parameters(self).items():
@@ -196,8 +270,13 @@ def patch_sample_factory_teacher_reg() -> None:
 
         loss_summaries["teacher_loss"] = teacher_loss
         loss_summaries["teacher_agreement"] = teacher_agreement
+        loss_summaries["teacher_replay_loss"] = teacher_replay_loss
+        loss_summaries["teacher_replay_coef"] = teacher_replay_coef
+        loss_summaries["teacher_replay_priority_power"] = teacher_replay_loss.new_tensor(
+            float(getattr(self, "teacher_replay_priority_power", 1.0) or 1.0)
+        )
         loss_summaries["param_anchor_loss"] = param_anchor_loss
-        result[1] = policy_loss + teacher_loss + param_anchor_loss
+        result[1] = policy_loss + teacher_loss + teacher_replay_loss + param_anchor_loss
         result[6] = loss_summaries
         return tuple(result)
 
@@ -207,6 +286,12 @@ def patch_sample_factory_teacher_reg() -> None:
             stats.teacher_loss = float(train_loop_vars.teacher_loss.item())
         if hasattr(train_loop_vars, "teacher_agreement"):
             stats.teacher_agreement = float(train_loop_vars.teacher_agreement.item())
+        if hasattr(train_loop_vars, "teacher_replay_loss"):
+            stats.teacher_replay_loss = float(train_loop_vars.teacher_replay_loss.item())
+        if hasattr(train_loop_vars, "teacher_replay_coef"):
+            stats.teacher_replay_coef = float(train_loop_vars.teacher_replay_coef.item())
+        if hasattr(train_loop_vars, "teacher_replay_priority_power"):
+            stats.teacher_replay_priority_power = float(train_loop_vars.teacher_replay_priority_power.item())
         if hasattr(train_loop_vars, "param_anchor_loss"):
             stats.param_anchor_loss = float(train_loop_vars.param_anchor_loss.item())
         return stats

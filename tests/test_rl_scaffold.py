@@ -27,7 +27,7 @@ from pathlib import Path
 import torch
 from rl.timestep import build_policy_timestep
 from rl.io_utils import experiment_lock
-from rl.teacher_reg import patch_sample_factory_teacher_reg, _parse_teacher_action_boosts
+from rl.teacher_reg import patch_sample_factory_teacher_reg, _parse_teacher_action_boosts, _scheduled_teacher_replay_coef
 from rl.env_adapter import SkillEnvAdapter, EpisodeContext
 from rl.dagger import build_merged_trace_rows, run_dagger_schedule
 from rl.train_behavior_reg import train_behavior_regularized_policy
@@ -104,6 +104,82 @@ def test_trainer_scaffold_includes_teacher_reg_args():
     assert "--nonlinearity=relu" in argv
     idx = argv.index("--encoder_mlp_layers")
     assert argv[idx + 1:idx + 3] == ["256", "256"]
+
+
+def test_build_appo_config_respects_value_stability_args():
+    args = type(
+        "Args",
+        (),
+        {
+            "experiment": "exp",
+            "train_dir": "train_dir/rl",
+            "serial_mode": False,
+            "async_rl": False,
+            "num_workers": 1,
+            "num_envs_per_worker": 1,
+            "rollout_length": 8,
+            "recurrence": 8,
+            "batch_size": 8,
+            "num_batches_per_epoch": 1,
+            "ppo_epochs": 1,
+            "learning_rate": 3e-4,
+            "gamma": 0.99,
+            "gae_lambda": 0.9,
+            "value_loss_coeff": 0.1,
+            "reward_scale": 0.005,
+            "entropy_coeff": 0.01,
+            "ppo_clip_ratio": 0.1,
+            "train_for_env_steps": 32,
+            "scheduler": "rule_based",
+            "reward_source": "hand_shaped",
+            "learned_reward_path": None,
+            "episodic_explore_bonus_enabled": False,
+            "episodic_explore_bonus_scale": 0.0,
+            "episodic_explore_bonus_mode": "state_hash",
+            "scheduler_model_path": None,
+            "enabled_skills": "explore",
+            "observation_version": "v4",
+            "world_model_path": None,
+            "world_model_feature_mode": None,
+            "env_max_episode_steps": 500,
+            "model_hidden_size": None,
+            "disable_input_normalization": False,
+            "nonlinearity": None,
+            "bc_init_path": None,
+            "teacher_bc_path": None,
+            "teacher_loss_coef": 0.01,
+            "teacher_loss_type": "ce",
+            "teacher_action_boosts": "",
+            "teacher_loss_final_coef": 0.0,
+            "teacher_loss_warmup_env_steps": 0,
+            "teacher_loss_decay_env_steps": 0,
+            "teacher_replay_trace_input": None,
+            "teacher_replay_coef": 0.0,
+            "teacher_replay_final_coef": 0.002,
+            "teacher_replay_warmup_env_steps": 64,
+            "teacher_replay_decay_env_steps": 256,
+            "teacher_replay_batch_size": 128,
+            "teacher_replay_priority_power": 1.7,
+            "teacher_replay_source_mode": "disagreement",
+            "param_anchor_coef": 0.0,
+            "trace_eval_input": None,
+            "trace_eval_interval_env_steps": 0,
+            "trace_eval_top_k": 5,
+            "use_rnn": False,
+            "no_rnn": True,
+            "disable_action_mask": False,
+        },
+    )()
+    config = build_appo_config(args)
+    assert config.appo.gamma == 0.99
+    assert config.appo.gae_lambda == 0.9
+    assert config.appo.value_loss_coeff == 0.1
+    assert config.appo.reward_scale == 0.005
+    assert config.appo.teacher_replay_final_coef == 0.002
+    assert config.appo.teacher_replay_warmup_env_steps == 64
+    assert config.appo.teacher_replay_decay_env_steps == 256
+    assert config.appo.teacher_replay_priority_power == 1.7
+    assert config.appo.teacher_replay_source_mode == "disagreement"
 
 
 def test_build_appo_config_infers_hidden_size_from_bc_checkpoint():
@@ -190,16 +266,55 @@ def test_trainer_scaffold_includes_trace_eval_args():
     config.appo.trace_eval_input = "data/trace.jsonl"
     config.appo.trace_eval_interval_env_steps = 2048
     config.appo.trace_eval_top_k = 7
+    config.appo.teacher_replay_trace_input = "data/replay.jsonl"
+    config.appo.teacher_replay_coef = 0.02
+    config.appo.teacher_replay_final_coef = 0.005
+    config.appo.teacher_replay_warmup_env_steps = 128
+    config.appo.teacher_replay_decay_env_steps = 512
+    config.appo.teacher_replay_priority_power = 1.4
+    config.appo.teacher_replay_source_mode = "mixed"
+    config.appo.save_every_sec = 9
+    config.appo.save_best_every_sec = 3
     trainer = APPOTrainerScaffold(config)
     argv = trainer.build_sf_argv()
     assert "--trace_eval_input=data/trace.jsonl" in argv
     assert "--trace_eval_interval_env_steps=2048" in argv
     assert "--trace_eval_top_k=7" in argv
+    assert "--teacher_replay_trace_input=data/replay.jsonl" in argv
+    assert "--teacher_replay_coef=0.02" in argv
+    assert "--teacher_replay_final_coef=0.005" in argv
+    assert "--teacher_replay_warmup_env_steps=128" in argv
+    assert "--teacher_replay_decay_env_steps=512" in argv
+    assert "--teacher_replay_priority_power=1.4" in argv
+    assert "--teacher_replay_source_mode=mixed" in argv
+    assert "--save_every_sec=9" in argv
+    assert "--save_best_every_sec=3" in argv
 
 
 def test_teacher_patch_is_idempotent():
     patch_sample_factory_teacher_reg()
     patch_sample_factory_teacher_reg()
+
+
+def test_scheduled_teacher_replay_coef_decays_linearly():
+    learner = type(
+        "DummyLearner",
+        (),
+        {
+            "teacher_replay_coef": 0.02,
+            "teacher_replay_final_coef": 0.005,
+            "teacher_replay_warmup_env_steps": 100,
+            "teacher_replay_decay_env_steps": 300,
+            "env_steps": 0,
+        },
+    )()
+    assert _scheduled_teacher_replay_coef(learner) == 0.02
+    learner.env_steps = 100
+    assert _scheduled_teacher_replay_coef(learner) == 0.02
+    learner.env_steps = 250
+    assert round(_scheduled_teacher_replay_coef(learner), 6) == 0.0125
+    learner.env_steps = 500
+    assert round(_scheduled_teacher_replay_coef(learner), 6) == 0.005
 
 
 def test_skill_env_reset_and_step():
