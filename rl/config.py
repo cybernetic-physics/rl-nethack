@@ -86,6 +86,8 @@ class ModelConfig:
 class RewardConfig:
     source: str = "hand_shaped"
     learned_reward_path: str | None = None
+    proxy_reward_path: str | None = None
+    proxy_reward_weight: float = 1.0
     extrinsic_weight: float = 0.0
     intrinsic_weight: float = 1.0
     repeated_state_penalty: float = 0.25

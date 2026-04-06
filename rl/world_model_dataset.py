@@ -60,6 +60,7 @@ def build_world_model_examples(
                     "task_index": _SKILL_TO_IDX.get(row.get("task", "explore"), 0),
                     "action": row.get("action", "wait"),
                     "action_index": _ACTION_TO_IDX.get(row.get("action", "wait"), _ACTION_TO_IDX["wait"]),
+                    "prompt": row.get("prompt", ""),
                     "feature_vector": feature_vector,
                     "target_feature_vector": target_feature_vector,
                     "cumulative_reward": float(sum(step_row.get("reward", 0.0) for step_row in window)),
@@ -78,6 +79,7 @@ def examples_to_arrays(examples: list[dict]) -> dict[str, np.ndarray]:
     tasks = np.asarray([row["task_index"] for row in examples], dtype=np.int64)
     rewards = np.asarray([row["cumulative_reward"] for row in examples], dtype=np.float32)
     dones = np.asarray([row["done_within_horizon"] for row in examples], dtype=np.float32)
+    prompts = [str(row.get("prompt", "")) for row in examples]
     return {
         "features": features,
         "target_features": target_features,
@@ -85,4 +87,5 @@ def examples_to_arrays(examples: list[dict]) -> dict[str, np.ndarray]:
         "tasks": tasks,
         "rewards": rewards,
         "dones": dones,
+        "prompts": prompts,
     }

@@ -33,6 +33,8 @@ def parse_args(argv=None):
     parser.add_argument("--scheduler", type=str, default="rule_based")
     parser.add_argument("--reward-source", type=str, default="hand_shaped")
     parser.add_argument("--learned-reward-path", type=str, default=None)
+    parser.add_argument("--proxy-reward-path", type=str, default=None)
+    parser.add_argument("--proxy-reward-weight", type=float, default=1.0)
     parser.add_argument("--episodic-explore-bonus-enabled", action="store_true")
     parser.add_argument("--episodic-explore-bonus-scale", type=float, default=0.0)
     parser.add_argument("--episodic-explore-bonus-mode", type=str, default="state_hash", choices=["state_hash", "tile"])
@@ -107,6 +109,8 @@ def build_config(args) -> RLConfig:
     config.options.scheduler_model_path = args.scheduler_model_path
     config.reward.source = args.reward_source
     config.reward.learned_reward_path = args.learned_reward_path
+    config.reward.proxy_reward_path = getattr(args, "proxy_reward_path", None)
+    config.reward.proxy_reward_weight = float(getattr(args, "proxy_reward_weight", config.reward.proxy_reward_weight))
     config.reward.episodic_explore_bonus_enabled = args.episodic_explore_bonus_enabled
     config.reward.episodic_explore_bonus_scale = args.episodic_explore_bonus_scale
     config.reward.episodic_explore_bonus_mode = args.episodic_explore_bonus_mode

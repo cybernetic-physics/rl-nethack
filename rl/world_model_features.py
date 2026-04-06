@@ -11,6 +11,20 @@ from rl.train_bc import load_trace_rows
 from rl.world_model import load_world_model
 
 
+def coerce_world_model_feature_vector(
+    feature_vector: np.ndarray | list[float],
+    expected_dim: int,
+) -> np.ndarray:
+    features = np.asarray(feature_vector, dtype=np.float32).reshape(-1)
+    if features.shape[0] == expected_dim:
+        return features
+    if features.shape[0] > expected_dim:
+        # World-model augmentation appends latent/action features to the base
+        # observation. The world model itself always expects the original prefix.
+        return features[:expected_dim].astype(np.float32)
+    raise ValueError(f"Feature vector dim {features.shape[0]} is smaller than world-model input_dim {expected_dim}")
+
+
 def world_model_augmented_dim(base_dim: int, model_path: str | None, mode: str | None) -> int:
     if not model_path or not mode:
         return base_dim
@@ -31,11 +45,16 @@ def augment_feature_vector(
     inference,
     *,
     mode: str,
+    prompt_text: str | None = None,
 ) -> np.ndarray:
-    encoded = inference.encode_with_aux(np.asarray(feature_vector, dtype=np.float32))
+    expected_dim = int(getattr(inference.model, "_metadata", {}).get("input_dim", 0))
+    base_features = coerce_world_model_feature_vector(feature_vector, expected_dim) if expected_dim else np.asarray(
+        feature_vector, dtype=np.float32
+    )
+    encoded = inference.encode_with_aux(base_features, prompt_text=prompt_text)
     latent = encoded["latent"]
     action_logits = encoded["action_logits"]
-    features = np.asarray(feature_vector, dtype=np.float32)
+    features = base_features
     if mode == "replace":
         return latent.astype(np.float32)
     if mode == "concat":
@@ -62,7 +81,7 @@ def transform_trace_with_world_model(
     feature_dim = None
     action_dim = None
     for row in rows:
-        encoded = inference.encode_with_aux(row["feature_vector"])
+        encoded = inference.encode_with_aux(row["feature_vector"], prompt_text=row.get("prompt"))
         latent = encoded["latent"].tolist()
         action_logits = encoded["action_logits"].tolist()
         latent_dim = latent_dim or len(latent)
@@ -73,6 +92,7 @@ def transform_trace_with_world_model(
             row["feature_vector"],
             inference,
             mode=mode,
+            prompt_text=row.get("prompt"),
         ).tolist()
         transformed["observation_version"] = f"{row.get('observation_version', 'unknown')}+{observation_version_suffix}_{mode}"
         transformed_rows.append(transformed)

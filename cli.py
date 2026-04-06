@@ -18,6 +18,9 @@ Subcommands:
   rl-train-world-model -- Train a short-horizon latent world model on traces
   rl-evaluate-world-model -- Evaluate a short-horizon latent world model
   rl-transform-traces-world-model -- Rewrite trace features using a trained world model encoder
+  rl-build-proxy-dataset -- Build teacher-derived proxy labels from traces
+  rl-train-proxy -- Train a teacher-derived proxy reward model
+  rl-evaluate-proxy -- Evaluate a teacher-derived proxy reward model
   rl-check-determinism -- Repeat the same evaluation and diff action traces
   rl-compare-actions -- Compare teacher, BC, and APPO on teacher-induced states
   rl-short-benchmark -- Train BC on a trace shard and run the fast debug checks
@@ -350,6 +353,10 @@ def cmd_rl_train_appo(args):
     argv = [arg for arg in argv if arg != ""]
     if args.learned_reward_path:
         argv.extend(["--learned-reward-path", args.learned_reward_path])
+    if getattr(args, "proxy_reward_path", None):
+        argv.extend(["--proxy-reward-path", args.proxy_reward_path])
+    if float(getattr(args, "proxy_reward_weight", 1.0)) != 1.0:
+        argv.extend(["--proxy-reward-weight", str(args.proxy_reward_weight)])
     if getattr(args, "model_hidden_size", None) is not None:
         argv.extend(["--model-hidden-size", str(args.model_hidden_size)])
     if getattr(args, "world_model_path", None):
@@ -562,6 +569,7 @@ def cmd_rl_evaluate_bc(args):
 def cmd_rl_train_world_model(args):
     from rl.train_bc import load_trace_rows
     from rl.train_world_model import train_world_model
+    from rl.io_utils import atomic_write_json
 
     rows = load_trace_rows(args.input)
     result = train_world_model(
@@ -577,20 +585,36 @@ def cmd_rl_train_world_model(args):
         done_loss_coef=args.done_loss_coef,
         reconstruction_loss_coef=args.reconstruction_loss_coef,
         action_loss_coef=args.action_loss_coef,
+        text_encoder_backend=args.text_encoder_backend,
+        text_model_name=args.text_model_name,
+        text_max_length=args.text_max_length,
+        text_trainable=args.text_trainable,
+        text_embedding_dim=args.text_embedding_dim,
     )
+    if args.report_output:
+        atomic_write_json(args.report_output, result)
     print(json.dumps(result, indent=2))
     return 0
 
 
 def cmd_rl_evaluate_world_model(args):
     from rl.world_model_eval import evaluate_world_model
+    from rl.io_utils import atomic_write_json
 
     result = evaluate_world_model(
         args.model,
         args.input,
         horizon=args.horizon,
         observation_version=args.observation_version,
+        downstream_train_trace_path=args.downstream_train_input,
+        downstream_heldout_trace_path=args.downstream_heldout_input,
+        downstream_mode=args.downstream_mode,
+        downstream_epochs=args.downstream_epochs,
+        downstream_lr=args.downstream_lr,
+        downstream_hidden_size=args.downstream_hidden_size,
     )
+    if args.report_output:
+        atomic_write_json(args.report_output, result)
     print(json.dumps(result, indent=2))
     return 0
 
@@ -605,6 +629,52 @@ def cmd_rl_transform_traces_world_model(args):
         observation_version_suffix=args.version_suffix,
         mode=args.mode,
     )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_rl_build_proxy_dataset(args):
+    from rl.proxy_dataset import build_proxy_dataset_from_trace_file
+
+    result = build_proxy_dataset_from_trace_file(
+        input_path=args.input,
+        output_path=args.output,
+        horizon=args.horizon,
+        task_filter=args.task,
+        max_rows=args.max_rows,
+    )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_rl_train_proxy(args):
+    from rl.train_proxy_model import main as train_proxy_main
+
+    argv = [
+        "--input", args.input,
+        "--output", args.output,
+        "--epochs", str(args.epochs),
+        "--lr", str(args.lr),
+        "--hidden-size", str(args.hidden_size),
+        "--action-embed-dim", str(args.action_embed_dim),
+    ]
+    if args.heldout_input:
+        argv.extend(["--heldout-input", args.heldout_input])
+    if args.report_output:
+        argv.extend(["--report-output", args.report_output])
+    return train_proxy_main(argv)
+
+
+def cmd_rl_evaluate_proxy(args):
+    from rl.proxy_eval import evaluate_proxy_model
+    from rl.proxy_report import build_proxy_report
+
+    result = evaluate_proxy_model(args.model, args.input)
+    if args.report_output:
+        result["report"] = build_proxy_report(args.model, args.input, top_k=args.top_k)
+        with open(args.report_output, "w") as f:
+            json.dump(result["report"], f, indent=2)
+        result["report_output"] = args.report_output
     print(json.dumps(result, indent=2))
     return 0
 
@@ -1219,6 +1289,10 @@ def main():
                       help='Reward source')
     p_rl.add_argument('--learned-reward-path', type=str, default=None,
                       help='Path to learned reward model when using --reward-source learned')
+    p_rl.add_argument('--proxy-reward-path', type=str, default=None,
+                      help='Path to teacher-derived proxy model when using --reward-source proxy or mixed_proxy')
+    p_rl.add_argument('--proxy-reward-weight', type=float, default=1.0,
+                      help='Scaling weight for the proxy reward when using --reward-source mixed_proxy')
     p_rl.add_argument('--episodic-explore-bonus-enabled', action='store_true',
                       help='Enable an explore-only episodic novelty bonus')
     p_rl.add_argument('--episodic-explore-bonus-scale', type=float, default=0.0,
@@ -1603,12 +1677,25 @@ def main():
     p_wm.add_argument('--done-loss-coef', type=float, default=0.5)
     p_wm.add_argument('--reconstruction-loss-coef', type=float, default=1.0)
     p_wm.add_argument('--action-loss-coef', type=float, default=0.25)
+    p_wm.add_argument('--text-encoder-backend', type=str, default='none', choices=['none', 'hash', 'transformer'])
+    p_wm.add_argument('--text-model-name', type=str, default=None)
+    p_wm.add_argument('--text-max-length', type=int, default=128)
+    p_wm.add_argument('--text-trainable', action='store_true')
+    p_wm.add_argument('--text-embedding-dim', type=int, default=128)
+    p_wm.add_argument('--report-output', type=str, default=None)
 
     p_wm_eval = subparsers.add_parser('rl-evaluate-world-model', help='Evaluate a short-horizon latent world model')
     p_wm_eval.add_argument('--model', type=str, required=True)
     p_wm_eval.add_argument('--input', type=str, required=True)
     p_wm_eval.add_argument('--horizon', type=int, default=8)
     p_wm_eval.add_argument('--observation-version', type=str, default=None)
+    p_wm_eval.add_argument('--downstream-train-input', type=str, default=None)
+    p_wm_eval.add_argument('--downstream-heldout-input', type=str, default=None)
+    p_wm_eval.add_argument('--downstream-mode', type=str, default='concat_aux', choices=['replace', 'concat', 'concat_aux'])
+    p_wm_eval.add_argument('--downstream-epochs', type=int, default=20)
+    p_wm_eval.add_argument('--downstream-lr', type=float, default=1e-3)
+    p_wm_eval.add_argument('--downstream-hidden-size', type=int, default=256)
+    p_wm_eval.add_argument('--report-output', type=str, default=None)
 
     p_wm_xform = subparsers.add_parser('rl-transform-traces-world-model', help='Rewrite trace features using a trained world model encoder')
     p_wm_xform.add_argument('--model', type=str, required=True)
@@ -1616,6 +1703,29 @@ def main():
     p_wm_xform.add_argument('--output', type=str, required=True)
     p_wm_xform.add_argument('--version-suffix', type=str, default='wm')
     p_wm_xform.add_argument('--mode', type=str, default='replace', choices=['replace', 'concat', 'concat_aux'])
+
+    p_proxy_build = subparsers.add_parser('rl-build-proxy-dataset', help='Build teacher-derived proxy labels from traces')
+    p_proxy_build.add_argument('--input', type=str, required=True)
+    p_proxy_build.add_argument('--output', type=str, required=True)
+    p_proxy_build.add_argument('--horizon', type=int, default=8)
+    p_proxy_build.add_argument('--task', type=str, default=None)
+    p_proxy_build.add_argument('--max-rows', type=int, default=None)
+
+    p_proxy_train = subparsers.add_parser('rl-train-proxy', help='Train a teacher-derived proxy reward model')
+    p_proxy_train.add_argument('--input', type=str, required=True)
+    p_proxy_train.add_argument('--heldout-input', type=str, default=None)
+    p_proxy_train.add_argument('--output', type=str, required=True)
+    p_proxy_train.add_argument('--epochs', type=int, default=40)
+    p_proxy_train.add_argument('--lr', type=float, default=1e-3)
+    p_proxy_train.add_argument('--hidden-size', type=int, default=256)
+    p_proxy_train.add_argument('--action-embed-dim', type=int, default=32)
+    p_proxy_train.add_argument('--report-output', type=str, default=None)
+
+    p_proxy_eval = subparsers.add_parser('rl-evaluate-proxy', help='Evaluate a teacher-derived proxy reward model')
+    p_proxy_eval.add_argument('--model', type=str, required=True)
+    p_proxy_eval.add_argument('--input', type=str, required=True)
+    p_proxy_eval.add_argument('--report-output', type=str, default=None)
+    p_proxy_eval.add_argument('--top-k', type=int, default=5)
 
     # --- manifest ---
     p_man = subparsers.add_parser('manifest', help='Build and save a training manifest')
@@ -1718,6 +1828,12 @@ def main():
             return cmd_rl_evaluate_world_model(args)
         elif args.command == 'rl-transform-traces-world-model':
             return cmd_rl_transform_traces_world_model(args)
+        elif args.command == 'rl-build-proxy-dataset':
+            return cmd_rl_build_proxy_dataset(args)
+        elif args.command == 'rl-train-proxy':
+            return cmd_rl_train_proxy(args)
+        elif args.command == 'rl-evaluate-proxy':
+            return cmd_rl_evaluate_proxy(args)
         elif args.command == 'manifest':
             return cmd_manifest(args)
         elif args.command == 'golden-generate':

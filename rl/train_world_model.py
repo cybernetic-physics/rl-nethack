@@ -6,10 +6,12 @@ import json
 import torch
 import torch.nn.functional as F
 
+from rl.feature_encoder import ACTION_SET
 from rl.io_utils import atomic_write_json
 from rl.train_bc import load_trace_rows
 from rl.world_model import TraceWorldModel, save_world_model
 from rl.world_model_dataset import build_world_model_examples, examples_to_arrays
+from rl.world_model_eval import summarize_world_model_outputs
 
 
 def train_world_model(
@@ -26,14 +28,24 @@ def train_world_model(
     done_loss_coef: float = 0.5,
     reconstruction_loss_coef: float = 1.0,
     action_loss_coef: float = 0.25,
+    text_encoder_backend: str = "none",
+    text_model_name: str | None = None,
+    text_max_length: int = 128,
+    text_trainable: bool = False,
+    text_embedding_dim: int = 128,
 ) -> dict:
     examples = build_world_model_examples(rows, horizon=horizon, observation_version=observation_version)
     arrays = examples_to_arrays(examples)
-    device = torch.device("cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = TraceWorldModel(
         input_dim=arrays["features"].shape[1],
         latent_dim=latent_dim,
         hidden_size=hidden_size,
+        text_encoder_backend=text_encoder_backend,
+        text_model_name=text_model_name,
+        text_max_length=text_max_length,
+        text_trainable=text_trainable,
+        text_embedding_dim=text_embedding_dim,
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
@@ -43,11 +55,16 @@ def train_world_model(
     tasks = torch.tensor(arrays["tasks"], dtype=torch.long, device=device)
     rewards = torch.tensor(arrays["rewards"], dtype=torch.float32, device=device)
     dones = torch.tensor(arrays["dones"], dtype=torch.float32, device=device)
+    prompt_texts = arrays.get("prompts")
+    cached_text_context = None
+    if prompt_texts and text_encoder_backend != "none" and not text_trainable:
+        with torch.no_grad():
+            cached_text_context = model.encode_text_context(prompt_texts, device=device)
 
     epoch_summaries = []
     for epoch in range(epochs):
         optimizer.zero_grad()
-        outputs = model(x, actions, tasks)
+        outputs = model(x, actions, tasks, prompt_texts=prompt_texts, text_context=cached_text_context)
         reconstruction_loss = F.mse_loss(outputs["current_features"], x)
         action_loss = F.cross_entropy(outputs["action_logits"], actions)
         feature_loss = F.mse_loss(outputs["future_features"], target_x)
@@ -75,16 +92,16 @@ def train_world_model(
         )
 
     with torch.no_grad():
-        outputs = model(x, actions, tasks)
+        outputs = model(x, actions, tasks, prompt_texts=prompt_texts, text_context=cached_text_context)
         latent_mean = outputs["latent"].mean(dim=0).cpu().tolist()
         latent_std = outputs["latent"].std(dim=0).clamp_min(1e-6).cpu().tolist()
-        feature_mse = float(F.mse_loss(outputs["future_features"], target_x).item())
-        reconstruction_mse = float(F.mse_loss(outputs["current_features"], x).item())
-        action_accuracy = float((torch.argmax(outputs["action_logits"], dim=-1) == actions).float().mean().item())
-        reward_mae = float(torch.mean(torch.abs(outputs["reward"] - rewards)).item())
-        done_acc = float(
-            ((torch.sigmoid(outputs["done_logit"]) >= 0.5) == (dones >= 0.5)).float().mean().item()
-        )
+
+    train_metrics = summarize_world_model_outputs(
+        model,
+        arrays,
+        device=device,
+        action_names=ACTION_SET,
+    )
 
     metadata = {
         "input_dim": arrays["features"].shape[1],
@@ -99,13 +116,14 @@ def train_world_model(
         "done_loss_coef": done_loss_coef,
         "reconstruction_loss_coef": reconstruction_loss_coef,
         "action_loss_coef": action_loss_coef,
+        "text_encoder_backend": text_encoder_backend,
+        "text_model_name": text_model_name,
+        "text_max_length": text_max_length,
+        "text_trainable": text_trainable,
+        "text_embedding_dim": text_embedding_dim,
         "latent_mean": latent_mean,
         "latent_std": latent_std,
-        "feature_mse": feature_mse,
-        "reconstruction_mse": reconstruction_mse,
-        "action_accuracy": action_accuracy,
-        "reward_mae": reward_mae,
-        "done_accuracy": done_acc,
+        **train_metrics,
         "epoch_summaries": epoch_summaries,
     }
     save_world_model(model, output_path, metadata=metadata)
@@ -127,6 +145,11 @@ def parse_args(argv=None):
     parser.add_argument("--done-loss-coef", type=float, default=0.5)
     parser.add_argument("--reconstruction-loss-coef", type=float, default=1.0)
     parser.add_argument("--action-loss-coef", type=float, default=0.25)
+    parser.add_argument("--text-encoder-backend", type=str, default="none", choices=["none", "hash", "transformer"])
+    parser.add_argument("--text-model-name", type=str, default=None)
+    parser.add_argument("--text-max-length", type=int, default=128)
+    parser.add_argument("--text-trainable", action="store_true")
+    parser.add_argument("--text-embedding-dim", type=int, default=128)
     return parser.parse_args(argv)
 
 
@@ -146,6 +169,11 @@ def main(argv=None):
         done_loss_coef=args.done_loss_coef,
         reconstruction_loss_coef=args.reconstruction_loss_coef,
         action_loss_coef=args.action_loss_coef,
+        text_encoder_backend=args.text_encoder_backend,
+        text_model_name=args.text_model_name,
+        text_max_length=args.text_max_length,
+        text_trainable=args.text_trainable,
+        text_embedding_dim=args.text_embedding_dim,
     )
     if args.report_output:
         atomic_write_json(args.report_output, result)

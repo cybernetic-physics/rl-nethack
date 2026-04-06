@@ -11,8 +11,10 @@ from rl.config import RLConfig
 from rl.env_adapter import SkillEnvAdapter
 from rl.feature_encoder import ACTION_SET, encode_observation, observation_dim
 from rl.rewards import RewardInputs, build_reward_source
+from rl.timestep import build_policy_timestep
 from rl.world_model import load_world_model
 from rl.world_model_features import augment_feature_vector, world_model_augmented_dim
+from src.task_rewards import observation_hash
 
 
 @dataclass
@@ -20,6 +22,7 @@ class EnvDebugInfo:
     skill_reward: float
     env_reward: float
     episodic_explore_bonus: float
+    reward_components: dict
     active_skill: str
     action_name: str
     requested_action_name: str
@@ -34,7 +37,12 @@ class NethackSkillEnv(gym.Env):
         self.config = config
         self.adapter = SkillEnvAdapter(config)
         self.action_map = _build_action_map()
-        self.reward_source = build_reward_source(config.reward.source, config.reward.learned_reward_path)
+        self.reward_source = build_reward_source(
+            config.reward.source,
+            config.reward.learned_reward_path,
+            config.reward.proxy_reward_path,
+            config.reward.proxy_reward_weight,
+        )
         self.observation_version = config.env.observation_version
         self.world_model_path = config.env.world_model_path
         self.world_model_feature_mode = config.env.world_model_feature_mode
@@ -70,8 +78,22 @@ class NethackSkillEnv(gym.Env):
     def step(self, action: int):
         requested_action_name = ACTION_SET[action]
         state_before = self.adapter._encode_state(self.adapter.obs)
+        active_skill_before = self.adapter.ctx.active_skill
         allowed_actions = self.adapter.allowed_actions(state_before)
         invalid_action_requested = requested_action_name not in allowed_actions
+        timestep_before = build_policy_timestep(
+            state=state_before,
+            task=active_skill_before,
+            allowed_actions=allowed_actions,
+            memory=self.adapter.memory,
+            step=self.adapter.ctx.steps_in_skill,
+            recent_positions=list(self.adapter.ctx.recent_positions),
+            recent_actions=list(self.adapter.ctx.recent_actions),
+            recent_state_hashes=list(self.adapter.ctx.recent_state_hashes),
+            obs_hash=observation_hash(self.adapter.obs),
+            obs=self.adapter.obs,
+        )
+        feature_vector_before = self._encode_features(timestep_before)
         action_name = requested_action_name
         if self.config.env.enforce_action_mask and invalid_action_requested:
             fallback = self.config.env.invalid_action_fallback
@@ -84,25 +106,27 @@ class NethackSkillEnv(gym.Env):
             action_name=action_name,
         )
         transition = timestep["transition"]
-        skill_reward = self.reward_source.score(
-            RewardInputs(
-                task=transition["active_skill_before"],
-                obs_before=transition["obs_before"],
-                obs_after=transition["obs_after"],
-                state_before=transition["state_before"],
-                state_after=transition["state_after"],
-                memory_before=transition["memory_before"],
-                memory_after=transition["memory_after"],
-                action_name=transition["action_name"],
-                env_reward=env_reward,
-                terminated=terminated,
-                truncated=truncated,
-                repeated_state=transition["repeated_state"],
-                revisited_recent_tile=transition["revisited_recent_tile"],
-                repeated_action=transition["repeated_action"],
-                invalid_action_requested=invalid_action_requested,
-            )
+        reward_inputs = RewardInputs(
+            task=transition["active_skill_before"],
+            obs_before=transition["obs_before"],
+            obs_after=transition["obs_after"],
+            state_before=transition["state_before"],
+            state_after=transition["state_after"],
+            memory_before=transition["memory_before"],
+            memory_after=transition["memory_after"],
+            action_name=transition["action_name"],
+            env_reward=env_reward,
+            terminated=terminated,
+            truncated=truncated,
+            repeated_state=transition["repeated_state"],
+            revisited_recent_tile=transition["revisited_recent_tile"],
+            repeated_action=transition["repeated_action"],
+            invalid_action_requested=invalid_action_requested,
+            timestep_before=timestep_before,
+            feature_vector_before=feature_vector_before,
         )
+        reward_details = self.reward_source.details(reward_inputs)
+        skill_reward = float(reward_details["total"])
         episodic_explore_bonus = (
             self.config.reward.episodic_explore_bonus_scale * transition["episodic_explore_bonus_raw"]
         )
@@ -126,6 +150,7 @@ class NethackSkillEnv(gym.Env):
                     skill_reward=float(skill_reward),
                     env_reward=float(env_reward),
                     episodic_explore_bonus=float(episodic_explore_bonus),
+                    reward_components={k: float(v) for k, v in reward_details.items()},
                     active_skill=timestep["active_skill"],
                     action_name=action_name,
                     requested_action_name=requested_action_name,
@@ -162,6 +187,8 @@ def make_nethack_skill_env(full_env_name, cfg, env_config, render_mode=None, **k
     rl_config.env.invalid_action_fallback = getattr(cfg, "invalid_action_fallback", rl_config.env.invalid_action_fallback)
     rl_config.reward.source = getattr(cfg, "reward_source", rl_config.reward.source)
     rl_config.reward.learned_reward_path = getattr(cfg, "learned_reward_path", rl_config.reward.learned_reward_path)
+    rl_config.reward.proxy_reward_path = getattr(cfg, "proxy_reward_path", rl_config.reward.proxy_reward_path)
+    rl_config.reward.proxy_reward_weight = getattr(cfg, "proxy_reward_weight", rl_config.reward.proxy_reward_weight)
     rl_config.reward.extrinsic_weight = getattr(cfg, "extrinsic_reward_weight", rl_config.reward.extrinsic_weight)
     rl_config.reward.intrinsic_weight = getattr(cfg, "intrinsic_reward_weight", rl_config.reward.intrinsic_weight)
     rl_config.reward.invalid_action_penalty = getattr(cfg, "invalid_action_penalty", rl_config.reward.invalid_action_penalty)

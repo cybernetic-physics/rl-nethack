@@ -80,6 +80,8 @@ def _load_actor_critic(experiment: str, train_dir: str, device: str, checkpoint_
     parser.add_argument("--reward_source", type=str, default="hand_shaped")
     parser.add_argument("--intrinsic_reward_weight", type=float, default=1.0)
     parser.add_argument("--extrinsic_reward_weight", type=float, default=0.0)
+    parser.add_argument("--proxy_reward_path", type=str, default=None)
+    parser.add_argument("--proxy_reward_weight", type=float, default=1.0)
     parser.add_argument("--episodic_explore_bonus_enabled", type=str, default="False")
     parser.add_argument("--episodic_explore_bonus_scale", type=float, default=0.0)
     parser.add_argument("--episodic_explore_bonus_mode", type=str, default="state_hash")
@@ -112,6 +114,8 @@ def _load_actor_critic(experiment: str, train_dir: str, device: str, checkpoint_
     env_cfg.env.active_skill_bootstrap = cfg.active_skill_bootstrap
     env_cfg.reward.source = cfg.reward_source
     env_cfg.reward.learned_reward_path = getattr(cfg, "learned_reward_path", None)
+    env_cfg.reward.proxy_reward_path = getattr(cfg, "proxy_reward_path", None)
+    env_cfg.reward.proxy_reward_weight = float(getattr(cfg, "proxy_reward_weight", 1.0))
     env_cfg.reward.extrinsic_weight = cfg.extrinsic_reward_weight
     env_cfg.reward.intrinsic_weight = cfg.intrinsic_reward_weight
     env_cfg.reward.invalid_action_penalty = cfg.invalid_action_penalty

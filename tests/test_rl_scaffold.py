@@ -49,6 +49,12 @@ from rl.world_model_features import (
     transform_trace_with_world_model,
     world_model_augmented_dim,
 )
+from rl.proxy_dataset import build_proxy_rows, summarize_proxy_rows, write_proxy_rows
+from rl.proxy_eval import evaluate_proxy_model
+from rl.proxy_labels import search_context_label, teacher_margin
+from rl.proxy_model import load_proxy_model
+from rl.rewards import RewardInputs, build_reward_source
+from rl.train_proxy_model import train_proxy_model
 
 
 def test_skill_registry_contains_expected_skills():
@@ -391,6 +397,157 @@ def test_trainer_scaffold_includes_trace_eval_args():
     assert "--save_best_every_sec=3" in argv
 
 
+def test_trainer_scaffold_includes_proxy_reward_args():
+    config = RLConfig()
+    config.reward.source = "mixed_proxy"
+    config.reward.proxy_reward_path = "/tmp/proxy.pt"
+    config.reward.proxy_reward_weight = 0.25
+    trainer = APPOTrainerScaffold(config)
+    argv = trainer.build_sf_argv()
+    assert "--reward_source=mixed_proxy" in argv
+    assert "--proxy_reward_path=/tmp/proxy.pt" in argv
+    assert "--proxy_reward_weight=0.25" in argv
+
+
+def test_proxy_labels_and_dataset_summary():
+    row0 = {
+        "episode_id": "ep-1",
+        "step": 0,
+        "seed": 42,
+        "task": "explore",
+        "action": "search",
+        "allowed_actions": ["search", "east", "west"],
+        "feature_vector": [0.0, 1.0, 2.0, 3.0],
+        "observation_version": "v4+wm_concat_aux",
+        "obs_hash": "a",
+        "next_obs_hash": "b",
+        "prompt": "Pos:(10, 20)\nAdjacent: north=wall south=floor east=wall west=wall\nMonsters: none\nItems: none\n",
+        "planner_trace": [
+            {"action": "search", "total": 1.5},
+            {"action": "east", "total": 0.2},
+        ],
+        "delta": {"new_tiles": ["x", "y"], "hp_delta": 0, "gold_delta": 0, "depth_delta": 0, "survived": True},
+        "done": False,
+        "rooms_discovered_before": 1,
+        "recent_position_count": 0,
+        "recent_action_count": 0,
+    }
+    row1 = dict(row0)
+    row1.update(
+        {
+            "step": 1,
+            "action": "east",
+            "obs_hash": "b",
+            "next_obs_hash": "c",
+            "prompt": "Pos:(11, 20)\nAdjacent: north=floor south=floor east=floor west=wall\nMonsters: none\nItems: none\n",
+            "delta": {"new_tiles": ["z"], "hp_delta": -1, "gold_delta": 5, "depth_delta": 1, "survived": True},
+        }
+    )
+    assert search_context_label(row0) == 1
+    assert teacher_margin(row0) == 1.3
+    proxy_rows = build_proxy_rows([row1, row0], horizon=2, task_filter="explore")
+    assert len(proxy_rows) == 2
+    summary = summarize_proxy_rows(proxy_rows)
+    assert summary["rows"] == 2
+    assert summary["feature_dims"] == [4]
+    assert summary["search_context_positive_rate"] == 0.5
+
+
+def test_proxy_train_eval_and_reward_source():
+    rows = [
+        {
+            "episode_id": "ep-1",
+            "step": 0,
+            "action": "east",
+            "allowed_actions": ["east", "west", "search"],
+            "feature_vector": [1.0, 0.0, 0.0, 0.0],
+            "observation_version": "v4+wm_concat_aux",
+            "k_step_progress": 4.0,
+            "k_step_survival": 0.0,
+            "k_step_loop_risk": 0.1,
+            "k_step_resource_value": 0.0,
+            "teacher_margin": 1.0,
+            "search_context_label": 0,
+            "prompt": "Pos:(1, 1)\nAdjacent: north=floor south=floor east=floor west=floor\nMonsters: none\nItems: none\n",
+        },
+        {
+            "episode_id": "ep-1",
+            "step": 1,
+            "action": "west",
+            "allowed_actions": ["east", "west", "search"],
+            "feature_vector": [0.0, 1.0, 0.0, 0.0],
+            "observation_version": "v4+wm_concat_aux",
+            "k_step_progress": 1.0,
+            "k_step_survival": 0.0,
+            "k_step_loop_risk": 0.2,
+            "k_step_resource_value": 0.0,
+            "teacher_margin": 0.8,
+            "search_context_label": 0,
+            "prompt": "Pos:(2, 1)\nAdjacent: north=floor south=floor east=floor west=floor\nMonsters: none\nItems: none\n",
+        },
+        {
+            "episode_id": "ep-1",
+            "step": 2,
+            "action": "search",
+            "allowed_actions": ["east", "west", "search"],
+            "feature_vector": [0.0, 0.0, 1.0, 0.0],
+            "observation_version": "v4+wm_concat_aux",
+            "k_step_progress": 0.5,
+            "k_step_survival": 0.0,
+            "k_step_loop_risk": 0.0,
+            "k_step_resource_value": 0.0,
+            "teacher_margin": 0.6,
+            "search_context_label": 1,
+            "prompt": "Pos:(3, 1)\nAdjacent: north=wall south=floor east=wall west=wall\nMonsters: none\nItems: none\n",
+        },
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        heldout_path = os.path.join(tmpdir, "heldout.jsonl")
+        model_path = os.path.join(tmpdir, "proxy.pt")
+        report_path = os.path.join(tmpdir, "proxy_report.json")
+        write_proxy_rows(rows, heldout_path)
+        result = train_proxy_model(
+            rows,
+            model_path,
+            heldout_rows=rows,
+            epochs=20,
+            lr=1e-2,
+            hidden_size=32,
+            action_embed_dim=8,
+        )
+        assert os.path.exists(model_path)
+        assert "heldout_eval" in result
+        inference = load_proxy_model(model_path)
+        ranking = inference.rank_actions(np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32), ["east", "west"])
+        assert ranking[0]["action"] in {"east", "west"}
+        eval_result = evaluate_proxy_model(model_path, heldout_path)
+        assert eval_result["rows"] == 3
+        from rl.proxy_report import build_proxy_report
+        report = build_proxy_report(model_path, heldout_path)
+        with open(report_path, "w") as f:
+            json.dump(report, f)
+        assert os.path.exists(report_path)
+        proxy_reward = build_reward_source("proxy", proxy_reward_path=model_path)
+        reward_inputs = RewardInputs(
+            task="explore",
+            obs_before={},
+            obs_after={},
+            state_before={},
+            state_after={},
+            memory_before=None,
+            memory_after=None,
+            action_name="east",
+            env_reward=0.0,
+            terminated=False,
+            truncated=False,
+            feature_vector_before=np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        )
+        proxy_details = proxy_reward.details(reward_inputs)
+        assert "proxy_teacher_margin" in proxy_details
+        mixed_reward = build_reward_source("mixed_proxy", proxy_reward_path=model_path, proxy_reward_weight=0.5)
+        assert mixed_reward.proxy_weight == 0.5
+
+
 def test_teacher_report_includes_source_and_feature_metadata():
     report = build_teacher_report(
         model_path="/tmp/model.pt",
@@ -684,6 +841,7 @@ def test_world_model_examples_build_k_step_windows():
             "reward": 0.1,
             "done": False,
             "observation_version": "v4",
+            "prompt": "obs north wall east floor",
             "feature_vector": [0.0, 1.0, 2.0],
         },
         {
@@ -695,6 +853,7 @@ def test_world_model_examples_build_k_step_windows():
             "reward": 0.2,
             "done": False,
             "observation_version": "v4",
+            "prompt": "obs east corridor",
             "feature_vector": [1.0, 2.0, 3.0],
         },
         {
@@ -706,6 +865,7 @@ def test_world_model_examples_build_k_step_windows():
             "reward": 0.3,
             "done": False,
             "observation_version": "v4",
+            "prompt": "obs south room",
             "feature_vector": [2.0, 3.0, 4.0],
         },
     ]
@@ -717,6 +877,7 @@ def test_world_model_examples_build_k_step_windows():
     arrays = examples_to_arrays(examples)
     assert arrays["features"].shape == (2, 3)
     assert arrays["target_features"].shape == (2, 3)
+    assert arrays["prompts"][0].startswith("obs")
 
 
 def test_world_model_train_and_eval_smoke():
@@ -732,6 +893,7 @@ def test_world_model_train_and_eval_smoke():
                 "reward": float(step) / 10.0,
                 "done": step == 5,
                 "observation_version": "v4",
+                "prompt": f"turn {step} action {'east' if step % 2 == 0 else 'west'}",
                 "feature_vector": [float(step), float(step + 1), float(step + 2), float(step % 2)],
             }
         )
@@ -749,11 +911,20 @@ def test_world_model_train_and_eval_smoke():
             hidden_size=32,
             latent_dim=16,
             observation_version="v4",
+            text_encoder_backend="hash",
+            text_embedding_dim=16,
         )
         assert train_result["num_examples"] > 0
+        assert "action_accuracy" in train_result
+        assert "feature_cosine_mean" in train_result
+        assert train_result["text_encoder_backend"] == "hash"
         eval_result = evaluate_world_model(model_path, trace_path, horizon=2, observation_version="v4")
         assert eval_result["num_examples"] == train_result["num_examples"]
         assert eval_result["feature_mse"] >= 0.0
+        assert "action_accuracy" in eval_result
+        assert "action_top3_accuracy" in eval_result
+        assert "latent_dead_fraction" in eval_result
+        assert eval_result["text_encoder_backend"] == "hash"
         latent_trace_path = os.path.join(tmpdir, "trace_latent.jsonl")
         transform_result = transform_trace_with_world_model(trace_path, latent_trace_path, model_path, mode="concat")
         assert transform_result["rows"] == len(rows)
@@ -768,6 +939,23 @@ def test_world_model_train_and_eval_smoke():
         assert world_model_augmented_dim(aux_result["original_feature_dim"], model_path, "concat_aux") == len(
             aux_rows[0]["feature_vector"]
         )
+        augmented_eval = evaluate_world_model(model_path, aux_trace_path, horizon=2)
+        assert augmented_eval["model_input_dim"] == 4
+        assert augmented_eval["input_feature_dim"] == len(aux_rows[0]["feature_vector"])
+        assert augmented_eval["coerced_example_count"] > 0
+        downstream_eval = evaluate_world_model(
+            model_path,
+            trace_path,
+            horizon=2,
+            observation_version="v4",
+            downstream_train_trace_path=trace_path,
+            downstream_heldout_trace_path=trace_path,
+            downstream_mode="concat_aux",
+            downstream_epochs=2,
+            downstream_hidden_size=32,
+        )
+        assert "downstream_bc" in downstream_eval
+        assert downstream_eval["downstream_bc"]["trace_eval_summary"]["match_rate"] >= 0.0
 
 
 def test_skill_env_masks_invalid_action_requests():

@@ -47,6 +47,8 @@ class APPOTrainerScaffold:
             "scheduler_model_path": self.config.options.scheduler_model_path,
             "reward_source": self.config.reward.source,
             "learned_reward_path": self.config.reward.learned_reward_path,
+            "proxy_reward_path": self.config.reward.proxy_reward_path,
+            "proxy_reward_weight": self.config.reward.proxy_reward_weight,
             "teacher_bc_path": self.config.appo.teacher_bc_path,
             "teacher_report_path": self.config.model.teacher_report_path,
             "teacher_loss_coef": self.config.appo.teacher_loss_coef,
@@ -159,6 +161,8 @@ class APPOTrainerScaffold:
             f"--reward_source={cfg.reward.source}",
             f"--intrinsic_reward_weight={cfg.reward.intrinsic_weight}",
             f"--extrinsic_reward_weight={cfg.reward.extrinsic_weight}",
+            f"--proxy_reward_path={cfg.reward.proxy_reward_path or ''}",
+            f"--proxy_reward_weight={cfg.reward.proxy_reward_weight}",
             f"--episodic_explore_bonus_enabled={str(cfg.reward.episodic_explore_bonus_enabled)}",
             f"--episodic_explore_bonus_scale={cfg.reward.episodic_explore_bonus_scale}",
             f"--episodic_explore_bonus_mode={cfg.reward.episodic_explore_bonus_mode}",
@@ -276,6 +280,8 @@ class APPOTrainerScaffold:
         parser.add_argument("--reward_source", type=str, default=self.config.reward.source)
         parser.add_argument("--intrinsic_reward_weight", type=float, default=self.config.reward.intrinsic_weight)
         parser.add_argument("--extrinsic_reward_weight", type=float, default=self.config.reward.extrinsic_weight)
+        parser.add_argument("--proxy_reward_path", type=str, default=self.config.reward.proxy_reward_path)
+        parser.add_argument("--proxy_reward_weight", type=float, default=self.config.reward.proxy_reward_weight)
         parser.add_argument("--episodic_explore_bonus_enabled", type=str, default=str(self.config.reward.episodic_explore_bonus_enabled))
         parser.add_argument("--episodic_explore_bonus_scale", type=float, default=self.config.reward.episodic_explore_bonus_scale)
         parser.add_argument("--episodic_explore_bonus_mode", type=str, default=self.config.reward.episodic_explore_bonus_mode)
