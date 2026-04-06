@@ -686,6 +686,9 @@ More specifically:
   - a single deeper cheap student distilled from that ensemble at `0.9875`,
   - after fixing the remaining APPO bridge bugs, the same deeper `0.9875` student now survives at step 0 with exact `0.9875` warm-start trace match,
   - but the first learned checkpoint still drops to `0.975` and later short-run checkpoints fall further to `0.925` and `0.9125`,
+  - after fixing a CLI bug that had been silently dropping zero-valued teacher coefficients, a valid no-teacher APPO control still reached the same `0.975` best learned score,
+  - that means the current teacher CE/replay settings are not the main reason the short bridge reaches `0.975`,
+  - small offline attempts to improve the `0.9875` teacher with a supervised term, east-weighted supervision, or a wider pure-distill student all regressed below the baseline,
 - the proxy-reward branch is implemented but not mature enough to replace the current best teacher-replay branch,
 - the most plausible next frontier is a more teacher-aware and behavior-constrained online improver.
 

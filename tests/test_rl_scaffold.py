@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import tempfile
+import argparse
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 
@@ -15,7 +16,7 @@ from rl.sf_env import NethackSkillEnv
 from rl.options import build_skill_registry
 from rl.scheduler import SchedulerContext, build_scheduler
 from rl.trainer import APPOTrainerScaffold
-from rl.train_bc import load_trace_rows, train_bc_model
+from rl.train_bc import load_trace_rows, train_bc_model, _parse_action_weight_boosts
 from rl.bc_model import load_bc_model
 from rl.debug_tools import check_policy_determinism, compare_actions_on_teacher_states
 from rl.trace_eval import evaluate_trace_policy, trace_disagreement_report
@@ -24,6 +25,7 @@ from rl.traces import shard_trace_file, generate_dagger_traces, generate_multi_t
 from rl.checkpoint_tools import TraceCheckpointMonitor, write_trace_best_alias, rank_appo_checkpoints_by_trace
 import rl.checkpoint_tools as checkpoint_tools
 import rl.dagger as dagger_module
+import cli as cli_module
 from pathlib import Path
 import torch
 from rl.timestep import build_policy_timestep
@@ -89,6 +91,15 @@ def test_parse_teacher_bc_paths_supports_csv():
     assert _parse_teacher_bc_paths("") == []
     assert _parse_teacher_bc_paths("/tmp/a.pt") == ["/tmp/a.pt"]
     assert _parse_teacher_bc_paths("/tmp/a.pt, /tmp/b.pt") == ["/tmp/a.pt", "/tmp/b.pt"]
+
+
+def test_parse_action_weight_boosts_supports_csv():
+    assert _parse_action_weight_boosts(None) == {}
+    assert _parse_action_weight_boosts("") == {}
+    assert _parse_action_weight_boosts("east=2.0,west=1.5") == {
+        ACTION_SET.index("east"): 2.0,
+        ACTION_SET.index("west"): 1.5,
+    }
 
 
 def test_trainer_scaffold_renders_plan():
@@ -444,6 +455,105 @@ def test_build_appo_config_records_appo_init_checkpoint():
     )()
     config = build_appo_config(args)
     assert config.model.appo_init_checkpoint_path == "/tmp/best_trace_match.pth"
+
+
+def test_cli_train_appo_forwards_zero_valued_teacher_controls(monkeypatch):
+    captured = {}
+
+    def fake_backend():
+        return False
+
+    def fake_train(argv):
+        captured["argv"] = list(argv)
+        return 0
+
+    monkeypatch.setattr("rl.bootstrap.ensure_sample_factory_backend", fake_backend)
+    monkeypatch.setattr("rl.train_appo.main", fake_train)
+
+    args = argparse.Namespace(
+        experiment="exp",
+        train_dir="train_dir/rl",
+        serial_mode=False,
+        async_rl=True,
+        num_workers=1,
+        num_envs_per_worker=1,
+        rollout_length=8,
+        recurrence=8,
+        batch_size=8,
+        num_batches_per_epoch=1,
+        ppo_epochs=1,
+        learning_rate=3e-4,
+        gamma=0.99,
+        gae_lambda=0.9,
+        value_loss_coeff=0.1,
+        reward_scale=0.005,
+        entropy_coeff=0.01,
+        ppo_clip_ratio=0.1,
+        train_for_env_steps=32,
+        scheduler="rule_based",
+        reward_source="hand_shaped",
+        learned_reward_path=None,
+        proxy_reward_path=None,
+        proxy_reward_weight=1.0,
+        episodic_explore_bonus_enabled=False,
+        episodic_explore_bonus_scale=0.0,
+        episodic_explore_bonus_mode="state_hash",
+        scheduler_model_path=None,
+        enabled_skills="explore",
+        observation_version="v4",
+        world_model_path=None,
+        world_model_feature_mode=None,
+        env_max_episode_steps=200,
+        model_hidden_size=None,
+        model_num_layers=None,
+        separate_actor_critic=False,
+        disable_input_normalization=False,
+        nonlinearity=None,
+        bc_init_path="/tmp/teacher.pt",
+        appo_init_checkpoint_path=None,
+        teacher_bc_path=None,
+        teacher_report_path=None,
+        teacher_loss_coef=0.0,
+        teacher_loss_type="ce",
+        teacher_action_boosts="",
+        teacher_loss_final_coef=0.0,
+        teacher_loss_warmup_env_steps=0,
+        teacher_loss_decay_env_steps=0,
+        teacher_replay_trace_input=None,
+        teacher_replay_coef=0.0,
+        teacher_replay_final_coef=0.0,
+        teacher_replay_warmup_env_steps=0,
+        teacher_replay_decay_env_steps=0,
+        teacher_replay_batch_size=128,
+        teacher_replay_priority_power=1.0,
+        teacher_replay_source_mode="uniform",
+        param_anchor_coef=0.0,
+        actor_loss_scale=0.0,
+        actor_loss_final_scale=0.0,
+        actor_loss_warmup_env_steps=0,
+        actor_loss_decay_env_steps=0,
+        trace_eval_input="/tmp/heldout.jsonl",
+        trace_eval_interval_env_steps=128,
+        trace_eval_top_k=5,
+        save_every_sec=5,
+        save_best_every_sec=5,
+        no_rnn=True,
+        use_rnn=False,
+        disable_action_mask=False,
+        write_plan=None,
+        improver_report_output=None,
+        dry_run=False,
+    )
+
+    rc = cli_module.cmd_rl_train_appo(args)
+    assert rc == 0
+    argv = captured["argv"]
+    assert "--teacher-loss-coef" in argv
+    assert argv[argv.index("--teacher-loss-coef") + 1] == "0.0"
+    assert "--teacher-replay-coef" in argv
+    assert argv[argv.index("--teacher-replay-coef") + 1] == "0.0"
+    assert "--actor-loss-scale" in argv
+    assert argv[argv.index("--actor-loss-scale") + 1] == "0.0"
 
 
 def test_parse_teacher_action_boosts():

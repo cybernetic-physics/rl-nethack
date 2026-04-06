@@ -87,6 +87,27 @@ def _teacher_logits_for_rows(rows: list[dict], teacher_bc_paths: list[str]) -> n
     return ensembled_logits / float(len(teacher_bc_paths))
 
 
+def _parse_action_weight_boosts(raw: str | None) -> dict[int, float]:
+    boosts: dict[int, float] = {}
+    if not raw:
+        return boosts
+    for part in str(raw).split(","):
+        piece = part.strip()
+        if not piece:
+            continue
+        if "=" not in piece:
+            raise ValueError(f"Invalid action weight boost '{piece}', expected action=value")
+        name, value = piece.split("=", 1)
+        action_name = name.strip()
+        if action_name not in ACTION_SET:
+            raise ValueError(f"Unknown action '{action_name}' in action weight boosts")
+        weight = float(value)
+        if weight <= 0:
+            raise ValueError(f"Action weight boost for '{action_name}' must be positive")
+        boosts[ACTION_SET.index(action_name)] = weight
+    return boosts
+
+
 def train_bc_model(
     rows: list[dict],
     output_path: str,
@@ -102,6 +123,7 @@ def train_bc_model(
     distill_loss_coef: float = 0.0,
     distill_temperature: float = 1.0,
     supervised_loss_coef: float = 1.0,
+    action_weight_boosts: str | None = None,
 ) -> dict:
     if not rows:
         raise ValueError("No trace rows to train on")
@@ -136,13 +158,18 @@ def train_bc_model(
     if teacher_paths:
         teacher_logits_np = _teacher_logits_for_rows(rows, teacher_paths)
         teacher_logits = torch.tensor(teacher_logits_np, dtype=torch.float32, device=device)
+    example_weights = torch.ones(len(rows), dtype=torch.float32, device=device)
+    for action_idx, weight in _parse_action_weight_boosts(action_weight_boosts).items():
+        example_weights = torch.where(y == action_idx, torch.full_like(example_weights, weight), example_weights)
 
     losses = []
     for _ in range(epochs):
         optimizer.zero_grad()
         logits = model(x)
         logits = logits.masked_fill(action_masks <= 0, -1e9)
-        loss = F.cross_entropy(logits, y) * float(supervised_loss_coef)
+        supervised_loss = F.cross_entropy(logits, y, reduction="none")
+        supervised_loss = (supervised_loss * example_weights).mean()
+        loss = supervised_loss * float(supervised_loss_coef)
         if teacher_logits is not None and distill_loss_coef > 0:
             temperature = max(float(distill_temperature), 1e-6)
             student_log_probs = F.log_softmax(logits / temperature, dim=-1)
@@ -171,6 +198,7 @@ def train_bc_model(
         "distill_loss_coef": distill_loss_coef,
         "distill_temperature": distill_temperature,
         "supervised_loss_coef": supervised_loss_coef,
+        "action_weight_boosts": action_weight_boosts,
         "final_loss": losses[-1],
         "train_accuracy": accuracy,
     }
@@ -194,6 +222,7 @@ def parse_args(argv=None):
     parser.add_argument("--distill-loss-coef", type=float, default=0.0)
     parser.add_argument("--distill-temperature", type=float, default=1.0)
     parser.add_argument("--supervised-loss-coef", type=float, default=1.0)
+    parser.add_argument("--action-weight-boosts", type=str, default=None)
     parser.add_argument("--heldout-input", type=str, default=None)
     parser.add_argument("--teacher-report-output", type=str, default=None)
     parser.add_argument("--weak-action-input", type=str, default=None)
@@ -218,6 +247,7 @@ def main(argv=None):
         distill_loss_coef=args.distill_loss_coef,
         distill_temperature=args.distill_temperature,
         supervised_loss_coef=args.supervised_loss_coef,
+        action_weight_boosts=args.action_weight_boosts,
     )
     output = {"train": result}
     if args.heldout_input:

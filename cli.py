@@ -382,27 +382,27 @@ def cmd_rl_train_appo(args):
         argv.extend(["--teacher-bc-path", args.teacher_bc_path])
     if getattr(args, "teacher_report_path", None):
         argv.extend(["--teacher-report-path", args.teacher_report_path])
-    if args.teacher_loss_coef:
+    if getattr(args, "teacher_loss_coef", None) is not None:
         argv.extend(["--teacher-loss-coef", str(args.teacher_loss_coef)])
     if args.teacher_loss_type:
         argv.extend(["--teacher-loss-type", args.teacher_loss_type])
     if getattr(args, "teacher_action_boosts", ""):
         argv.extend(["--teacher-action-boosts", args.teacher_action_boosts])
-    if getattr(args, "teacher_loss_final_coef", 0.0):
+    if getattr(args, "teacher_loss_final_coef", None) is not None:
         argv.extend(["--teacher-loss-final-coef", str(args.teacher_loss_final_coef)])
-    if getattr(args, "teacher_loss_warmup_env_steps", 0):
+    if getattr(args, "teacher_loss_warmup_env_steps", None) is not None:
         argv.extend(["--teacher-loss-warmup-env-steps", str(args.teacher_loss_warmup_env_steps)])
-    if getattr(args, "teacher_loss_decay_env_steps", 0):
+    if getattr(args, "teacher_loss_decay_env_steps", None) is not None:
         argv.extend(["--teacher-loss-decay-env-steps", str(args.teacher_loss_decay_env_steps)])
     if getattr(args, "teacher_replay_trace_input", None):
         argv.extend(["--teacher-replay-trace-input", args.teacher_replay_trace_input])
-    if getattr(args, "teacher_replay_coef", 0.0):
+    if getattr(args, "teacher_replay_coef", None) is not None:
         argv.extend(["--teacher-replay-coef", str(args.teacher_replay_coef)])
-    if getattr(args, "teacher_replay_final_coef", 0.0):
+    if getattr(args, "teacher_replay_final_coef", None) is not None:
         argv.extend(["--teacher-replay-final-coef", str(args.teacher_replay_final_coef)])
-    if getattr(args, "teacher_replay_warmup_env_steps", 0):
+    if getattr(args, "teacher_replay_warmup_env_steps", None) is not None:
         argv.extend(["--teacher-replay-warmup-env-steps", str(args.teacher_replay_warmup_env_steps)])
-    if getattr(args, "teacher_replay_decay_env_steps", 0):
+    if getattr(args, "teacher_replay_decay_env_steps", None) is not None:
         argv.extend(["--teacher-replay-decay-env-steps", str(args.teacher_replay_decay_env_steps)])
     if getattr(args, "teacher_replay_batch_size", None) is not None:
         argv.extend(["--teacher-replay-batch-size", str(args.teacher_replay_batch_size)])
@@ -410,15 +410,15 @@ def cmd_rl_train_appo(args):
         argv.extend(["--teacher-replay-priority-power", str(args.teacher_replay_priority_power)])
     if getattr(args, "teacher_replay_source_mode", "uniform") != "uniform":
         argv.extend(["--teacher-replay-source-mode", str(args.teacher_replay_source_mode)])
-    if getattr(args, "param_anchor_coef", 0.0):
+    if getattr(args, "param_anchor_coef", None) is not None:
         argv.extend(["--param-anchor-coef", str(args.param_anchor_coef)])
-    if getattr(args, "actor_loss_scale", 1.0) != 1.0:
+    if getattr(args, "actor_loss_scale", None) is not None:
         argv.extend(["--actor-loss-scale", str(args.actor_loss_scale)])
-    if getattr(args, "actor_loss_final_scale", 1.0) != 1.0:
+    if getattr(args, "actor_loss_final_scale", None) is not None:
         argv.extend(["--actor-loss-final-scale", str(args.actor_loss_final_scale)])
-    if getattr(args, "actor_loss_warmup_env_steps", 0):
+    if getattr(args, "actor_loss_warmup_env_steps", None) is not None:
         argv.extend(["--actor-loss-warmup-env-steps", str(args.actor_loss_warmup_env_steps)])
-    if getattr(args, "actor_loss_decay_env_steps", 0):
+    if getattr(args, "actor_loss_decay_env_steps", None) is not None:
         argv.extend(["--actor-loss-decay-env-steps", str(args.actor_loss_decay_env_steps)])
     if args.trace_eval_input:
         argv.extend(["--trace-eval-input", args.trace_eval_input])
@@ -551,6 +551,8 @@ def cmd_rl_train_bc(args):
             argv.extend(["--distill-temperature", str(args.distill_temperature)])
     if float(getattr(args, "supervised_loss_coef", 1.0)) != 1.0:
         argv.extend(["--supervised-loss-coef", str(args.supervised_loss_coef)])
+    if getattr(args, "action_weight_boosts", None):
+        argv.extend(["--action-weight-boosts", args.action_weight_boosts])
     if args.heldout_input:
         argv.extend(["--heldout-input", args.heldout_input])
     if args.teacher_report_output:
@@ -1709,6 +1711,7 @@ def main():
     p_bc.add_argument('--distill-loss-coef', type=float, default=0.0)
     p_bc.add_argument('--distill-temperature', type=float, default=1.0)
     p_bc.add_argument('--supervised-loss-coef', type=float, default=1.0)
+    p_bc.add_argument('--action-weight-boosts', type=str, default=None)
     p_bc.add_argument('--heldout-input', type=str, default=None)
     p_bc.add_argument('--teacher-report-output', type=str, default=None)
     p_bc.add_argument('--weak-action-input', type=str, default=None)
