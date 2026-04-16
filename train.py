@@ -477,6 +477,8 @@ def build_training_arguments_kwargs(training_arguments_cls, **kwargs):
 def build_trainer_init_kwargs(trainer_cls, **kwargs):
     """Filter trainer init kwargs to those supported by the installed version."""
     supported = set(inspect.signature(trainer_cls.__init__).parameters)
+    if "tokenizer" in kwargs and "tokenizer" not in supported and "processing_class" in supported:
+        kwargs["processing_class"] = kwargs["tokenizer"]
     return {key: value for key, value in kwargs.items() if key in supported}
 
 
@@ -636,6 +638,10 @@ def main():
                 model_load_kwargs["device_map"] = {"": torch.cuda.current_device()}
 
             model, tokenizer = FastLanguageModel.from_pretrained(**model_load_kwargs)
+            if tokenizer is None:
+                tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=True)
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
 
             model = FastLanguageModel.get_peft_model(
                 model,
