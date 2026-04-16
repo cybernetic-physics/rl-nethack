@@ -2,6 +2,33 @@
 
 NetHack RL research: LLM agents, expert trace capture, and LoRA fine-tuning for local GPU machines.
 
+## Current Orientation
+
+If you are trying to understand the repo as it exists now, start with the consolidated docs:
+
+- [docs/consolidated-2026-04/README.md](/home/luc/rl-nethack-worktree-20260416/docs/consolidated-2026-04/README.md)
+- [docs/consolidated-2026-04/07-operator-quickstart.md](/home/luc/rl-nethack-worktree-20260416/docs/consolidated-2026-04/07-operator-quickstart.md)
+
+Those docs summarize the committed markdown trail and preserve citations back to the original reports, plans, handoffs, and research notes.
+
+Important current status:
+
+- the repo now has a real APPO backend, a strong offline teacher path, a world-model representation path, and a trusted deterministic trace benchmark
+- the main open problem is no longer infrastructure
+- the main open problem is teacher-constrained online improvement without drift
+
+The strongest broad conclusions are synthesized in:
+
+- [docs/consolidated-2026-04/03-experimental-timeline.md](/home/luc/rl-nethack-worktree-20260416/docs/consolidated-2026-04/03-experimental-timeline.md)
+- [docs/consolidated-2026-04/04-evaluation-and-benchmarks.md](/home/luc/rl-nethack-worktree-20260416/docs/consolidated-2026-04/04-evaluation-and-benchmarks.md)
+- [docs/consolidated-2026-04/05-blockers-and-next-steps.md](/home/luc/rl-nethack-worktree-20260416/docs/consolidated-2026-04/05-blockers-and-next-steps.md)
+
+Important benchmark warning:
+
+- do not use live seeded evaluation as the main promotion gate
+- use deterministic held-out trace match instead
+- do not compare numbers across different trace / representation regimes unless the benchmark setup matches
+
 ## What's Here
 
 ### AutoAscend Expert Trace Capture (`autoascend_traces/`)
@@ -109,7 +136,8 @@ pyproject.toml             uv project definition and dependency groups
 uv.lock                    Locked dependency resolution for reproducible setup
 .gitattributes             Git LFS tracking rules for datasets
 docker-compose.yml         Local Docker Compose training job with GPU access
-PLAN.md                    Full architecture document
+docs/consolidated-2026-04/ Consolidated research, architecture, eval, lit review, and operator docs
+docs/archive/root-history/ Historical markdown trail moved out of the project root
 ```
 
 ## Quick Start

@@ -9,9 +9,9 @@ This document defines the next execution plan for improving the repo after:
 
 It is grounded in:
 
-- [RUN-REPORT-2026-04-05-X100-NORNN.md](/home/luc/rl-nethack/RUN-REPORT-2026-04-05-X100-NORNN.md)
-- [POSTMORTEM-NEXT-STEPS-2026-04-05.md](/home/luc/rl-nethack/POSTMORTEM-NEXT-STEPS-2026-04-05.md)
-- [FAST-RL-UPGRADE-PLAN-2026-04-05.md](/home/luc/rl-nethack/FAST-RL-UPGRADE-PLAN-2026-04-05.md)
+- [RUN-REPORT-2026-04-05-X100-NORNN.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/run-reports/RUN-REPORT-2026-04-05-X100-NORNN.md)
+- [POSTMORTEM-NEXT-STEPS-2026-04-05.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/reports/POSTMORTEM-NEXT-STEPS-2026-04-05.md)
+- [FAST-RL-UPGRADE-PLAN-2026-04-05.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/plans/FAST-RL-UPGRADE-PLAN-2026-04-05.md)
 
 It is also informed by these papers already pulled into the repo:
 

@@ -5,8 +5,8 @@ to decide what the repo should do next.
 
 It is grounded in:
 
-- [RUN-REPORT-2026-04-05-X10-RERUN.md](/home/luc/rl-nethack/RUN-REPORT-2026-04-05-X10-RERUN.md)
-- [FAST-DEBUG-LOOP-REPORT-2026-04-05.md](/home/luc/rl-nethack/FAST-DEBUG-LOOP-REPORT-2026-04-05.md)
+- [RUN-REPORT-2026-04-05-X10-RERUN.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/run-reports/RUN-REPORT-2026-04-05-X10-RERUN.md)
+- [FAST-DEBUG-LOOP-REPORT-2026-04-05.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/reports/FAST-DEBUG-LOOP-REPORT-2026-04-05.md)
 - current RL code in:
   - [rl/trainer.py](/home/luc/rl-nethack/rl/trainer.py)
   - [rl/sf_env.py](/home/luc/rl-nethack/rl/sf_env.py)

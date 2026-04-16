@@ -11,8 +11,8 @@ This document defines the next concrete repo shift:
 This plan is grounded in:
 
 - the current code in [src/task_rewards.py](/home/luc/rl-nethack/src/task_rewards.py), [rl/rewards.py](/home/luc/rl-nethack/rl/rewards.py), [rl/sf_env.py](/home/luc/rl-nethack/rl/sf_env.py), and [rl/traces.py](/home/luc/rl-nethack/rl/traces.py)
-- the current project diagnosis in [wagmi.md](/home/luc/rl-nethack/wagmi.md)
-- the current repo shape plan in [REPO-MORPH-PLAN-2026-04-06.md](/home/luc/rl-nethack/REPO-MORPH-PLAN-2026-04-06.md)
+- the current project diagnosis in [wagmi.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/misc/wagmi.md)
+- the current repo shape plan in [REPO-MORPH-PLAN-2026-04-06.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/plans/REPO-MORPH-PLAN-2026-04-06.md)
 - the NetHack and NetHack-RL literature, especially:
   - [references/papers/nle_neurips2020.pdf](/home/luc/rl-nethack/references/papers/nle_neurips2020.pdf)
   - [references/papers/nethack_offline_pretrain_arxiv2023.pdf](/home/luc/rl-nethack/references/papers/nethack_offline_pretrain_arxiv2023.pdf)

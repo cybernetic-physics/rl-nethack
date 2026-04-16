@@ -290,7 +290,7 @@ That means:
 - replay emphasis on weak-action states
 - possibly mixed replay composition
 
-That is exactly the path already laid out in [plan-wagmi.md](/home/luc/rl-nethack/plan-wagmi.md).
+That is exactly the path already laid out in [plan-wagmi.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/misc/plan-wagmi.md).
 
 ## Bottom Line
 

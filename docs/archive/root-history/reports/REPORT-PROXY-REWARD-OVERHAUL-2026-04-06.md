@@ -25,7 +25,7 @@ So the honest conclusion is:
 
 ## What Was Implemented
 
-The plan in [PLAN-PROXY-REWARD-OVERHAUL-2026-04-06.md](/home/luc/rl-nethack/PLAN-PROXY-REWARD-OVERHAUL-2026-04-06.md) is now substantially implemented.
+The plan in [PLAN-PROXY-REWARD-OVERHAUL-2026-04-06.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/plans/PLAN-PROXY-REWARD-OVERHAUL-2026-04-06.md) is now substantially implemented.
 
 New modules:
 

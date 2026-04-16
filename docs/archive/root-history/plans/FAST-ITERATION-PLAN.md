@@ -27,7 +27,7 @@ The repo now has a real hybrid stack:
   [rl/train_scheduler.py](/home/luc/rl-nethack/rl/train_scheduler.py)
 
 The latest validation run in
-[RUN-REPORT-2026-04-05-V2-BC-APPO.md](/home/luc/rl-nethack/RUN-REPORT-2026-04-05-V2-BC-APPO.md)
+[RUN-REPORT-2026-04-05-V2-BC-APPO.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/run-reports/RUN-REPORT-2026-04-05-V2-BC-APPO.md)
 showed:
 
 - the `v2` trace -> BC -> APPO warm-start pipeline works,

@@ -102,7 +102,7 @@ inside single experiment loops.
 
 ## Diagnosis Recap
 
-From [wagmi.md](/home/luc/rl-nethack/wagmi.md), the strongest current diagnosis is:
+From [wagmi.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/misc/wagmi.md), the strongest current diagnosis is:
 
 - representation is no longer the main bottleneck
 - the warm-start bridge is no longer the main bottleneck
@@ -172,8 +172,8 @@ Make sure the current best branch is fully documented and reproducible before ch
 
 ### Files
 
-- [wagmi.md](/home/luc/rl-nethack/wagmi.md)
-- [CURRENT-RL-SYSTEM.md](/home/luc/rl-nethack/CURRENT-RL-SYSTEM.md)
+- [wagmi.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/misc/wagmi.md)
+- [CURRENT-RL-SYSTEM.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/reports/CURRENT-RL-SYSTEM.md)
 - [rl/checkpoint_tools.py](/home/luc/rl-nethack/rl/checkpoint_tools.py)
 
 ### Exit Criteria
@@ -1009,7 +1009,7 @@ Those are the natural control points where the repo may need a strategic update 
 
 ## Final Statement
 
-This plan assumes the main lesson from [wagmi.md](/home/luc/rl-nethack/wagmi.md) is correct:
+This plan assumes the main lesson from [wagmi.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/misc/wagmi.md) is correct:
 
 - the next work should center teacher-data scheduling, replay prioritization, and then, if necessary, a better improver class
 

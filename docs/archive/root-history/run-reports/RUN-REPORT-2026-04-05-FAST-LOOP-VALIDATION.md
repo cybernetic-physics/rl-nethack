@@ -5,7 +5,7 @@ Date: 2026-04-05
 This report documents a fresh bounded validation run after adding the new
 fast-iteration tooling:
 
-- [FAST-ITERATION-PLAN.md](/home/luc/rl-nethack/FAST-ITERATION-PLAN.md)
+- [FAST-ITERATION-PLAN.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/plans/FAST-ITERATION-PLAN.md)
 - [rl/debug_tools.py](/home/luc/rl-nethack/rl/debug_tools.py)
 - new CLI commands in [cli.py](/home/luc/rl-nethack/cli.py):
   - `rl-check-determinism`

@@ -1,7 +1,7 @@
 # Alignment Plan Implementation Report (2026-04-05)
 
 This document records the implementation status and observed behavior for the five steps in
-[ALIGNMENT-IMPROVEMENT-PLAN.md](./ALIGNMENT-IMPROVEMENT-PLAN.md).
+[ALIGNMENT-IMPROVEMENT-PLAN.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/plans/ALIGNMENT-IMPROVEMENT-PLAN.md).
 
 The main outcome is:
 
@@ -165,7 +165,7 @@ Status: implemented as an experimental path and validated on held-out traces
 Code:
 - [rl/train_behavior_reg.py](./rl/train_behavior_reg.py)
 - [cli.py](./cli.py)
-- [BEHAVIOR-REG-IMPROVEMENT.md](./BEHAVIOR-REG-IMPROVEMENT.md)
+- [BEHAVIOR-REG-IMPROVEMENT.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/plans/BEHAVIOR-REG-IMPROVEMENT.md)
 
 What changed:
 - added `rl-train-behavior-reg`

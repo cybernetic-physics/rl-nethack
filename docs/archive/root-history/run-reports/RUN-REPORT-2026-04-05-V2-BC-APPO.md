@@ -8,7 +8,7 @@ slice, which added:
 - BC-to-APPO warm start support,
 - `v2` observation support,
 - compact policy comparison tooling,
-- and the repo-local [UPGRADE-PLAN.md](/home/luc/rl-nethack/UPGRADE-PLAN.md).
+- and the repo-local [UPGRADE-PLAN.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/plans/UPGRADE-PLAN.md).
 
 
 ## Goal

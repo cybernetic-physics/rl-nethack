@@ -72,10 +72,10 @@ CLI entrypoint:
 
 Supporting docs added earlier in the workstream:
 
-- [CURRENT-RL-SYSTEM.md](/home/luc/rl-nethack/CURRENT-RL-SYSTEM.md)
-- [APPO-OPTIONS-OVERHAUL.md](/home/luc/rl-nethack/APPO-OPTIONS-OVERHAUL.md)
-- [MAESTROMOTIF-INTEGRATION.md](/home/luc/rl-nethack/MAESTROMOTIF-INTEGRATION.md)
-- [RL-HARNESS-TASKS.md](/home/luc/rl-nethack/RL-HARNESS-TASKS.md)
+- [CURRENT-RL-SYSTEM.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/reports/CURRENT-RL-SYSTEM.md)
+- [APPO-OPTIONS-OVERHAUL.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/plans/APPO-OPTIONS-OVERHAUL.md)
+- [MAESTROMOTIF-INTEGRATION.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/research-notes/MAESTROMOTIF-INTEGRATION.md)
+- [RL-HARNESS-TASKS.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/misc/RL-HARNESS-TASKS.md)
 
 
 ## Current RL Architecture
@@ -974,8 +974,8 @@ That is a real result.
 At the time this document was written, the working tree also contains
 uncommitted changes outside this file:
 
-- [CURRENT-RL-SYSTEM.md](/home/luc/rl-nethack/CURRENT-RL-SYSTEM.md)
-- [README.md](/home/luc/rl-nethack/README.md)
+- [CURRENT-RL-SYSTEM.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/reports/CURRENT-RL-SYSTEM.md)
+- [README.md](/home/luc/rl-nethack-worktree-20260416/README.md)
 - [train.py](/home/luc/rl-nethack/train.py)
 - `train_dir/` experiment artifacts
 

@@ -14,8 +14,8 @@ This plan is grounded in:
 - the current failure mode of the RL harness
 - the longer-horizon NetHack requirements we already identified
 - the relevant literature reviewed in:
-  - [RESEARCH-NOTES-WORLD-MODELS-NETHACK.md](/home/luc/rl-nethack/RESEARCH-NOTES-WORLD-MODELS-NETHACK.md)
-  - [RESEARCH-NOTES-NETHACK-HORIZONS.md](/home/luc/rl-nethack/RESEARCH-NOTES-NETHACK-HORIZONS.md)
+  - [RESEARCH-NOTES-WORLD-MODELS-NETHACK.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/research-notes/RESEARCH-NOTES-WORLD-MODELS-NETHACK.md)
+  - [RESEARCH-NOTES-NETHACK-HORIZONS.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/research-notes/RESEARCH-NOTES-NETHACK-HORIZONS.md)
 
 ## Current Repo State
 

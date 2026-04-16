@@ -12,9 +12,9 @@ can reveal it.
 
 This plan is grounded in the current code and reports:
 
-- [RUN-REPORT-2026-04-05-X10-RERUN.md](/home/luc/rl-nethack/RUN-REPORT-2026-04-05-X10-RERUN.md)
-- [FAST-DEBUG-LOOP-REPORT-2026-04-05.md](/home/luc/rl-nethack/FAST-DEBUG-LOOP-REPORT-2026-04-05.md)
-- [POSTMORTEM-NEXT-STEPS-2026-04-05.md](/home/luc/rl-nethack/POSTMORTEM-NEXT-STEPS-2026-04-05.md)
+- [RUN-REPORT-2026-04-05-X10-RERUN.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/run-reports/RUN-REPORT-2026-04-05-X10-RERUN.md)
+- [FAST-DEBUG-LOOP-REPORT-2026-04-05.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/reports/FAST-DEBUG-LOOP-REPORT-2026-04-05.md)
+- [POSTMORTEM-NEXT-STEPS-2026-04-05.md](/home/luc/rl-nethack-worktree-20260416/docs/archive/root-history/reports/POSTMORTEM-NEXT-STEPS-2026-04-05.md)
 
 
 ## 1. Current Diagnosis
