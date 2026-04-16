@@ -7,6 +7,7 @@ Subcommands:
   generate-long-sequences -- Generate long-history next-action data from NLE gameplay
   convert-long-sequences -- Convert episode-style JSONL into long-history next-action data
   import-nld-long-sequences -- Import registered NLD/ttyrec games into long-history next-action data
+  build-long-sequence-corpus -- Compile long-sequence shards into a token-budgeted mixed corpus
   evaluate-long-sequences -- Evaluate exact next-action match on long-sequence JSONL
   build-long-sequence-benchmark -- Materialize a deterministic held-out benchmark shard
   compare-long-sequence-evals -- Compare multiple long-sequence evaluation reports
@@ -198,6 +199,49 @@ def cmd_evaluate_long_sequences(args):
         print(f"WARNING: Server not available at {args.server_url}")
         return 0
     print(json.dumps(result["summary"], indent=2))
+    return 0
+
+
+def cmd_build_long_sequence_corpus(args):
+    """Compile one or more long-sequence shards into a token-budgeted corpus."""
+    from src.long_sequence_corpus import build_token_budgeted_corpus
+
+    print("Building token-budgeted long-sequence corpus...")
+    print(f"  Inputs:                {len(args.input)}")
+    for path in args.input:
+        print(f"    - {path}")
+    print(f"  Output:                {args.output}")
+    print(f"  Manifest:              {args.manifest_output or args.output + '.manifest.json'}")
+    print(f"  Target tokens:         {args.target_tokens}")
+    print(f"  Full episode fraction: {args.full_episode_fraction}")
+    print(f"  Very long fraction:    {args.very_long_fraction}")
+    print(f"  Long fraction:         {args.long_fraction}")
+    print(f"  Medium fraction:       {args.medium_fraction}")
+
+    result = build_token_budgeted_corpus(
+        args.input,
+        output_path=args.output,
+        manifest_path=args.manifest_output,
+        target_tokens=args.target_tokens,
+        full_episode_fraction=args.full_episode_fraction,
+        very_long_fraction=args.very_long_fraction,
+        long_fraction=args.long_fraction,
+        medium_fraction=args.medium_fraction,
+        full_episode_winning_share=args.full_episode_winning_share,
+        very_long_min_tokens=args.very_long_min_tokens,
+        long_min_tokens=args.long_min_tokens,
+        medium_min_tokens=args.medium_min_tokens,
+        very_long_stride=args.very_long_stride,
+        long_stride=args.long_stride,
+        medium_stride=args.medium_stride,
+    )
+    print()
+    print("Corpus build complete:")
+    print(f"  Selected rows:         {result['selected_rows']}")
+    print(f"  Selected episodes:     {result['selected_episodes']}")
+    print(f"  Selected tokens:       {result['selected_tokens']}")
+    print(f"  Output:                {result['output_path']}")
+    print(f"  Manifest:              {result['manifest_path']}")
     return 0
 
 
@@ -1614,6 +1658,38 @@ def main():
     p_nld.add_argument('--source', type=str, default=None,
                        help='Override metadata source label stored in examples')
 
+    p_long_corpus = subparsers.add_parser('build-long-sequence-corpus', help='Compile long-sequence shards into a token-budgeted mixed corpus')
+    p_long_corpus.add_argument('--input', action='append', required=True,
+                               help='Input long-sequence JSONL shard; pass multiple times to mix shards')
+    p_long_corpus.add_argument('--output', type=str, required=True,
+                               help='Output mixed-corpus JSONL path')
+    p_long_corpus.add_argument('--manifest-output', type=str, default=None,
+                               help='Optional manifest JSON output path')
+    p_long_corpus.add_argument('--target-tokens', type=int, default=1_000_000_000,
+                               help='Target projected training tokens')
+    p_long_corpus.add_argument('--full-episode-fraction', type=float, default=0.40,
+                               help='Fraction of tokens allocated to full-episode rows')
+    p_long_corpus.add_argument('--very-long-fraction', type=float, default=0.35,
+                               help='Fraction of tokens allocated to very-long rows')
+    p_long_corpus.add_argument('--long-fraction', type=float, default=0.20,
+                               help='Fraction of tokens allocated to long rows')
+    p_long_corpus.add_argument('--medium-fraction', type=float, default=0.05,
+                               help='Fraction of tokens allocated to medium rows')
+    p_long_corpus.add_argument('--full-episode-winning-share', type=float, default=0.70,
+                               help='Share of the full-episode token budget reserved for wins first')
+    p_long_corpus.add_argument('--very-long-min-tokens', type=int, default=65_536,
+                               help='Minimum estimated context tokens for the very-long tier')
+    p_long_corpus.add_argument('--long-min-tokens', type=int, default=16_384,
+                               help='Minimum estimated context tokens for the long tier')
+    p_long_corpus.add_argument('--medium-min-tokens', type=int, default=4_096,
+                               help='Minimum estimated context tokens for the medium tier')
+    p_long_corpus.add_argument('--very-long-stride', type=int, default=16,
+                               help='Per-episode minimum step spacing for very-long row selection')
+    p_long_corpus.add_argument('--long-stride', type=int, default=32,
+                               help='Per-episode minimum step spacing for long row selection')
+    p_long_corpus.add_argument('--medium-stride', type=int, default=64,
+                               help='Per-episode minimum step spacing for medium row selection')
+
     p_long_eval = subparsers.add_parser('evaluate-long-sequences', help='Evaluate exact next-action match on long-sequence JSONL')
     p_long_eval.add_argument('--input', type=str, required=True,
                              help='Input long-sequence JSONL file')
@@ -2296,6 +2372,8 @@ def main():
             return cmd_convert_long_sequences(args)
         elif args.command == 'import-nld-long-sequences':
             return cmd_import_nld_long_sequences(args)
+        elif args.command == 'build-long-sequence-corpus':
+            return cmd_build_long_sequence_corpus(args)
         elif args.command == 'evaluate-long-sequences':
             return cmd_evaluate_long_sequences(args)
         elif args.command == 'build-long-sequence-benchmark':

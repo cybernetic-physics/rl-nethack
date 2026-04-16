@@ -224,6 +224,140 @@ uv run python scripts/generate_training_data.py \
 
 This setup keeps GPUs `2,3` available for other work, including training.
 
+### Download And Process NLD-AA
+
+For the new long-context next-action training path, the best local supervised source is currently `NLD-AA`.
+
+The extracted `NLD-AA` layout is treated as `nle_data/...`, not `altorg`, so the processing flow is:
+
+1. download shard zips
+2. extract and register the local `nle_data` root
+3. import into the repo’s long-sequence JSONL format
+4. train a LoRA adapter on that imported corpus
+
+Download all `NLD-AA` shards:
+
+```bash
+mkdir -p data/nld-aa
+for shard in aa ab ac ad ae af ag ah ai aj ak al am an ao ap; do
+  curl -L -C - -o "data/nld-aa/nld-aa-dir-${shard}.zip" \
+    "https://dl.fbaipublicfiles.com/nld/nld-aa/nld-aa-dir-${shard}.zip"
+done
+```
+
+Extract and register the local dataset root:
+
+```bash
+ZIP_ARGS=()
+for shard in aa ab ac ad ae af ag ah ai aj ak al am an ao ap; do
+  ZIP_ARGS+=(--zip "data/nld-aa/nld-aa-dir-${shard}.zip")
+done
+
+uv run python scripts/prepare_nld_dataset.py \
+  "${ZIP_ARGS[@]}" \
+  --extract-dir data/nld-aa/extracted \
+  --dataset-name nld-aa-local \
+  --register
+```
+
+That creates a local `ttyrecs.db` registration for:
+
+- extracted root: `data/nld-aa/extracted/nle_data`
+- dataset name: `nld-aa-local`
+
+Import a bounded smoke shard first:
+
+```bash
+uv run python cli.py import-nld-long-sequences \
+  --dataset-name nld-aa-local \
+  --output data/nld-aa_long_sequences_smoke.jsonl \
+  --dbfilename ttyrecs.db \
+  --max-games 64 \
+  --min-turns 1000 \
+  --min-maxlvl 5 \
+  --max-context-tokens 65536 \
+  --source nld-aa-local
+```
+
+Then scale to a larger training shard:
+
+```bash
+uv run python cli.py import-nld-long-sequences \
+  --dataset-name nld-aa-local \
+  --output data/nld-aa_long_sequences_train.jsonl \
+  --dbfilename ttyrecs.db \
+  --max-games 2048 \
+  --min-turns 1000 \
+  --min-maxlvl 5 \
+  --max-context-tokens 65536 \
+  --source nld-aa-local
+```
+
+If you want to mix that imported shard into the token-budgeted long-context corpus builder:
+
+```bash
+uv run python cli.py build-long-sequence-corpus \
+  --input data/nld-aa_long_sequences_train.jsonl \
+  --output data/nld-aa_long_sequences_train_mixed.jsonl \
+  --manifest-output data/nld-aa_long_sequences_train_mixed.manifest.json \
+  --target-tokens 1000000000
+```
+
+### Train On The New Long-Sequence Data
+
+The long-context path is next-action prediction on rolling histories, not delta prediction.
+
+Start with a small smoke run:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 uv run python train.py \
+  --model Qwen/Qwen2.5-14B-Instruct-1M \
+  --data data/nld-aa_long_sequences_smoke.jsonl \
+  --output output/qwen14b_nldaa_smoke \
+  --max-seq-length 8192 \
+  --batch-size 1 \
+  --gradient-accumulation-steps 1 \
+  --epochs 1 \
+  --max-steps 10 \
+  --logging-steps 1 \
+  --save-steps 5 \
+  --save-total-limit 1 \
+  --warmup-steps 2 \
+  --dataset-num-proc 1 \
+  --dataloader-num-workers 0 \
+  --gradient-checkpointing
+```
+
+Then move to a larger single-node LoRA run:
+
+```bash
+MODEL=Qwen/Qwen2.5-14B-Instruct-1M \
+TRAIN_DATA=data/nld-aa_long_sequences_train.jsonl \
+EVAL_DATA=data/nld-aa_long_sequences_smoke.jsonl \
+OUTPUT=output/qwen14b_nldaa_long_lora \
+MAX_SEQ_LENGTH=65536 \
+GRAD_ACCUM=16 \
+DATASET_NUM_PROC=4 \
+DATALOADER_NUM_WORKERS=2 \
+bash scripts/train_qwen_1m_long_lora.sh
+```
+
+If you want the native in-code curriculum instead of a flat run:
+
+```bash
+MODEL=Qwen/Qwen2.5-14B-Instruct-1M \
+TRAIN_DATA=data/nld-aa_long_sequences_train.jsonl \
+EVAL_DATA=data/nld-aa_long_sequences_smoke.jsonl \
+OUTPUT=output/qwen14b_nldaa_curriculum \
+bash scripts/train_qwen_1m_native_curriculum.sh
+```
+
+Practical notes:
+
+- `ttyrecs.db` must exist before `add_nledata_directory(...)` can register the root; the prep script handles this for you.
+- `NLD-AA` metadata uses hex-like strings such as `0x0` for some fields; the importer now handles that.
+- Run a bounded smoke import and smoke train first before scaling to thousands of games.
+
 ## Full Pipeline
 
 This section is the real operator guide.

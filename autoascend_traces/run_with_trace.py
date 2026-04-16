@@ -5,11 +5,9 @@ Patches agent.step() to capture observations at each step.
 
 Usage: python run_with_trace.py --episodes 5 --output /output/autoascend_traces.json
 """
-import json
-import os
-import sys
-import traceback
 import argparse
+import os
+import traceback
 
 import gym
 import nle.nethack as nh
@@ -17,8 +15,7 @@ import numpy as np
 
 from autoascend import agent as agent_lib
 from autoascend.env_wrapper import EnvWrapper
-from autoascend.trace_recorder import TraceRecorder
-
+from trace_recorder import TraceRecorder
 
 from autoascend.exceptions import AgentFinished
 

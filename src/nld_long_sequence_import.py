@@ -17,6 +17,21 @@ from src.long_sequence_dataset import convert_episode_jsonl_to_long_sequence_dat
 from src.state_encoder import StateEncoder
 
 
+def _parse_int(value: Any, default: int = 0) -> int:
+    """Parse NLD metadata integers, accepting decimal or 0x-prefixed strings."""
+    if value is None or value == "":
+        return default
+    if isinstance(value, str):
+        try:
+            return int(value, 0)
+        except ValueError:
+            return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _reverse_action_map() -> dict[int, str]:
     action_map = _build_action_map()
     return {index: name for name, index in action_map.items()}
@@ -124,7 +139,7 @@ def infer_metadata_outcome(row: dict) -> str:
         return "win"
     if death_text:
         return "loss"
-    achieve = int(row.get("achieve", 0) or 0)
+    achieve = _parse_int(row.get("achieve", 0), 0)
     if achieve & 0x0100:
         return "win"
     return "unknown"
@@ -136,17 +151,17 @@ def rank_nld_game_metadata(rows: list[dict]) -> list[dict]:
     def score(row: dict) -> tuple:
         outcome = infer_metadata_outcome(row)
         is_win = outcome == "win"
-        achieve = int(row.get("achieve", 0) or 0)
-        maxlvl = int(row.get("maxlvl", 0) or 0)
-        turns = int(row.get("turns", 0) or 0)
-        points = int(row.get("points", 0) or 0)
+        achieve = _parse_int(row.get("achieve", 0), 0)
+        maxlvl = _parse_int(row.get("maxlvl", 0), 0)
+        turns = _parse_int(row.get("turns", 0), 0)
+        points = _parse_int(row.get("points", 0), 0)
         return (
             1 if is_win else 0,
             achieve,
             maxlvl,
             turns,
             points,
-            -int(row.get("gameid", 0) or 0),
+            -_parse_int(row.get("gameid", 0), 0),
         )
 
     ranked = []
@@ -173,11 +188,11 @@ def select_nld_gameids(
     for row in rank_nld_game_metadata(rows):
         if wins_only and not row["is_win"]:
             continue
-        if int(row.get("turns", 0) or 0) < min_turns:
+        if _parse_int(row.get("turns", 0), 0) < min_turns:
             continue
-        if int(row.get("maxlvl", 0) or 0) < min_maxlvl:
+        if _parse_int(row.get("maxlvl", 0), 0) < min_maxlvl:
             continue
-        filtered.append(int(row["gameid"]))
+        filtered.append(_parse_int(row["gameid"], 0))
     if max_games is not None:
         filtered = filtered[:max_games]
     return filtered

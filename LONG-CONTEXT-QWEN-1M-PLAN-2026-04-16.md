@@ -55,6 +55,7 @@ That is no longer the main direction.
 - [x] Add a native single-run curriculum launcher.
 - [x] Add an NLD gold-wins import launcher.
 - [x] Add a long-sequence benchmark builder launcher.
+- [x] Add a token-budgeted mixed-corpus builder for long-sequence shards with full-episode and strided long-window sampling.
 - [x] Add tests for board serialization, long-sequence packing, converter path, and metadata heuristics.
 
 ### In Progress
@@ -73,6 +74,8 @@ That is no longer the main direction.
   Current status: the host does have `4x H200` available and the repo now has the Qwen 1M launch/config path, but the actual vLLM `Qwen/Qwen2.5-14B-Instruct-1M` server has not been brought up yet.
 - [~] Mine / import long winning traces.
   Current status: repo-side NLD / ttyrec registration, ranking, and long-sequence import tooling is implemented, including a `gold_wins`-oriented launcher; actual dataset-root registration and import on this host is still pending.
+- [~] Build a win-heavy mixed corpus toward the `1B` token target.
+  Current status: the repo now has a token-budgeted corpus compiler that can mix full episodes plus very-long / long / medium strided windows from one or more long-sequence shards while emitting a manifest with projected token totals. The remaining blocker is feeding it real win-heavy shards such as NLD ascensions or locally generated AutoAscend full runs.
 - [x] Add actual model training on losing-segment negatives.
   Current status: the repo now supports weighted-SFT training on mined positive/negative long-sequence rows, pairwise-preference training on teacher-preferred losing-segment alternatives, and a repo-native KTO-style training path for labeled positives/negatives without requiring `trl`.
 - [~] Validate long-horizon evaluation against a real served model on meaningful held-out data.
