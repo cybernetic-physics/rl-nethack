@@ -16,6 +16,8 @@ from src.long_sequence_dataset import (
     infer_outcome_label,
     render_state_block,
 )
+from src.policy_actions import canonicalize_action
+from src.policy_replay import ModalState, ReplayedEpisodeStep
 from src.state_encoder import StateEncoder
 
 
@@ -101,6 +103,65 @@ def test_build_examples_from_episode_can_persist_dual_views():
     assert examples[0]["board_views"]["width"] == 79
 
 
+def test_build_examples_from_replayed_steps_preserves_canonical_history_text():
+    encoder = StateEncoder()
+    step0 = ReplayedEpisodeStep(
+        turn_index=0,
+        state_text=(
+            "TurnIndex: 0\n"
+            "RenderSource: obs\n"
+            "Message: start\n"
+            "BoardMode: tokenized\n"
+            "BoardShape: 2x2\n"
+            "StatusLines:\n"
+            "Stats: HP=1/1 AC=10 Str=10 Dex=10 Gold=0 Depth=1 Pos=(1, 1) Clock=1\n"
+            "Board:\n"
+            "r00|raw|\"..\"\n"
+            "r01|raw|\".@\""
+        ),
+        token_estimate=32,
+        action=canonicalize_action("east"),
+        render_source="obs",
+        board_mode="tokenized",
+        board_views=None,
+        modal_state=ModalState("keep_gameplay", "none", "obs_gameplay"),
+        extra_metadata={},
+    )
+    step1 = ReplayedEpisodeStep(
+        turn_index=1,
+        state_text=(
+            "TurnIndex: 1\n"
+            "RenderSource: obs\n"
+            "Message: moved\n"
+            "BoardMode: tokenized\n"
+            "BoardShape: 2x2\n"
+            "StatusLines:\n"
+            "Stats: HP=1/1 AC=10 Str=10 Dex=10 Gold=0 Depth=1 Pos=(2, 1) Clock=2\n"
+            "Board:\n"
+            "r00|raw|\"..\"\n"
+            "r01|raw|\".@\""
+        ),
+        token_estimate=32,
+        action=canonicalize_action("south"),
+        render_source="obs",
+        board_mode="tokenized",
+        board_views=None,
+        modal_state=ModalState("keep_gameplay", "none", "obs_gameplay"),
+        extra_metadata={},
+    )
+
+    examples = build_long_sequence_examples_from_episode(
+        [step0, step1],
+        encoder=encoder,
+        episode_id="ep-replayed",
+        max_context_tokens=4096,
+    )
+
+    user_content = examples[1]["conversations"][1]["content"]
+    assert "HistoryTurns:\nTurnIndex: 0\nRenderSource: obs\nMessage: start" in user_content
+    assert 'r00|raw|"RenderSource: obs"' not in user_content
+
+
 def test_context_bucket_labels_large_windows():
     assert context_bucket(128_000) == "128k"
     assert context_bucket(256_000) == "256k"
@@ -156,6 +217,7 @@ def test_convert_episode_jsonl_to_long_sequence_dataset(tmp_path):
     )
     assert result["episodes"] == 1
     assert result["examples"] == 2
+    assert os.path.isfile(result["validation_path"])
 
     with open(output_path, "r") as f:
         converted = [json.loads(line) for line in f if line.strip()]
@@ -164,3 +226,85 @@ def test_convert_episode_jsonl_to_long_sequence_dataset(tmp_path):
     assert converted[0]["metadata"]["game_phase"] == "early"
     assert converted[1]["metadata"]["history_steps_available"] == 1
     assert converted[0]["metadata"]["has_dual_views"] is False
+    assert converted[0]["metadata"]["render_source"] in {"tty_text", "fallback_text"}
+
+
+def test_convert_episode_jsonl_to_long_sequence_dataset_drops_modal_rows(tmp_path):
+    encoder = StateEncoder()
+    input_path = tmp_path / "episode_rows_modal.jsonl"
+    output_path = tmp_path / "long_sequences_modal.jsonl"
+    rows = [
+        {
+            "episode_id": "ep-modal",
+            "step": 0,
+            "state_prompt": "You see here a potion.\n--More--",
+            "action": "more",
+        },
+        {
+            "episode_id": "ep-modal",
+            "step": 1,
+            "state_prompt": "You see here a potion.\n-----\n|.@.|\n-----",
+            "action": "east",
+        },
+    ]
+    with open(input_path, "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+    result = convert_episode_jsonl_to_long_sequence_dataset(
+        str(input_path),
+        str(output_path),
+        encoder=encoder,
+        max_context_tokens=256,
+    )
+    assert result["examples"] == 1
+    with open(result["validation_path"], "r") as f:
+        report = json.load(f)
+    assert report["rows_before_replay"] == 2
+    assert report["rows_after_replay"] == 1
+    assert report["dropped_by_reason"]["more_prompt"] == 1
+
+
+def test_convert_episode_jsonl_to_long_sequence_dataset_supports_danger_only(tmp_path):
+    encoder = StateEncoder()
+    input_path = tmp_path / "episode_rows_danger.jsonl"
+    output_path = tmp_path / "long_sequences_danger.jsonl"
+    rows = [
+        {
+            "episode_id": "ep-danger",
+            "step": 0,
+            "state_prompt": "You are hit!\n-----\n|.@.|\n-----",
+            "action": "west",
+            "depth": 1,
+        },
+        {
+            "episode_id": "ep-danger",
+            "step": 1,
+            "state_prompt": "You see here a potion.\n-----\n|.@.|\n-----",
+            "action": "east",
+            "depth": 1,
+        },
+        {
+            "episode_id": "ep-danger",
+            "step": 2,
+            "state_prompt": "You see here a potion.\n-----\n|.@.|\n-----",
+            "action": "north",
+            "depth": 1,
+        },
+    ]
+    with open(input_path, "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+    result = convert_episode_jsonl_to_long_sequence_dataset(
+        str(input_path),
+        str(output_path),
+        encoder=encoder,
+        max_context_tokens=256,
+        danger_only=True,
+        danger_window=1,
+    )
+    assert result["examples"] == 2
+    with open(result["validation_path"], "r") as f:
+        report = json.load(f)
+    assert report["dropped_by_reason"]["not_in_danger_window"] == 1

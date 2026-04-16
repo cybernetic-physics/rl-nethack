@@ -174,6 +174,14 @@ def cmd_convert_long_sequences(args):
         persist_dual_views=args.persist_dual_views,
         reserve_output_tokens=args.reserve_output_tokens,
         source=args.source,
+        modal_policy=args.modal_policy,
+        keep_modal_actions=args.keep_modal_actions,
+        stride=args.replay_stride,
+        min_turn_index=args.min_turn_index,
+        max_turn_index=args.max_turn_index,
+        min_depth=args.min_depth,
+        danger_only=args.danger_only,
+        danger_window=args.danger_window,
     )
     print()
     print("Conversion complete:")
@@ -256,6 +264,9 @@ def cmd_import_nld_long_sequences(args):
     print(f"  DB:                 {args.dbfilename}")
     if args.root_path:
         print(f"  Root path:          {args.root_path} ({args.dataset_type})")
+    if args.hdf5_path:
+        print(f"  HDF5 path:          {args.hdf5_path}")
+        print(f"  Metadata JSON:      {args.metadata_json}")
     print(f"  Max games:          {args.max_games}")
     print(f"  Wins only:          {args.wins_only}")
     print(f"  Min turns:          {args.min_turns}")
@@ -280,6 +291,16 @@ def cmd_import_nld_long_sequences(args):
         max_context_tokens=args.max_context_tokens,
         reserve_output_tokens=args.reserve_output_tokens,
         source=args.source,
+        modal_policy=args.modal_policy,
+        keep_modal_actions=args.keep_modal_actions,
+        stride=args.replay_stride,
+        min_turn_index=args.min_turn_index,
+        max_turn_index=args.max_turn_index,
+        min_depth=args.min_depth,
+        danger_only=args.danger_only,
+        danger_window=args.danger_window,
+        hdf5_path=args.hdf5_path,
+        metadata_json_path=args.metadata_json,
     )
     print()
     print("NLD import complete:")
@@ -315,6 +336,31 @@ def cmd_compare_long_sequence_evals(args):
     result = compare_eval_report_paths(named_paths)
     if args.output:
         save_compare_report(result, args.output)
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_live_evaluate_long_sequences(args):
+    """Run the canonical long-context policy in a small live seeded loop."""
+    from src.long_sequence_live_eval import evaluate_live_long_sequence_policy
+    from src.state_encoder import StateEncoder
+
+    encoder = StateEncoder()
+    seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
+    result = evaluate_live_long_sequence_policy(
+        seeds=seeds,
+        max_steps=args.max_steps,
+        server_url=args.server_url,
+        model_name=args.model_name,
+        encoder=encoder,
+        max_context_tokens=args.max_context_tokens,
+        board_mode=args.board_mode,
+        reserve_output_tokens=args.reserve_output_tokens,
+    )
+    if args.output:
+        with open(args.output, "w") as f:
+            json.dump(result, f, indent=2)
+            f.write("\n")
     print(json.dumps(result, indent=2))
     return 0
 
@@ -1623,6 +1669,22 @@ def main():
                            help='Persist both tokenized and exact ASCII board views when raw observations are present')
     p_convert.add_argument('--source', type=str, default='external_jsonl',
                            help='Metadata source label stored in examples')
+    p_convert.add_argument('--modal-policy', type=str, default='drop_modal', choices=['drop_modal', 'keep_all'],
+                           help='How replay handles modal/menu screens from external episode rows')
+    p_convert.add_argument('--keep-modal-actions', action='store_true',
+                           help='Keep canonical modal actions instead of dropping them during replay')
+    p_convert.add_argument('--replay-stride', type=int, default=1,
+                           help='Keep every Nth step during replay (default: 1 keeps all)')
+    p_convert.add_argument('--min-turn-index', type=int, default=0,
+                           help='Drop replayed rows before this step index')
+    p_convert.add_argument('--max-turn-index', type=int, default=None,
+                           help='Drop replayed rows after this step index')
+    p_convert.add_argument('--min-depth', type=int, default=None,
+                           help='Drop replayed rows whose recorded depth is below this value')
+    p_convert.add_argument('--danger-only', action='store_true',
+                           help='Keep only rows in or immediately after dangerous-message windows')
+    p_convert.add_argument('--danger-window', type=int, default=0,
+                           help='Number of previous turns to treat as part of a danger window')
 
     p_nld = subparsers.add_parser('import-nld-long-sequences', help='Import registered NLD/ttyrec games into long-history next-action data')
     p_nld.add_argument('--dataset-name', type=str, required=True,
@@ -1635,6 +1697,10 @@ def main():
                        help='Optional dataset root to register before import')
     p_nld.add_argument('--dataset-type', type=str, default='altorg', choices=['altorg', 'nledata'],
                        help='How to register --root-path if provided')
+    p_nld.add_argument('--hdf5-path', type=str, default=None,
+                       help='Optional raw NLD HDF5 shard to import directly instead of nle.dataset registration')
+    p_nld.add_argument('--metadata-json', type=str, default=None,
+                       help='Metadata JSON companion for --hdf5-path')
     p_nld.add_argument('--max-games', type=int, default=None,
                        help='Optional cap on selected games')
     p_nld.add_argument('--wins-only', action='store_true',
@@ -1657,6 +1723,22 @@ def main():
                        help='Reserved assistant-token budget during history packing')
     p_nld.add_argument('--source', type=str, default=None,
                        help='Override metadata source label stored in examples')
+    p_nld.add_argument('--modal-policy', type=str, default='drop_modal', choices=['drop_modal', 'keep_all'],
+                       help='How replay handles modal/menu tty screens during import')
+    p_nld.add_argument('--keep-modal-actions', action='store_true',
+                       help='Keep canonical modal actions instead of dropping them during replay')
+    p_nld.add_argument('--replay-stride', type=int, default=1,
+                       help='Keep every Nth step during replay (default: 1 keeps all)')
+    p_nld.add_argument('--min-turn-index', type=int, default=0,
+                       help='Drop replayed rows before this step index')
+    p_nld.add_argument('--max-turn-index', type=int, default=None,
+                       help='Drop replayed rows after this step index')
+    p_nld.add_argument('--min-depth', type=int, default=None,
+                       help='Drop replayed rows whose recorded depth is below this value')
+    p_nld.add_argument('--danger-only', action='store_true',
+                       help='Keep only rows in or immediately after dangerous-message windows')
+    p_nld.add_argument('--danger-window', type=int, default=0,
+                       help='Number of previous turns to treat as part of a danger window')
 
     p_long_corpus = subparsers.add_parser('build-long-sequence-corpus', help='Compile long-sequence shards into a token-budgeted mixed corpus')
     p_long_corpus.add_argument('--input', action='append', required=True,
@@ -1717,6 +1799,24 @@ def main():
                                 help='Evaluation reports as name=path pairs')
     p_long_compare.add_argument('--output', type=str, default=None,
                                 help='Optional output JSON path')
+
+    p_long_live = subparsers.add_parser('live-evaluate-long-sequences', help='Run canonical long-context policy live on a fixed seed set')
+    p_long_live.add_argument('--seeds', type=str, default='42,43,44',
+                             help='Comma-separated seeds')
+    p_long_live.add_argument('--max-steps', type=int, default=32,
+                             help='Maximum steps per seed')
+    p_long_live.add_argument('--server-url', type=str, default='http://127.0.0.1:8765',
+                             help='OpenAI-compatible server URL')
+    p_long_live.add_argument('--model-name', type=str, default='llama-server',
+                             help='Served model name')
+    p_long_live.add_argument('--max-context-tokens', type=int, default=8192,
+                             help='Approximate context budget used during live history packing')
+    p_long_live.add_argument('--reserve-output-tokens', type=int, default=16,
+                             help='Reserved assistant-token budget during history packing')
+    p_long_live.add_argument('--board-mode', type=str, default='tokenized', choices=['tokenized', 'ascii'],
+                             help='Board serialization mode for live prompts')
+    p_long_live.add_argument('--output', type=str, default=None,
+                             help='Optional output JSON path')
 
     # --- report ---
     p_rep = subparsers.add_parser('report', help='Run a game and generate reports')
@@ -2380,6 +2480,8 @@ def main():
             return cmd_build_long_sequence_benchmark(args)
         elif args.command == 'compare-long-sequence-evals':
             return cmd_compare_long_sequence_evals(args)
+        elif args.command == 'live-evaluate-long-sequences':
+            return cmd_live_evaluate_long_sequences(args)
         elif args.command == 'report':
             return cmd_report(args)
         elif args.command == 'evaluate':

@@ -18,13 +18,18 @@ import numpy as np
 
 from nle_agent.agent_http import _build_action_map
 from src.board_view import build_board_view, estimate_text_tokens
+from src.policy_actions import canonicalize_action
+from src.policy_replay import (
+    DEFAULT_POLICY_BOARD_MODE,
+    POLICY_SYSTEM_PROMPT,
+    ReplayedEpisodeStep,
+    replay_episode_steps,
+    render_policy_state_from_obs,
+    render_policy_state_from_text,
+)
 from src.state_encoder import StateEncoder
 
-SYSTEM_PROMPT = (
-    "You are choosing the next NetHack action from a long game history. "
-    "Read the prior turns and current full-board state carefully, then reply "
-    "with exactly one action word and nothing else."
-)
+SYSTEM_PROMPT = POLICY_SYSTEM_PROMPT
 
 _ACTION_MAP: Optional[Dict[str, int]] = None
 _DIRECTIONS = ["north", "south", "east", "west"]
@@ -155,31 +160,18 @@ def render_state_block(
     *,
     encoder: StateEncoder,
     state_index: int,
-    board_mode: str = "tokenized",
+    board_mode: str = DEFAULT_POLICY_BOARD_MODE,
     tokenizer=None,
 ) -> tuple[str, int]:
-    """Render one full-state block with a whole-board view."""
-    state = encoder.encode_full(obs)
-    board_view = build_board_view(obs, state_index=state_index, tokenizer=tokenizer)
-    board_text = (
-        board_view.tokenized_board if board_mode == "tokenized" else board_view.ascii_board
+    rendered = render_policy_state_from_obs(
+        obs,
+        state_index=state_index,
+        encoder=encoder,
+        board_mode=board_mode,
+        persist_dual_views=False,
+        tokenizer=tokenizer,
     )
-    lines = [
-        f"TurnIndex: {state_index}",
-        (
-            f"Stats: HP={state['hp']}/{state['hp_max']} AC={state['ac']} "
-            f"Str={state['strength']} Dex={state['dexterity']} Gold={state['gold']} "
-            f"Depth={state['depth']} Pos={state['position']} Clock={state['turn']}"
-        ),
-        f"Message: {_decode_message(obs['message']) or '<none>'}",
-        f"BoardMode: {board_mode}",
-        f"BoardShape: {board_view.height}x{board_view.width}",
-        "Board:",
-        board_text,
-    ]
-    text = "\n".join(lines)
-    tokens = estimate_text_tokens(text, tokenizer=tokenizer)
-    return text, tokens
+    return rendered.text, rendered.token_estimate
 
 
 def render_state_views(
@@ -207,18 +199,17 @@ def render_text_state_block(
     state_text: str,
     *,
     state_index: int,
+    board_mode: str = DEFAULT_POLICY_BOARD_MODE,
     tokenizer=None,
 ) -> tuple[str, int]:
-    text = "\n".join(
-        [
-            f"TurnIndex: {state_index}",
-            "BoardMode: external_text",
-            "State:",
-            state_text,
-        ]
+    rendered = render_policy_state_from_text(
+        state_text,
+        state_index=state_index,
+        board_mode=board_mode,
+        persist_dual_views=False,
+        tokenizer=tokenizer,
     )
-    tokens = estimate_text_tokens(text, tokenizer=tokenizer)
-    return text, tokens
+    return rendered.text, rendered.token_estimate
 
 
 def render_turn(
@@ -228,7 +219,7 @@ def render_turn(
     action: str,
     encoder: StateEncoder,
     turn_index: int,
-    board_mode: str = "tokenized",
+    board_mode: str = DEFAULT_POLICY_BOARD_MODE,
     tokenizer=None,
 ) -> RenderedTurn:
     if obs is not None:
@@ -243,6 +234,7 @@ def render_turn(
         rendered_state_text, state_tokens = render_text_state_block(
             state_text,
             state_index=turn_index,
+            board_mode=board_mode,
             tokenizer=tokenizer,
         )
     else:
@@ -333,43 +325,63 @@ def build_messages(
     return messages, metadata
 
 
+def _history_turn_from_replayed_step(
+    step: ReplayedEpisodeStep,
+    *,
+    tokenizer=None,
+) -> RenderedTurn:
+    """Preserve already-rendered canonical state text when packing history."""
+    action_text = step.action.normalized or "wait"
+    turn_text = f"{step.state_text}\nAction: {action_text}"
+    turn_tokens = estimate_text_tokens(turn_text, tokenizer=tokenizer)
+    return RenderedTurn(
+        turn_index=step.turn_index,
+        state_text=step.state_text,
+        state_token_estimate=step.token_estimate,
+        turn_text=turn_text,
+        turn_token_estimate=turn_tokens,
+        action=action_text,
+    )
+
+
 def build_long_sequence_examples_from_episode(
     episode_steps: list[EpisodeActionStep],
     *,
     encoder: StateEncoder,
     episode_id: str,
     max_context_tokens: int = 128_000,
-    board_mode: str = "tokenized",
+    board_mode: str = DEFAULT_POLICY_BOARD_MODE,
     persist_dual_views: bool = False,
     reserve_output_tokens: int = 16,
     source: str = "episode",
     tokenizer=None,
 ) -> list[dict]:
     """Convert a full episode into long-history next-action examples."""
+    if episode_steps and isinstance(episode_steps[0], ReplayedEpisodeStep):
+        replayed_steps = episode_steps
+        replay_report = {
+            "rows_before_replay": len(episode_steps),
+            "rows_after_replay": len(episode_steps),
+        }
+    else:
+        replayed_steps, replay_report = replay_episode_steps(
+            episode_steps,
+            encoder=encoder,
+            board_mode=board_mode,
+            persist_dual_views=persist_dual_views,
+            modal_policy="drop_modal",
+            tokenizer=tokenizer,
+        )
     history_turns: list[RenderedTurn] = []
     examples: list[dict] = []
-    for step in episode_steps:
-        if step.obs is not None:
-            current_state_text, current_state_tokens = render_state_block(
-                step.obs,
-                encoder=encoder,
-                state_index=step.turn_index,
-                board_mode=board_mode,
-                tokenizer=tokenizer,
-            )
-        elif step.state_text is not None:
-            current_state_text, current_state_tokens = render_text_state_block(
-                step.state_text,
-                state_index=step.turn_index,
-                tokenizer=tokenizer,
-            )
-        else:
-            raise ValueError("EpisodeActionStep requires obs or state_text")
+    for step in replayed_steps:
+        current_state_text = step.state_text
+        current_state_tokens = step.token_estimate
         messages, metadata = build_messages(
             history_turns=history_turns,
             current_state_text=current_state_text,
             current_state_tokens=current_state_tokens,
-            target_action=step.action,
+            target_action=step.action.normalized or "wait",
             episode_id=episode_id,
             step_index=step.turn_index,
             max_context_tokens=max_context_tokens,
@@ -385,28 +397,15 @@ def build_long_sequence_examples_from_episode(
                     "board_mode": board_mode,
                     "has_dual_views": persist_dual_views,
                     **(step.extra_metadata or {}),
+                    "replay_rows_before": replay_report["rows_before_replay"],
+                    "replay_rows_after": replay_report["rows_after_replay"],
                 },
-                **(
-                    {
-                        "board_views": render_state_views(
-                            step.obs,
-                            state_index=step.turn_index,
-                            tokenizer=tokenizer,
-                        )
-                    }
-                    if persist_dual_views and step.obs is not None
-                    else {}
-                ),
+                **({"board_views": step.board_views} if persist_dual_views and step.board_views is not None else {}),
             }
         )
         history_turns.append(
-            render_turn(
-                obs=step.obs,
-                state_text=step.state_text,
-                action=step.action,
-                encoder=encoder,
-                turn_index=step.turn_index,
-                board_mode=board_mode,
+            _history_turn_from_replayed_step(
+                step,
                 tokenizer=tokenizer,
             )
         )
@@ -419,7 +418,7 @@ def build_long_sequence_examples_from_episode_multi_budget(
     encoder: StateEncoder,
     episode_id: str,
     context_budgets: list[int],
-    board_mode: str = "tokenized",
+    board_mode: str = DEFAULT_POLICY_BOARD_MODE,
     persist_dual_views: bool = False,
     reserve_output_tokens: int = 16,
     source: str = "episode",
@@ -453,7 +452,7 @@ def generate_long_sequence_game(
     *,
     policy: Optional[Callable] = None,
     max_context_tokens: int = 128_000,
-    board_mode: str = "tokenized",
+    board_mode: str = DEFAULT_POLICY_BOARD_MODE,
     persist_dual_views: bool = False,
     reserve_output_tokens: int = 16,
     source: str = "nle_generated",
@@ -480,6 +479,7 @@ def generate_long_sequence_game(
         state = encoder.encode_full(obs_copy)
         max_depth_seen = max(max_depth_seen, int(state["depth"]))
         action_name = policy(state["adjacent"], rng)
+        normalized_action = canonicalize_action(action_name)
         action_idx = action_map.get(action_name, action_map.get("wait", 18))
         if action_name not in action_map:
             action_name = "wait"
@@ -488,7 +488,7 @@ def generate_long_sequence_game(
                 turn_index=step,
                 obs=obs_copy,
                 state_text=None,
-                action=action_name,
+                action=normalized_action.normalized or "wait",
                 extra_metadata={
                     "hp": state["hp"],
                     "hp_max": state["hp_max"],
@@ -551,7 +551,7 @@ def generate_long_sequence_dataset(
     seed_start: int,
     encoder: StateEncoder,
     max_context_tokens: int = 128_000,
-    board_mode: str = "tokenized",
+    board_mode: str = DEFAULT_POLICY_BOARD_MODE,
     persist_dual_views: bool = False,
     eval_path: Optional[str] = None,
     eval_fraction: float = 0.2,
@@ -709,6 +709,7 @@ def load_episode_action_steps_from_jsonl(input_path: str) -> dict[str, list[Epis
             episode_id = str(row.get("episode_id", row.get("gameid", row.get("seed", "episode"))))
             turn_index = int(row.get("step", row.get("turn_index", 0)))
             action = str(row.get("action", row.get("target_action", "wait")))
+            canonical_action = canonicalize_action(action)
             state_text = row.get("state_text")
             if state_text is None:
                 state_text = row.get("state_prompt")
@@ -729,6 +730,9 @@ def load_episode_action_steps_from_jsonl(input_path: str) -> dict[str, list[Epis
                 "achieve": row.get("achieve"),
                 "outcome": outcome,
                 "is_win": outcome == "win",
+                "original_action": action,
+                "normalized_action": canonical_action.normalized,
+                "action_class": canonical_action.action_class,
                 "game_phase": infer_game_phase(
                     depth=row.get("depth"),
                     maxlvl=row.get("maxlvl"),
@@ -740,7 +744,7 @@ def load_episode_action_steps_from_jsonl(input_path: str) -> dict[str, list[Epis
                     turn_index=turn_index,
                     obs=None,
                     state_text=state_text,
-                    action=action,
+                    action=canonical_action.normalized or action,
                     extra_metadata=metadata,
                 )
             )
@@ -755,20 +759,76 @@ def convert_episode_jsonl_to_long_sequence_dataset(
     *,
     encoder: StateEncoder,
     max_context_tokens: int = 128_000,
-    board_mode: str = "tokenized",
+    board_mode: str = DEFAULT_POLICY_BOARD_MODE,
     persist_dual_views: bool = False,
     reserve_output_tokens: int = 16,
     source: str = "external_jsonl",
+    modal_policy: str = "drop_modal",
+    keep_modal_actions: bool = False,
+    stride: int = 1,
+    min_turn_index: int = 0,
+    max_turn_index: int | None = None,
+    min_depth: int | None = None,
+    danger_only: bool = False,
+    danger_window: int = 0,
     tokenizer=None,
 ) -> dict:
     """Convert an episode-style JSONL corpus into long-sequence next-action data."""
     episodes = load_episode_action_steps_from_jsonl(input_path)
     os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
     total_examples = 0
+    validation_report = {
+        "rows_before_replay": 0,
+        "rows_after_replay": 0,
+        "dropped_by_reason": {},
+        "action_histogram_before": {},
+        "action_histogram_after": {},
+        "modal_split": {},
+        "render_source_split": {},
+        "episodes": len(episodes),
+        "config": {
+            "modal_policy": modal_policy,
+            "keep_modal_actions": keep_modal_actions,
+            "board_mode": board_mode,
+            "stride": stride,
+            "min_turn_index": min_turn_index,
+            "max_turn_index": max_turn_index,
+            "min_depth": min_depth,
+            "danger_only": danger_only,
+            "danger_window": danger_window,
+        },
+    }
+
+    def _merge_counts(dst: dict[str, int], src: dict[str, int]) -> None:
+        for key, value in src.items():
+            dst[key] = dst.get(key, 0) + int(value)
+
     with open(output_path, "w") as f:
         for episode_id, steps in episodes.items():
-            examples = build_long_sequence_examples_from_episode(
+            replayed_steps, replay_report = replay_episode_steps(
                 steps,
+                encoder=encoder,
+                board_mode=board_mode,
+                persist_dual_views=persist_dual_views,
+                keep_modal_actions=keep_modal_actions,
+                modal_policy=modal_policy,
+                stride=stride,
+                min_turn_index=min_turn_index,
+                max_turn_index=max_turn_index,
+                min_depth=min_depth,
+                danger_only=danger_only,
+                danger_window=danger_window,
+                tokenizer=tokenizer,
+            )
+            validation_report["rows_before_replay"] += int(replay_report["rows_before_replay"])
+            validation_report["rows_after_replay"] += int(replay_report["rows_after_replay"])
+            _merge_counts(validation_report["dropped_by_reason"], replay_report["dropped_by_reason"])
+            _merge_counts(validation_report["action_histogram_before"], replay_report["action_histogram_before"])
+            _merge_counts(validation_report["action_histogram_after"], replay_report["action_histogram_after"])
+            _merge_counts(validation_report["modal_split"], replay_report["modal_split"])
+            _merge_counts(validation_report["render_source_split"], replay_report["render_source_split"])
+            examples = build_long_sequence_examples_from_episode(
+                replayed_steps,
                 encoder=encoder,
                 episode_id=episode_id,
                 max_context_tokens=max_context_tokens,
@@ -781,6 +841,10 @@ def convert_episode_jsonl_to_long_sequence_dataset(
             for row in examples:
                 f.write(json.dumps(row) + "\n")
             total_examples += len(examples)
+    validation_path = output_path + ".validation.json"
+    with open(validation_path, "w") as f:
+        json.dump(validation_report, f, indent=2)
+        f.write("\n")
     return {
         "input_path": input_path,
         "output_path": output_path,
@@ -789,4 +853,5 @@ def convert_episode_jsonl_to_long_sequence_dataset(
         "context_bucket": context_bucket(max_context_tokens),
         "source": source,
         "persist_dual_views": persist_dual_views,
+        "validation_path": validation_path,
     }

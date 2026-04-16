@@ -9,7 +9,7 @@ import urllib.request
 from collections import defaultdict
 from typing import Callable, Optional
 
-from nle_agent.agent_http import parse_action
+from src.policy_actions import classify_action_family, normalize_action_text
 
 
 def load_long_sequence_rows(path: str) -> list[dict]:
@@ -21,27 +21,8 @@ def load_long_sequence_rows(path: str) -> list[dict]:
                 rows.append(json.loads(line))
     return rows
 
-
-def normalize_action_text(raw: str) -> str:
-    _, action_name = parse_action(raw)
-    return action_name
-
-
 def action_family(action: str) -> str:
-    action = normalize_action_text(action)
-    if action in {"north", "south", "east", "west", "northeast", "northwest", "southeast", "southwest"}:
-        return "move"
-    if action in {"search"}:
-        return "search"
-    if action in {"pickup", "drop", "eat", "drink", "read", "wear", "takeoff", "wield", "apply", "zap", "throw"}:
-        return "inventory"
-    if action in {"up", "down"}:
-        return "stairs"
-    if action in {"open", "close", "kick"}:
-        return "interaction"
-    if action in {"wait"}:
-        return "wait"
-    return "other"
+    return classify_action_family(normalize_action_text(action))
 
 
 def episode_id_for_row(row: dict) -> str:
@@ -230,9 +211,9 @@ def evaluate_long_sequence_rows(
     scored_rows = []
     for row in rows:
         messages = row["conversations"][:-1]
-        target = normalize_action_text(row["conversations"][-1]["content"])
+        target = normalize_action_text(row["conversations"][-1]["content"]) or "wait"
         raw_prediction = predict_fn(messages)
-        prediction = normalize_action_text(raw_prediction)
+        prediction = normalize_action_text(raw_prediction) or "wait"
         message_text = extract_current_turn_message(messages)
         scored_rows.append(
             {

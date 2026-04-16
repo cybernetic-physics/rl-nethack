@@ -14,6 +14,7 @@ import numpy as np
 
 from nle_agent.agent_http import _build_action_map
 from src.long_sequence_dataset import convert_episode_jsonl_to_long_sequence_dataset
+from src.policy_actions import canonicalize_action
 from src.state_encoder import StateEncoder
 
 
@@ -58,7 +59,9 @@ _KEYPRESS_ACTION_NAME_MAP = build_keypress_action_name_map()
 
 def canonical_action_name_from_keypress(keypress: int) -> str:
     """Convert a ttyrec keypress to a canonical action name."""
-    return _KEYPRESS_ACTION_NAME_MAP.get(int(keypress), f"keypress_{int(keypress)}")
+    raw_name = _KEYPRESS_ACTION_NAME_MAP.get(int(keypress), f"keypress_{int(keypress)}")
+    canonical = canonicalize_action(raw_name, keep_modal_actions=True)
+    return canonical.normalized or raw_name
 
 
 def render_tty_chars_state(tty_chars: np.ndarray) -> str:
@@ -229,6 +232,7 @@ def build_episode_rows_from_ttyrec_game(
                 "action": canonical_action_name_from_keypress(keypress),
                 "keypress": keypress,
                 "state_text": render_tty_chars_state(tty_chars),
+                "render_source": "tty_chars",
                 "dataset_name": dataset_name,
                 "source": dataset_name,
                 "done": bool(int(np.asarray(minibatch["done"])[0, t])),
@@ -319,6 +323,79 @@ def export_nld_episodes_to_jsonl(
     }
 
 
+def export_hdf5_nld_episodes_to_jsonl(
+    output_path: str,
+    *,
+    hdf5_path: str,
+    metadata_json_path: str,
+    dataset_name: str,
+    max_games: int | None = None,
+    max_steps_per_game: int | None = None,
+) -> dict[str, Any]:
+    """Export a raw NLD-style HDF5 shard plus metadata JSON into episode-style JSONL."""
+    try:
+        import h5py
+    except ImportError as exc:  # pragma: no cover - exercised in integration with h5py installed
+        raise RuntimeError(
+            "export_hdf5_nld_episodes_to_jsonl requires h5py; run with `uv run --with h5py ...`"
+        ) from exc
+
+    with open(metadata_json_path, "r") as f:
+        metadata_rows = json.load(f)
+    metadata_by_gameid = {
+        _parse_int(row.get("gameid"), 0): rank_nld_game_metadata([row])[0]
+        for row in metadata_rows
+    }
+
+    exported_games = 0
+    exported_rows = 0
+    os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
+    with h5py.File(hdf5_path, "r") as h5, open(output_path, "w") as out:
+        gameids = sorted((_parse_int(key, 0) for key in h5.keys()))
+        if max_games is not None:
+            gameids = gameids[:max_games]
+        for gameid in gameids:
+            group = h5[str(gameid)]
+            metadata = dict(metadata_by_gameid.get(gameid, {"gameid": gameid}))
+            tty_chars = np.asarray(group["tty_chars"])
+            actions = np.asarray(group["actions"])
+            dones = np.asarray(group["dones"])
+            rewards = np.asarray(group["rewards"])
+            steps = min(len(actions), len(tty_chars), len(dones), len(rewards))
+            if max_steps_per_game is not None:
+                steps = min(steps, int(max_steps_per_game))
+            for step_index in range(steps):
+                row = {
+                    "episode_id": f"{dataset_name}-{gameid}",
+                    "gameid": int(gameid),
+                    "step": int(step_index),
+                    "action": canonical_action_name_from_keypress(int(actions[step_index])),
+                    "keypress": int(actions[step_index]),
+                    "state_text": render_tty_chars_state(tty_chars[step_index]),
+                    "render_source": "tty_chars",
+                    "dataset_name": dataset_name,
+                    "source": dataset_name,
+                    "done": bool(dones[step_index]),
+                    "reward": int(rewards[step_index]),
+                    **metadata,
+                }
+                out.write(json.dumps(row) + "\n")
+                exported_rows += 1
+            exported_games += 1
+
+    return {
+        "dataset_name": dataset_name,
+        "hdf5_path": hdf5_path,
+        "metadata_json_path": metadata_json_path,
+        "output_path": output_path,
+        "games_available": len(metadata_rows),
+        "games_exported": exported_games,
+        "rows_exported": exported_rows,
+        "max_games": max_games,
+        "max_steps_per_game": max_steps_per_game,
+    }
+
+
 def import_nld_to_long_sequence_dataset(
     *,
     output_path: str,
@@ -338,25 +415,45 @@ def import_nld_to_long_sequence_dataset(
     max_context_tokens: int = 128_000,
     reserve_output_tokens: int = 16,
     source: str | None = None,
+    modal_policy: str = "drop_modal",
+    keep_modal_actions: bool = False,
+    stride: int = 1,
+    min_turn_index: int = 0,
+    max_turn_index: int | None = None,
+    min_depth: int | None = None,
+    danger_only: bool = False,
+    danger_window: int = 0,
+    hdf5_path: str | None = None,
+    metadata_json_path: str | None = None,
 ) -> dict[str, Any]:
     """Register/select/export NLD games and convert them into long-sequence JSONL."""
     with tempfile.TemporaryDirectory() as tmpdir:
         episode_path = os.path.join(tmpdir, f"{dataset_name}_episodes.jsonl")
-        export_result = export_nld_episodes_to_jsonl(
-            episode_path,
-            dataset_name=dataset_name,
-            dbfilename=dbfilename,
-            root_path=root_path,
-            dataset_type=dataset_type,
-            max_games=max_games,
-            wins_only=wins_only,
-            min_turns=min_turns,
-            min_maxlvl=min_maxlvl,
-            rows=rows,
-            cols=cols,
-            seq_length=seq_length,
-            max_steps_per_game=max_steps_per_game,
-        )
+        if hdf5_path and metadata_json_path:
+            export_result = export_hdf5_nld_episodes_to_jsonl(
+                episode_path,
+                hdf5_path=hdf5_path,
+                metadata_json_path=metadata_json_path,
+                dataset_name=dataset_name,
+                max_games=max_games,
+                max_steps_per_game=max_steps_per_game,
+            )
+        else:
+            export_result = export_nld_episodes_to_jsonl(
+                episode_path,
+                dataset_name=dataset_name,
+                dbfilename=dbfilename,
+                root_path=root_path,
+                dataset_type=dataset_type,
+                max_games=max_games,
+                wins_only=wins_only,
+                min_turns=min_turns,
+                min_maxlvl=min_maxlvl,
+                rows=rows,
+                cols=cols,
+                seq_length=seq_length,
+                max_steps_per_game=max_steps_per_game,
+            )
         convert_result = convert_episode_jsonl_to_long_sequence_dataset(
             episode_path,
             output_path,
@@ -365,6 +462,14 @@ def import_nld_to_long_sequence_dataset(
             board_mode="tokenized",
             reserve_output_tokens=reserve_output_tokens,
             source=source or f"nld:{dataset_name}",
+            modal_policy=modal_policy,
+            keep_modal_actions=keep_modal_actions,
+            stride=stride,
+            min_turn_index=min_turn_index,
+            max_turn_index=max_turn_index,
+            min_depth=min_depth,
+            danger_only=danger_only,
+            danger_window=danger_window,
         )
     return {
         "dataset_name": dataset_name,

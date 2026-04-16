@@ -79,12 +79,22 @@ def render_ascii_board(obs: dict[str, Any]) -> str:
     return "\n".join(rows)
 
 
+def render_ascii_board_from_rows(rows: Sequence[str]) -> str:
+    """Return an exact ASCII board from pre-rendered text rows."""
+    return "\n".join(str(row) for row in rows)
+
+
 def render_tokenized_board(obs: dict[str, Any]) -> str:
     """Return a reversible, token-aware serialization of the full board."""
     chars = _to_chars_grid(obs)
+    rows = [bytes(chars[y]).decode("ascii", errors="replace") for y in range(chars.shape[0])]
+    return render_tokenized_board_from_rows(rows)
+
+
+def render_tokenized_board_from_rows(rows: Sequence[str]) -> str:
+    """Return a reversible, token-aware serialization for text rows."""
     lines: list[str] = []
-    for y in range(chars.shape[0]):
-        row = bytes(chars[y]).decode("ascii", errors="replace")
+    for y, row in enumerate(rows):
         raw_payload = json.dumps(row, ensure_ascii=True)
         rle_payload = _encode_row_rle(row)
         if len(rle_payload) < len(raw_payload):
@@ -154,6 +164,31 @@ def build_board_view(
         state_index=state_index,
         height=int(chars.shape[0]),
         width=int(chars.shape[1]),
+        ascii_board=ascii_board,
+        tokenized_board=tokenized_board,
+        ascii_char_count=len(ascii_board),
+        tokenized_char_count=len(tokenized_board),
+        ascii_token_estimate=estimate_text_tokens(ascii_board, tokenizer=tokenizer),
+        tokenized_token_estimate=estimate_text_tokens(tokenized_board, tokenizer=tokenizer),
+    )
+
+
+def build_board_view_from_rows(
+    rows: Sequence[str],
+    *,
+    state_index: int = 0,
+    tokenizer: Any | Callable[[str], Any] | None = None,
+) -> BoardView:
+    """Build both board views plus token estimates from raw text rows."""
+    normalized_rows = [str(row) for row in rows]
+    height = len(normalized_rows)
+    width = max((len(row) for row in normalized_rows), default=0)
+    ascii_board = render_ascii_board_from_rows(normalized_rows)
+    tokenized_board = render_tokenized_board_from_rows(normalized_rows)
+    return BoardView(
+        state_index=state_index,
+        height=height,
+        width=width,
         ascii_board=ascii_board,
         tokenized_board=tokenized_board,
         ascii_char_count=len(ascii_board),

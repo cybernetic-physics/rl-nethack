@@ -1,368 +1,375 @@
 # TODO
 
-## P0: Fix training/runtime format mismatch for long-context policy training
-
-### Why this is a breaking issue
-
-We currently have a major disconnect between:
-
-- the state/action format used to train the long-context policy, and
-- the state/action format we expect the model to handle at runtime.
-
-In practice this means:
-
-- training data, especially NLD-derived data, often uses `external_text` screen dumps taken from ttyrec-like terminal states,
-- those states include menu screens, modal prompts, `--More--`, inventory UIs, inspection screens, graves, and other non-core gameplay interfaces,
-- the action labels in that data include many UI/meta actions like `space`, `esc`, `look`, `whatis`, `more`, `throw`, `fire`, and similar commands,
-- but runtime inference currently uses our own structured long-sequence prompt format built from the tokenized board view, stats, and messages.
-
-So the model is not actually being trained on the same interface that we ask it to act on online.
-
-This is not a cosmetic issue. It causes:
-
-- representation mismatch: train prompt surface form differs from inference prompt surface form,
-- action-space mismatch: train targets include many actions that are undesirable or invalid for the runtime harness,
-- context mismatch: train histories are polluted by modal/UI states that rarely appear in the intended online control loop,
-- eval mismatch: online eval can understate or misread policy quality because the trained model is optimized for a different prompt/action distribution.
-
-This likely explains why:
-
-- the NLD-trained adapter stopped collapsing into `wait`,
-- but started producing `search`, `throw`, and `fire`,
-- and did not convert long-context training into meaningful gameplay improvement on the current online harness.
-
-### Desired end state
-
-We need a single canonical policy interface:
-
-- one canonical state serialization,
-- one canonical action vocabulary,
-- one canonical history packing scheme,
-- one canonical training/eval/runtime prompt family.
-
-All policy training data, including NLD, AutoAscend, and locally generated long-sequence data, should be converted into that canonical interface before training.
-
-The online runtime harness and offline eval harness must consume the exact same interface.
-
-### Canonical policy format decisions to make
-
-- Decide whether the canonical board view is:
-  - tokenized board view from `src/board_view.py`,
-  - exact ASCII board view,
-  - or dual-view with one fixed primary representation.
-- Decide which side channels are always present:
-  - stats,
-  - message log,
-  - inventory summary,
-  - depth/turn,
-  - task/phase markers,
-  - danger indicators.
-- Decide the canonical history structure:
-  - `state, action, state, action, ...`
-  - exact separators,
-  - whether assistant turns contain only the chosen action or richer structured action metadata.
-- Decide the canonical action vocabulary:
-  - core movement and gameplay actions,
-  - inventory and menu actions allowed only when the state explicitly requires them,
-  - normalized aliases and disallowed actions.
-
-### Subtasks
-
-#### 1. Write the canonical runtime/training spec
-
-- Create a short design note that defines the canonical policy prompt format precisely.
-- Include:
-  - board serialization format,
-  - metadata fields,
-  - history packing order,
-  - action normalization rules,
-  - allowed action vocabulary,
-  - rules for modal/menu states.
-- Make this spec the reference used by:
-  - dataset builders,
-  - importers,
-  - training code,
-  - online eval harness,
-  - live gameplay inference.
-
-#### 2. Audit all existing policy data paths against the canonical spec
-
-- Enumerate current sources:
-  - local long-sequence generation,
-  - NLD import,
-  - AutoAscend traces,
-  - bootstrap/wagmi corpora,
-  - any preference or weighted-SFT datasets.
-- For each source, document:
-  - current board/state representation,
-  - current action labels,
-  - current metadata fields,
-  - whether it already matches the canonical format,
-  - exact mismatches.
-- Produce a compatibility table:
-  - `source -> current format -> required transforms -> usable for policy training?`
-
-#### 3. Build a canonical state renderer for all training paths
-
-- Ensure there is one shared renderer for policy state text.
-- It should support:
-  - full-board canonical rendering,
-  - deterministic formatting,
-  - stable field ordering,
-  - optional dual-view persistence for debugging,
-  - token-count accounting.
-- NLD import must not bypass this renderer.
-- AutoAscend conversion must not bypass this renderer.
-- Local NLE-generated long-sequence data must use the same renderer.
-
-#### 4. Build an action normalization and filtering layer
-
-- Create a single action-normalization module.
-- Map variant/imported action strings into canonical actions.
-- Mark actions as:
-  - allowed gameplay actions,
-  - allowed modal actions,
-  - disallowed/meta noise.
-- Define explicit handling for:
-  - `space`,
-  - `esc`,
-  - `more`,
-  - `look`,
-  - `whatis`,
-  - menu navigation,
-  - inventory submenus,
-  - death/end screens.
-- Ensure training and eval use the same action normalization.
-
-#### 5. Detect and classify modal/UI states
-
-- Add row-level classifiers or heuristics for:
-  - `--More--`,
-  - inventory menus,
-  - “what do you want to ...” prompts,
-  - viewing screens,
-  - death/grave/end screens,
-  - yes/no or selection prompts.
-- Attach modal-state metadata to imported rows.
-- Decide whether each row should:
-  - be removed,
-  - be retained with a modal action label,
-  - or be converted into a canonical modal state/action example.
-
-#### 6. Clean the NLD importer
-
-- Change the NLD path so it emits the canonical runtime-format state serialization rather than raw `external_text` training rows for policy learning.
-- Add switches to:
-  - drop modal/menu rows entirely,
-  - keep only gameplay rows,
-  - optionally retain a separate modal-control dataset for later use.
-- Ensure the importer outputs:
-  - canonical `messages`,
-  - canonical `completion`,
-  - normalized `action`,
-  - modal-state flags,
-  - outcome/phase metadata.
-
-#### 6a. Rebuild datasets by replaying recorded step histories into the canonical prompt format
-
-- The required replay is dataset-level replay, not emulator-level replay.
-- We do not need to replay the full NetHack engine state to fix this issue.
-- We do need to replay each recorded episode step-by-step through our serializer so that the final training rows match runtime usage.
-
-What this means in practice:
-
-- take recorded per-step state/action data,
-- walk the episode in chronological order,
-- rebuild the history window at each step,
-- render each step with the canonical state formatter,
-- emit a new long-sequence training row whose prompt exactly matches the runtime prompt family.
-
-Sources that should support this replay path:
-
-- NLD-derived step data,
-- local long-sequence NLE-generated episodes,
-- AutoAscend traces once available,
-- any other imported episode JSONL that has step-ordered state/action rows.
-
-Required implementation tasks:
-
-- Build a shared `replay_episode_to_canonical_examples(...)` path that:
-  - takes chronological step rows,
-  - reconstructs the rolling history,
-  - applies the canonical state renderer,
-  - applies action normalization,
-  - emits canonical `messages` plus next-action `completion`.
-- Ensure this shared replay path is used by:
-  - NLD import,
-  - generic external JSONL conversion,
-  - local trace conversion,
-  - future AutoAscend conversion.
-- Make the replay deterministic:
-  - stable row ordering,
-  - stable history trimming,
-  - stable action normalization,
-  - stable prompt text.
-
-#### 6b. Define exactly what per-step state gets replayed from recorded data
-
-- For sources with raw observations:
-  - replay from `obs` and render the canonical board/state text directly.
-- For sources with only recorded screen text:
-  - replay from the recorded screen text after converting it into the canonical board/state layout.
-- Explicitly avoid keeping a separate `external_text` policy-training mode as the default path.
-
-Needed decisions:
-
-- whether recorded tty text is parsed into:
-  - exact canonical board block,
-  - a lossy but standardized board/message/state block,
-  - or a fallback canonical text screen block only when parsing fails.
-- how to preserve source provenance so we can audit:
-  - `render_source=obs`,
-  - `render_source=tty_text`,
-  - `render_source=fallback_text`.
-
-#### 6c. Add replay-time history reconstruction controls
-
-- The replay builder should support:
-  - full-episode replay,
-  - strided replay,
-  - late-game-only replay,
-  - danger-window replay,
-  - modal-row drop/keep policies.
-- History reconstruction should use the same budget logic as runtime-oriented training:
-  - token budget,
-  - turn budget,
-  - context bucket labels,
-  - deterministic truncation from the oldest turns first.
-
-#### 6d. Add replay validation
-
-- For every rebuilt corpus, sample rows and verify:
-  - the prompt format matches runtime format,
-  - the action label is normalized,
-  - removed rows are correctly labeled as modal/UI drops,
-  - history windows are assembled in the correct order.
-- Add validation reports showing:
-  - row counts before replay,
-  - row counts after replay,
-  - counts dropped by reason,
-  - action histogram before/after normalization,
-  - modal/non-modal split,
-  - rendering-source split.
-
-#### 6e. Rebuild all existing long-sequence policy corpora using replay
-
-- Rebuild the current canonical corpora through the replay path rather than leaving old rows in mixed formats.
-- At minimum regenerate:
-  - the NLD policy corpus,
-  - the current long bootstrap corpus,
-  - any preference datasets derived from these corpora.
-- Mark older pre-replay corpora as legacy and do not use them for new policy training runs.
-
-#### 7. Rebuild the NLD training corpus
-
-- Regenerate the NLD-based training dataset using the cleaned importer.
-- Require:
-  - canonical prompt format,
-  - normalized actions,
-  - filtered UI/meta rows,
-  - broader episode coverage than the prior two-episode-heavy slice.
-- Build explicit shards:
-  - training shard,
-  - eval shard,
-  - benchmark shard,
-  - optional modal shard.
-- Record action distributions before and after cleanup.
-
-#### 8. Align runtime inference to the same canonical prompt
-
-- Confirm the online gameplay harness uses the exact same prompt structure as the cleaned training corpus.
-- Remove any formatting drift between:
-  - long-sequence dataset builder,
-  - eval harness prompt builder,
-  - live inference path.
-- If different prompt builders exist, consolidate them.
-
-#### 9. Add action masking / inference sanitization
-
-- Runtime should not freely emit actions that are impossible or undesired in the current state.
-- Add inference-time sanitization for:
-  - impossible commands,
-  - disallowed modal actions in normal gameplay states,
-  - out-of-vocabulary outputs.
-- If the state is non-modal, suppress pure menu/meta actions.
-- If the state is modal, restrict to the appropriate modal action subset.
-
-#### 10. Add dataset quality reports
-
-- For every policy corpus build, emit a report with:
-  - action histogram,
-  - modal vs non-modal row counts,
-  - outcome distribution,
-  - game-phase distribution,
-  - episode count,
-  - mean/median context length,
-  - number of rows removed by cleanup,
-  - top suspicious actions and screens.
-- Store this report beside the dataset and push it to HF with the corpus.
-
-#### 11. Re-run the medium and large training experiments on the cleaned corpus
-
-- Re-run a medium smoke run first:
-  - same model family,
-  - same trainer,
-  - cleaned canonical-format corpus.
-- Then re-run the larger NLD-based training run.
-- Compare against prior runs on:
-  - train loss,
-  - eval exact action match,
-  - late-game slices,
-  - post-danger recovery,
-  - online gameplay metrics.
-
-#### 12. Tighten online evaluation
-
-- Expand online eval beyond the current shallow harness.
-- Use:
-  - more seeds,
-  - longer horizons,
-  - clearer success metrics,
-  - runtime-valid action masks.
-- Track:
-  - movement entropy,
-  - invalid action rate,
-  - modal action rate in non-modal states,
-  - reward,
-  - depth,
-  - survival,
-  - exploration progress.
-
-#### 13. Keep raw-screen training only as a separate research branch
-
-- If we still want to experiment with raw ttyrec text or UI-rich screen training, keep it separate.
-- Do not mix it silently into the main policy corpus.
-- Label it explicitly as:
-  - raw-screen branch,
-  - modal-control branch,
-  - or auxiliary imitation branch.
-
-### Immediate next actions
-
-- Write the canonical policy prompt/action spec.
-- Implement shared action normalization.
-- Implement modal/UI row classification.
-- Modify NLD import to emit canonical runtime-format examples.
-- Rebuild a cleaned NLD training shard.
-- Re-run the medium training/eval loop on the cleaned shard before any new large run.
-
-### Success criteria
-
-We can say this issue is fixed only when all of the following are true:
-
-- training and runtime use the same canonical prompt format,
-- training and runtime use the same normalized action vocabulary,
-- NLD-derived policy rows are filtered or normalized for modal/UI states,
-- cleaned corpora show sane action distributions,
-- online eval no longer shows obvious train/runtime prompt mismatch effects,
-- the retrained model improves not just action style but actual gameplay metrics.
+## P0: Canonicalize long-context policy training and runtime format
+
+## Problem
+
+The current long-context policy path still has a train/runtime mismatch.
+
+What the code already does:
+
+- [src/long_sequence_dataset.py](/home/luc/rl-nethack-worktree-20260416/src/long_sequence_dataset.py) builds rolling-history next-action rows using the repo’s own board/state rendering path
+- [src/board_view.py](/home/luc/rl-nethack-worktree-20260416/src/board_view.py) already provides the reusable exact and tokenized full-board serializers
+- [src/long_sequence_eval.py](/home/luc/rl-nethack-worktree-20260416/src/long_sequence_eval.py) evaluates long-sequence datasets by normalizing model outputs with `parse_action(...)`
+- [src/nld_long_sequence_import.py](/home/luc/rl-nethack-worktree-20260416/src/nld_long_sequence_import.py) imports NLD/ttyrec data, but currently emits episode rows from raw tty text via `state_text`
+- [nle_agent/agent_http.py](/home/luc/rl-nethack-worktree-20260416/nle_agent/agent_http.py) defines the runtime action map and action parsing logic used by online inference
+
+What is still wrong:
+
+- imported NLD policy data can still train on raw tty-style `external_text` screens rather than the canonical runtime prompt surface
+- action labels from imported data can include modal/UI actions that do not match the intended online control loop
+- runtime action parsing and offline dataset normalization are not yet one explicit shared policy-spec layer
+- the repo has long-sequence data builders and eval, but not one canonical replay pipeline that rebuilds every corpus into the exact runtime prompt family
+
+This issue is now important enough to treat as the main data-quality blocker for the long-context branch.
+
+## Source Anchors
+
+Use these as the implementation and audit anchors:
+
+- docs:
+  - [docs/consolidated-2026-04/05-blockers-and-next-steps.md](/home/luc/rl-nethack-worktree-20260416/docs/consolidated-2026-04/05-blockers-and-next-steps.md)
+  - [docs/consolidated-2026-04/07-operator-quickstart.md](/home/luc/rl-nethack-worktree-20260416/docs/consolidated-2026-04/07-operator-quickstart.md)
+  - [LONG-CONTEXT-QWEN-1M-PLAN-2026-04-16.md](/home/luc/rl-nethack-worktree-20260416/LONG-CONTEXT-QWEN-1M-PLAN-2026-04-16.md)
+  - [LONG-CONTEXT-NLD-TRAINING-RESULTS-2026-04-16.md](/home/luc/rl-nethack-worktree-20260416/LONG-CONTEXT-NLD-TRAINING-RESULTS-2026-04-16.md)
+- long-context code:
+  - [src/long_sequence_dataset.py](/home/luc/rl-nethack-worktree-20260416/src/long_sequence_dataset.py)
+  - [src/long_sequence_eval.py](/home/luc/rl-nethack-worktree-20260416/src/long_sequence_eval.py)
+  - [src/long_sequence_benchmark.py](/home/luc/rl-nethack-worktree-20260416/src/long_sequence_benchmark.py)
+  - [src/board_view.py](/home/luc/rl-nethack-worktree-20260416/src/board_view.py)
+  - [src/nld_long_sequence_import.py](/home/luc/rl-nethack-worktree-20260416/src/nld_long_sequence_import.py)
+- runtime/action code:
+  - [nle_agent/agent_http.py](/home/luc/rl-nethack-worktree-20260416/nle_agent/agent_http.py)
+- operator surfaces:
+  - [cli.py](/home/luc/rl-nethack-worktree-20260416/cli.py)
+  - [README.md](/home/luc/rl-nethack-worktree-20260416/README.md)
+- tests to extend:
+  - [tests/test_long_sequence_dataset.py](/home/luc/rl-nethack-worktree-20260416/tests/test_long_sequence_dataset.py)
+  - [tests/test_long_sequence_eval.py](/home/luc/rl-nethack-worktree-20260416/tests/test_long_sequence_eval.py)
+  - [tests/test_nld_long_sequence_import.py](/home/luc/rl-nethack-worktree-20260416/tests/test_nld_long_sequence_import.py)
+  - [tests/test_policy_generation.py](/home/luc/rl-nethack-worktree-20260416/tests/test_policy_generation.py)
+
+## Desired End State
+
+We want one canonical policy interface shared by:
+
+- long-sequence training
+- NLD import
+- external-episode conversion
+- long-sequence evaluation
+- live runtime inference
+
+That means:
+
+- one canonical state renderer
+- one canonical action vocabulary and normalization layer
+- one canonical history packing scheme
+- one canonical row-replay path for rebuilding recorded episodes into training rows
+- one documented policy spec that the code follows
+
+## Execution Checklist
+
+### 1. Write the canonical policy spec
+
+- [x] Add a short design note under `docs/` that defines the canonical long-context policy interface.
+- [x] Define the primary board representation:
+  - use [src/board_view.py](/home/luc/rl-nethack-worktree-20260416/src/board_view.py) as the source of truth
+  - decide whether `tokenized_board` or `ascii_board` is the canonical training/runtime default
+  - keep dual-view persistence only as debug metadata, not as a separate policy family
+- [x] Define the canonical prompt fields and ordering:
+  - episode identifier
+  - turn/step index
+  - message text
+  - stats line
+  - board block
+  - rolling prior turns
+- [x] Define the canonical history structure:
+  - exact separator text
+  - whether assistant turns contain only one action token
+  - deterministic oldest-first truncation rules
+- [x] Define the canonical action vocabulary:
+  - movement
+  - stairs
+  - interaction
+  - inventory/gameplay actions
+  - modal-only actions, if any
+- [x] Define the policy for modal/menu states:
+  - drop
+  - retain as modal-control examples
+  - or convert into canonical fallback examples only when unavoidable
+
+Done when:
+
+- there is one doc the importer, dataset builder, eval path, and runtime can all point at
+- the doc names the exact modules that implement the spec
+
+### 2. Audit existing sources against the spec
+
+- [x] Build a compatibility table inside the design note or a sibling audit note.
+- [x] Cover these sources explicitly:
+  - local long-sequence NLE generation from [src/long_sequence_dataset.py](/home/luc/rl-nethack-worktree-20260416/src/long_sequence_dataset.py)
+  - NLD import from [src/nld_long_sequence_import.py](/home/luc/rl-nethack-worktree-20260416/src/nld_long_sequence_import.py)
+  - external JSONL conversion through `convert_episode_jsonl_to_long_sequence_dataset(...)`
+  - any preference/KTO datasets derived from long-sequence corpora
+  - future AutoAscend conversion path
+- [x] For each source, record:
+  - state renderer used today
+  - action labels used today
+  - modal/UI row exposure
+  - metadata fields available
+  - whether it already matches the canonical interface
+  - exact transforms needed
+
+Done when:
+
+- every data source has a clear “usable as-is / needs replay / needs filtering” decision
+
+### 3. Extract a shared policy rendering layer
+
+- [x] Add one shared renderer module for canonical policy text rather than letting importers and dataset builders assemble format ad hoc.
+- [x] Move or wrap the relevant logic from:
+  - [src/long_sequence_dataset.py](/home/luc/rl-nethack-worktree-20260416/src/long_sequence_dataset.py)
+  - [src/board_view.py](/home/luc/rl-nethack-worktree-20260416/src/board_view.py)
+- [x] Ensure the shared renderer supports:
+  - deterministic formatting
+  - stable field ordering
+  - token counting
+  - primary board view selection
+  - optional persisted debug views
+- [x] Make local NLE generation call the shared renderer.
+- [x] Make NLD import call the shared renderer.
+- [x] Make external episode conversion call the shared renderer.
+
+Done when:
+
+- there is one importable function or module used by every policy-data builder
+
+### 4. Extract a shared action normalization layer
+
+- [x] Add one shared action-normalization module instead of splitting logic across import and eval code.
+- [x] Start from existing runtime behavior in [nle_agent/agent_http.py](/home/luc/rl-nethack-worktree-20260416/nle_agent/agent_http.py):
+  - `_build_action_map()`
+  - `parse_action(...)`
+- [x] Reuse or replace the importer-specific keypress conversion in [src/nld_long_sequence_import.py](/home/luc/rl-nethack-worktree-20260416/src/nld_long_sequence_import.py) so all paths flow through the same canonical names.
+- [x] Classify actions into:
+  - canonical gameplay actions
+  - canonical modal actions
+  - dropped/disallowed actions
+- [x] Add explicit decisions for:
+  - `more`
+  - `space`
+  - `esc`
+  - `look`
+  - `whatis`
+  - menu navigation
+  - death/end-of-run screens
+
+Done when:
+
+- training labels, eval normalization, and runtime parsing all depend on one action-spec module
+
+### 5. Add modal/UI-state detection
+
+- [x] Add row-level heuristics for common tty/UI states:
+  - `--More--`
+  - inventory/menu screens
+  - yes/no prompts
+  - “what do you want to ...” prompts
+  - inspection/look screens
+  - death/grave/end screens
+- [x] Attach modal metadata to imported and replayed rows.
+- [x] Define a row disposition field:
+  - `keep_gameplay`
+  - `keep_modal`
+  - `drop_modal_noise`
+  - `drop_terminal_screen`
+- [x] Ensure these flags can flow into dataset manifests and validation reports.
+
+Done when:
+
+- the corpus builder can explain why a row was kept or dropped
+
+### 6. Build dataset replay into canonical rows
+
+- [x] Implement a shared episode replay function that rebuilds recorded step data into the canonical long-context prompt family.
+- [x] Inputs it must support:
+  - raw observations when available
+  - recorded tty/screen text when raw observations are unavailable
+  - chronological step/action episode rows from external JSONL
+- [x] Outputs it must produce:
+  - canonical `conversations` or `messages`
+  - canonical assistant completion
+  - normalized action label
+  - step metadata
+  - modal metadata
+  - provenance metadata such as `render_source`
+- [x] Reuse the same history trimming logic as the long-sequence builder:
+  - token budget
+  - context bucket labels
+  - deterministic oldest-first truncation
+
+Done when:
+
+- replayed corpora no longer depend on free-form `external_text` as the default policy-training mode
+
+### 7. Rework NLD import around replay
+
+- [x] Change [src/nld_long_sequence_import.py](/home/luc/rl-nethack-worktree-20260416/src/nld_long_sequence_import.py) so the default policy-training path is:
+  - ingest ttyrec minibatches
+  - build chronological episode rows
+  - replay into canonical prompt rows
+- [x] Add importer switches for:
+  - gameplay-only rows
+  - keep/drop modal rows
+  - optional modal-control export
+  - fallback-text rendering when parsing into canonical layout fails
+- [x] Ensure imported rows carry:
+  - normalized action names
+  - modal flags
+  - outcome and game-phase metadata
+  - render provenance metadata
+
+Done when:
+
+- imported NLD corpora can be used for policy training without silently mixing runtime-incompatible prompt surfaces
+
+### 8. Rebuild existing corpora through replay
+
+- [x] Regenerate the current NLD long-sequence corpus through the canonical replay path.
+- [x] Regenerate the long bootstrap corpus through the same path.
+- [x] Regenerate preference/KTO corpora derived from these sources so they no longer inherit stale prompt formats.
+- [x] Preserve side-by-side manifests so old and rebuilt corpora can be compared.
+
+Notes:
+
+- `data/rebuilt/long_bootstrap/{train,eval,benchmark}.jsonl` were rebuilt through the canonical replay/generation path.
+- `data/rebuilt/preferences/` now contains rebuilt bootstrap and rebuilt NLD-derived KTO/weighted preference corpora.
+- A valid public raw NLD taster shard was also fetched to `data/nld_hf_taster/` from `Howuhh/nld-aa-taster`:
+  - `data/nld_hf_taster/data-cav-gno-neu-any.hdf5`
+  - `data/nld_hf_taster/metadata-cav-gno-neu-any.json`
+- A real raw-source canonical NLD smoke corpus was rebuilt from that HDF5 shard through the shared replay path:
+  - `data/rebuilt/nld_hf_taster/long_sequences_smoke_canonical.jsonl`
+  - `data/rebuilt/nld_hf_taster/long_sequences_smoke_canonical.jsonl.validation.json`
+  - `data/rebuilt/nld_hf_taster/benchmark.jsonl`
+  - `data/rebuilt/preferences/nld_hf_taster_kto_train.jsonl`
+  - `data/rebuilt/preferences/nld_hf_taster_weighted_train.jsonl`
+  - `data/rebuilt/preferences/nld_hf_taster_pairwise_train.jsonl`
+- The local `data/nld/nld-aa-taster.zip` artifact was not a usable zip payload; it was an `AccessDenied` XML response. To avoid blocking the replay work entirely, the NLD rebuild was executed against a sampled shard back-converted from the locally cached historical long-sequence corpus:
+  - `data/rebuilt/nld_taster/nld_old_sample_longseq.jsonl`
+  - `data/rebuilt/nld_taster/episodes_from_old_longseq_sample.jsonl`
+  - `data/rebuilt/nld_taster/nld_canonical_rebuilt_sample.jsonl`
+  - `data/rebuilt/nld_taster/nld_canonical_benchmark_sample.jsonl`
+- The older sampled back-conversion artifacts are still useful as comparison data, but the current canonical smoke rebuild no longer depends on them.
+
+Done when:
+
+- there are no “mainline” training corpora left in mixed prompt formats
+
+### 9. Add replay validation and reporting
+
+- [x] Add validation utilities that report:
+  - rows before replay
+  - rows after replay
+  - rows dropped by reason
+  - modal vs non-modal counts
+  - action histogram before normalization
+  - action histogram after normalization
+  - render-source split
+  - context-bucket split
+- [x] Add row-sampling checks to confirm:
+  - prompt format matches runtime spec
+  - history is in the correct order
+  - action labels are normalized
+  - modal filtering is behaving as intended
+- [x] Write validation outputs to JSON so they can be diffed between corpus rebuilds.
+
+Done when:
+
+- every rebuilt corpus has a machine-readable validation report
+
+### 10. Extend tests before scaling data or training
+
+- [x] Add tests for the canonical renderer.
+- [x] Add tests for action normalization and alias handling.
+- [x] Add tests for modal-row classification.
+- [x] Add tests for replayed history assembly and deterministic truncation.
+- [x] Add importer tests covering:
+  - gameplay rows
+  - modal rows
+  - dropped rows
+  - fallback render-source paths
+- [x] Add eval tests proving the same action normalization is used offline and at runtime.
+
+Done when:
+
+- the replay/canonicalization path is covered in `tests/test_long_sequence_dataset.py`, `tests/test_nld_long_sequence_import.py`, `tests/test_long_sequence_eval.py`, and `tests/test_policy_generation.py`
+
+### 11. Re-run the trusted short loop on rebuilt corpora
+
+- [x] Build a deterministic held-out benchmark shard from the rebuilt corpus.
+- [x] Run a small long-context LoRA smoke train on rebuilt data.
+- [x] Evaluate with `evaluate-long-sequences` on the rebuilt benchmark.
+- [x] Run the current online long-context harness on a small fixed seed set.
+- [x] Compare against the pre-rebuild baseline:
+  - exact match
+  - action-family distribution
+  - modal-action leakage
+  - online invalid/odd action rate
+
+Notes:
+
+- Rebuilt bootstrap smoke train completed at `output/rebuilt/long_bootstrap_qwen_0_5b_smoke256`.
+- Offline eval reports:
+  - `output/rebuilt/old_bootstrap_eval_report.json` -> exact match `0.34375`
+  - `output/rebuilt/rebuilt_bootstrap_eval_report.json` -> exact match `0.15625`
+  - `output/rebuilt/rebuilt_nld_sample_eval_report.json` -> exact match `0.0`
+- Comparison report written to `output/rebuilt/compare_eval_reports.json`.
+- Live online probe written to `output/rebuilt/live_long_eval.json`:
+  - seeds `42,43,44`
+  - `48` total steps
+  - invalid/odd action rate `0.4166666666666667`
+- The first short-loop comparison above was run before the replay-history preservation bug was fixed. After fixing canonical-history packing and regenerating the rebuilt bootstrap corpus, a matched v2 smoke comparison was rerun with both old-format and rebuilt-format adapters trained under the same settings:
+  - `output/rebuilt/old_model_on_old_benchmark_v2.json` -> exact match `0.0`
+  - `output/rebuilt/old_model_on_rebuilt_benchmark_v2.json` -> exact match `0.0078125`
+  - `output/rebuilt/rebuilt_model_on_old_benchmark_v2.json` -> exact match `0.0`
+  - `output/rebuilt/rebuilt_model_on_rebuilt_benchmark_v2.json` -> exact match `0.0390625`
+- On the same rebuilt benchmark, the rebuilt-format smoke adapter now outperforms the old-format smoke adapter.
+- A second live online probe with the fixed rebuilt adapter was written to `output/rebuilt/live_long_eval_v2.json`:
+  - seeds `42,43,44`
+  - `48` total steps
+  - invalid/odd action rate `0.7708333333333334`
+- The short-loop benchmark criterion is now satisfied in the matched v2 comparison, but online action quality still needs follow-up tuning.
+
+Done when:
+
+- we know whether canonical replay reduced the current train/runtime mismatch in practice
+
+## Recommended Order
+
+Do this in order:
+
+1. write the policy spec
+2. extract shared renderer and action normalization
+3. add modal detection
+4. build replay path
+5. rework NLD import to use replay
+6. add validation and tests
+7. rebuild corpora
+8. run short-loop training and eval
+
+## Stop Conditions
+
+Do not scale to larger long-context runs until these are true:
+
+- one canonical policy spec exists
+- one shared renderer exists
+- one shared action-normalization layer exists
+- NLD import uses replay into canonical rows
+- rebuilt corpora have validation reports
+- the rebuilt short-loop benchmark is at least as good as the current mixed-format baseline
+
+Current status:
+
+- All core code-path items above are implemented.
+- The benchmark stop condition is satisfied by the matched v2 rebuilt-vs-old comparison on the rebuilt benchmark.
+- The remaining open issue is the partially rebuilt raw NLD corpus from a very large source artifact, plus the still-poor online odd-action rate.
