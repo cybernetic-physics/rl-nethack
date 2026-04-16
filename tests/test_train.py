@@ -23,10 +23,20 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from train import (
+    build_curriculum_dataset,
+    dataset_has_sample_weights,
+    filter_dataset_by_metadata,
     format_conversation_text,
     format_dataset_conversations,
+    normalize_training_dataset,
+    normalize_training_row,
+    parse_curriculum_buckets,
+    parse_curriculum_stage_repeats,
+    parse_metadata_filters,
     parse_args,
     save_training_metadata,
+    truncate_dataset,
+    weighted_mean_loss,
 )
 
 
@@ -142,6 +152,167 @@ class TestTrainingDataLoads:
 
         dataset = load_training_data(str(data_path))
         assert len(dataset) == 3
+
+
+class TestMetadataFiltering:
+    def test_parse_metadata_filters(self):
+        parsed = parse_metadata_filters(["target_context_bucket=256k", "outcome=win"])
+        assert parsed == {"target_context_bucket": "256k", "outcome": "win"}
+
+    def test_filter_dataset_by_metadata(self, tmp_path):
+        from train import load_training_data
+
+        data_path = tmp_path / "train.jsonl"
+        rows = [
+            {
+                "conversations": [
+                    {"role": "system", "content": "sys"},
+                    {"role": "user", "content": "u1"},
+                    {"role": "assistant", "content": "a1"},
+                ],
+                "metadata": {"target_context_bucket": "128k", "outcome": "loss"},
+            },
+            {
+                "conversations": [
+                    {"role": "system", "content": "sys"},
+                    {"role": "user", "content": "u2"},
+                    {"role": "assistant", "content": "a2"},
+                ],
+                "metadata": {"target_context_bucket": "256k", "outcome": "win"},
+            },
+        ]
+        with open(data_path, "w") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+
+        dataset = load_training_data(str(data_path))
+        filtered = filter_dataset_by_metadata(dataset, {"target_context_bucket": "256k"})
+        assert len(filtered) == 1
+        assert filtered[0]["metadata"]["outcome"] == "win"
+
+    def test_truncate_dataset(self, tmp_path):
+        from train import load_training_data
+
+        data_path = tmp_path / "train.jsonl"
+        _make_sharegpt_jsonl(str(data_path), num_examples=5)
+        dataset = load_training_data(str(data_path))
+        truncated = truncate_dataset(dataset, 2)
+        assert len(truncated) == 2
+
+    def test_normalize_training_row_converts_preference_schema(self):
+        row = {
+            "messages": [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "state"},
+            ],
+            "completion": "east",
+            "label": False,
+        }
+        normalized = normalize_training_row(row, positive_weight=1.0, negative_weight=-0.5)
+        assert normalized["conversations"][-1] == {"role": "assistant", "content": "east"}
+        assert normalized["sample_weight"] == -0.5
+
+    def test_normalize_training_dataset_adds_sample_weights(self, tmp_path):
+        from train import load_training_data
+
+        data_path = tmp_path / "pref.jsonl"
+        rows = [
+            {
+                "messages": [
+                    {"role": "system", "content": "sys"},
+                    {"role": "user", "content": "u1"},
+                ],
+                "completion": "east",
+                "label": True,
+            },
+            {
+                "messages": [
+                    {"role": "system", "content": "sys"},
+                    {"role": "user", "content": "u2"},
+                ],
+                "completion": "wait",
+                "label": False,
+            },
+        ]
+        with open(data_path, "w") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+
+        dataset = load_training_data(str(data_path))
+        normalized = normalize_training_dataset(dataset, positive_weight=1.0, negative_weight=-0.25)
+        assert dataset_has_sample_weights(normalized) is True
+        assert normalized[0]["sample_weight"] == 1.0
+        assert normalized[1]["sample_weight"] == -0.25
+
+    def test_weighted_mean_loss_supports_negative_weights(self):
+        torch = pytest.importorskip("torch")
+
+        per_example = torch.tensor([2.0, 6.0], dtype=torch.float32)
+        weights = torch.tensor([1.0, -0.5], dtype=torch.float32)
+        result = weighted_mean_loss(per_example, weights)
+        assert round(float(result.item()), 6) == round((2.0 - 3.0) / 1.5, 6)
+
+    def test_parse_curriculum_helpers(self):
+        assert parse_curriculum_buckets("128k,256k, 512k") == ["128k", "256k", "512k"]
+        assert parse_curriculum_stage_repeats("", 3) == [1, 1, 1]
+        assert parse_curriculum_stage_repeats("2,2,1", 3) == [2, 2, 1]
+        with pytest.raises(ValueError):
+            parse_curriculum_stage_repeats("2,1", 3)
+
+    def test_build_curriculum_dataset_expands_cumulative_stages(self, tmp_path):
+        from train import load_training_data
+
+        data_path = tmp_path / "curriculum.jsonl"
+        rows = [
+            {
+                "conversations": [
+                    {"role": "system", "content": "sys"},
+                    {"role": "user", "content": "u1"},
+                    {"role": "assistant", "content": "a1"},
+                ],
+                "metadata": {"target_context_bucket": "128k"},
+            },
+            {
+                "conversations": [
+                    {"role": "system", "content": "sys"},
+                    {"role": "user", "content": "u2"},
+                    {"role": "assistant", "content": "a2"},
+                ],
+                "metadata": {"target_context_bucket": "256k"},
+            },
+            {
+                "conversations": [
+                    {"role": "system", "content": "sys"},
+                    {"role": "user", "content": "u3"},
+                    {"role": "assistant", "content": "a3"},
+                ],
+                "metadata": {"target_context_bucket": "512k"},
+            },
+        ]
+        with open(data_path, "w") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+
+        dataset = load_training_data(str(data_path))
+        curriculum = build_curriculum_dataset(
+            dataset,
+            ["128k", "256k", "512k"],
+            [2, 1, 1],
+            metadata_key="target_context_bucket",
+        )
+        assert len(curriculum) == 7
+        buckets = [curriculum[i]["metadata"]["target_context_bucket"] for i in range(len(curriculum))]
+        assert buckets == ["128k", "128k", "128k", "256k", "128k", "256k", "512k",]
+
+    def test_parse_args_supports_curriculum_flags(self):
+        args = parse_args([
+            "--curriculum-buckets", "128k,256k,512k",
+            "--curriculum-stage-repeats", "2,2,1",
+            "--curriculum-metadata-key", "target_context_bucket",
+        ])
+        assert args.curriculum_buckets == "128k,256k,512k"
+        assert args.curriculum_stage_repeats == "2,2,1"
+        assert args.curriculum_metadata_key == "target_context_bucket"
 
 
 # ===========================================================================
@@ -465,7 +636,15 @@ class TestSaveTrainingMetadata:
         assert loaded["config"]["lora_rank"] == 16
         assert loaded["config"]["lora_alpha"] == 32
         assert loaded["config"]["learning_rate"] == 2e-4
-        assert loaded["config"]["lora_target_modules"] == "all-linear"
+        assert loaded["config"]["lora_target_modules"] == [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ]
         assert loaded["config"]["lora_use_rslora"] is True
         assert loaded["adapter_hash"] == "def456" * 10 + "defg"
         assert "timestamp" in loaded

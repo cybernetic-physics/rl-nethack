@@ -4,6 +4,12 @@ CLI entry point for the rl-nethack training pipeline.
 
 Subcommands:
   generate    -- Generate training data from NLE gameplay
+  generate-long-sequences -- Generate long-history next-action data from NLE gameplay
+  convert-long-sequences -- Convert episode-style JSONL into long-history next-action data
+  import-nld-long-sequences -- Import registered NLD/ttyrec games into long-history next-action data
+  evaluate-long-sequences -- Evaluate exact next-action match on long-sequence JSONL
+  build-long-sequence-benchmark -- Materialize a deterministic held-out benchmark shard
+  compare-long-sequence-evals -- Compare multiple long-sequence evaluation reports
   report      -- Run a game and produce HTML + text reports
   evaluate    -- Evaluate model prediction accuracy
   task-evaluate -- Evaluate task-directed control policies
@@ -74,6 +80,198 @@ def cmd_generate(args):
     if stats['eval_path']:
         print(f"  Eval file:      {stats['eval_path']}")
 
+    return 0
+
+
+def cmd_generate_long_sequences(args):
+    """Generate long-history next-action training data."""
+    from src.long_sequence_dataset import generate_long_sequence_dataset, generate_long_sequence_dataset_multi_budget
+    from src.state_encoder import StateEncoder
+
+    encoder = StateEncoder()
+    eval_path = args.eval_output if args.eval_output else None
+    eval_fraction = args.eval_fraction if eval_path else 0.0
+    context_budgets = [int(part) for part in args.context_budgets.split(",") if part.strip()]
+    use_multi_budget = len(context_budgets) > 1
+
+    print(f"Generating {args.num_games} long-sequence games (max {args.max_steps} steps each)...")
+    print(f"  Seed range:         {args.seed_start} .. {args.seed_start + args.num_games - 1}")
+    if use_multi_budget:
+        print(f"  Context budgets:    {context_budgets}")
+    else:
+        print(f"  Max context tokens: {args.max_context_tokens}")
+    print(f"  Board mode:         {args.board_mode}")
+    print(f"  Persist dual views: {args.persist_dual_views}")
+    print(f"  Training output:    {args.output}")
+    if eval_path:
+        print(f"  Eval output:        {eval_path} (fraction={eval_fraction})")
+
+    if use_multi_budget:
+        stats = generate_long_sequence_dataset_multi_budget(
+            output_path=args.output,
+            num_games=args.num_games,
+            max_steps=args.max_steps,
+            seed_start=args.seed_start,
+            encoder=encoder,
+            context_budgets=context_budgets,
+            board_mode=args.board_mode,
+            persist_dual_views=args.persist_dual_views,
+            eval_path=eval_path,
+            eval_fraction=eval_fraction,
+            reserve_output_tokens=args.reserve_output_tokens,
+            source=args.source,
+        )
+    else:
+        stats = generate_long_sequence_dataset(
+            output_path=args.output,
+            num_games=args.num_games,
+            max_steps=args.max_steps,
+            seed_start=args.seed_start,
+            encoder=encoder,
+            max_context_tokens=args.max_context_tokens,
+            board_mode=args.board_mode,
+            persist_dual_views=args.persist_dual_views,
+            eval_path=eval_path,
+            eval_fraction=eval_fraction,
+            reserve_output_tokens=args.reserve_output_tokens,
+            source=args.source,
+        )
+
+    print()
+    print("Long-sequence generation complete:")
+    print(f"  Total games:        {stats['total_games']}")
+    print(f"  Total examples:     {stats['total_examples']}")
+    print(f"  Train examples:     {stats['train_examples']}")
+    print(f"  Eval examples:      {stats['eval_examples']}")
+    if use_multi_budget:
+        print(f"  Context budgets:    {stats['context_budgets']}")
+    else:
+        print(f"  Context bucket:     {stats['context_bucket']}")
+    print(f"  Train file:         {stats['train_path']}")
+    if stats["eval_path"]:
+        print(f"  Eval file:          {stats['eval_path']}")
+    return 0
+
+
+def cmd_convert_long_sequences(args):
+    """Convert an episode-style JSONL corpus into long-sequence next-action data."""
+    from src.long_sequence_dataset import convert_episode_jsonl_to_long_sequence_dataset
+    from src.state_encoder import StateEncoder
+
+    encoder = StateEncoder()
+    print(f"Converting {args.input} to long-sequence format...")
+    print(f"  Output:             {args.output}")
+    print(f"  Max context tokens: {args.max_context_tokens}")
+    print(f"  Board mode:         {args.board_mode}")
+    print(f"  Persist dual views: {args.persist_dual_views}")
+    result = convert_episode_jsonl_to_long_sequence_dataset(
+        args.input,
+        args.output,
+        encoder=encoder,
+        max_context_tokens=args.max_context_tokens,
+        board_mode=args.board_mode,
+        persist_dual_views=args.persist_dual_views,
+        reserve_output_tokens=args.reserve_output_tokens,
+        source=args.source,
+    )
+    print()
+    print("Conversion complete:")
+    print(f"  Episodes:       {result['episodes']}")
+    print(f"  Examples:       {result['examples']}")
+    print(f"  Context bucket: {result['context_bucket']}")
+    print(f"  Output:         {result['output_path']}")
+    return 0
+
+
+def cmd_evaluate_long_sequences(args):
+    """Evaluate exact next-action match on long-sequence JSONL."""
+    from src.long_sequence_eval import evaluate_long_sequence_dataset
+
+    result = evaluate_long_sequence_dataset(
+        args.input,
+        server_url=args.server_url,
+        model_name=args.model_name,
+        max_examples=args.max_examples,
+    )
+    if not result["server_available"]:
+        print()
+        print(f"WARNING: Server not available at {args.server_url}")
+        return 0
+    print(json.dumps(result["summary"], indent=2))
+    return 0
+
+
+def cmd_import_nld_long_sequences(args):
+    """Import NLD / ttyrec games into long-sequence next-action data."""
+    from src.nld_long_sequence_import import import_nld_to_long_sequence_dataset
+    from src.state_encoder import StateEncoder
+
+    encoder = StateEncoder()
+    print(f"Importing NLD dataset {args.dataset_name} into long-sequence format...")
+    print(f"  Output:             {args.output}")
+    print(f"  DB:                 {args.dbfilename}")
+    if args.root_path:
+        print(f"  Root path:          {args.root_path} ({args.dataset_type})")
+    print(f"  Max games:          {args.max_games}")
+    print(f"  Wins only:          {args.wins_only}")
+    print(f"  Min turns:          {args.min_turns}")
+    print(f"  Min maxlvl:         {args.min_maxlvl}")
+    print(f"  Max context tokens: {args.max_context_tokens}")
+
+    result = import_nld_to_long_sequence_dataset(
+        output_path=args.output,
+        dataset_name=args.dataset_name,
+        encoder=encoder,
+        dbfilename=args.dbfilename,
+        root_path=args.root_path,
+        dataset_type=args.dataset_type,
+        max_games=args.max_games,
+        wins_only=args.wins_only,
+        min_turns=args.min_turns,
+        min_maxlvl=args.min_maxlvl,
+        rows=args.rows,
+        cols=args.cols,
+        seq_length=args.seq_length,
+        max_steps_per_game=args.max_steps_per_game,
+        max_context_tokens=args.max_context_tokens,
+        reserve_output_tokens=args.reserve_output_tokens,
+        source=args.source,
+    )
+    print()
+    print("NLD import complete:")
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_build_long_sequence_benchmark(args):
+    """Build a deterministic benchmark shard from a long-sequence corpus."""
+    from src.long_sequence_benchmark import build_benchmark_from_path
+
+    result = build_benchmark_from_path(
+        args.input,
+        args.output,
+        per_bucket=args.per_bucket,
+        per_phase=args.per_phase,
+        per_action_family=args.per_action_family,
+    )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_compare_long_sequence_evals(args):
+    """Compare multiple long-sequence evaluation reports."""
+    from src.long_sequence_compare import compare_eval_report_paths, save_compare_report
+
+    named_paths = []
+    for item in args.inputs:
+        if "=" not in item:
+            raise ValueError(f"Expected name=path, got {item!r}")
+        name, path = item.split("=", 1)
+        named_paths.append((name, path))
+    result = compare_eval_report_paths(named_paths)
+    if args.output:
+        save_compare_report(result, args.output)
+    print(json.dumps(result, indent=2))
     return 0
 
 
@@ -1340,6 +1538,110 @@ def main():
     p_gen.add_argument('--eval-fraction', type=float, default=0.2,
                        help='Fraction of games for eval split (default: 0.2)')
 
+    p_long = subparsers.add_parser('generate-long-sequences', help='Generate long-history next-action data from NLE gameplay')
+    p_long.add_argument('--num-games', type=int, default=100,
+                        help='Number of games to play (default: 100)')
+    p_long.add_argument('--max-steps', type=int, default=200,
+                        help='Maximum steps per game (default: 200)')
+    p_long.add_argument('--seed-start', type=int, default=0,
+                        help='Starting random seed (default: 0)')
+    p_long.add_argument('--output', type=str, default='data/long_sequence_train.jsonl',
+                        help='Output path for training JSONL')
+    p_long.add_argument('--eval-output', type=str, default=None,
+                        help='Output path for eval JSONL (optional)')
+    p_long.add_argument('--eval-fraction', type=float, default=0.2,
+                        help='Fraction of games for eval split (default: 0.2)')
+    p_long.add_argument('--max-context-tokens', type=int, default=128_000,
+                        help='Approximate context budget used to trim history windows')
+    p_long.add_argument('--context-budgets', type=str, default='128000',
+                        help='Comma-separated context budgets for mixed-length generation, e.g. 128000,256000,512000')
+    p_long.add_argument('--reserve-output-tokens', type=int, default=16,
+                        help='Reserved assistant-token budget during history packing')
+    p_long.add_argument('--board-mode', type=str, default='tokenized', choices=['tokenized', 'ascii'],
+                        help='Board serialization mode for each turn')
+    p_long.add_argument('--persist-dual-views', action='store_true',
+                        help='Persist both tokenized and exact ASCII board views on each example when raw observations are present')
+    p_long.add_argument('--source', type=str, default='nle_generated',
+                        help='Metadata source label stored in examples')
+
+    p_convert = subparsers.add_parser('convert-long-sequences', help='Convert episode-style JSONL into long-history next-action data')
+    p_convert.add_argument('--input', type=str, required=True,
+                           help='Input episode-style JSONL file')
+    p_convert.add_argument('--output', type=str, required=True,
+                           help='Output long-sequence JSONL file')
+    p_convert.add_argument('--max-context-tokens', type=int, default=128_000,
+                           help='Approximate context budget used to trim history windows')
+    p_convert.add_argument('--reserve-output-tokens', type=int, default=16,
+                           help='Reserved assistant-token budget during history packing')
+    p_convert.add_argument('--board-mode', type=str, default='tokenized', choices=['tokenized', 'ascii'],
+                           help='Board serialization mode when raw observations are present')
+    p_convert.add_argument('--persist-dual-views', action='store_true',
+                           help='Persist both tokenized and exact ASCII board views when raw observations are present')
+    p_convert.add_argument('--source', type=str, default='external_jsonl',
+                           help='Metadata source label stored in examples')
+
+    p_nld = subparsers.add_parser('import-nld-long-sequences', help='Import registered NLD/ttyrec games into long-history next-action data')
+    p_nld.add_argument('--dataset-name', type=str, required=True,
+                       help='Registered NLD dataset name')
+    p_nld.add_argument('--output', type=str, required=True,
+                       help='Output long-sequence JSONL file')
+    p_nld.add_argument('--dbfilename', type=str, default='ttyrecs.db',
+                       help='SQLite metadata DB used by nle.dataset')
+    p_nld.add_argument('--root-path', type=str, default=None,
+                       help='Optional dataset root to register before import')
+    p_nld.add_argument('--dataset-type', type=str, default='altorg', choices=['altorg', 'nledata'],
+                       help='How to register --root-path if provided')
+    p_nld.add_argument('--max-games', type=int, default=None,
+                       help='Optional cap on selected games')
+    p_nld.add_argument('--wins-only', action='store_true',
+                       help='Only import games inferred to be wins / ascensions')
+    p_nld.add_argument('--min-turns', type=int, default=0,
+                       help='Minimum total turns per selected game')
+    p_nld.add_argument('--min-maxlvl', type=int, default=0,
+                       help='Minimum max dungeon level reached per selected game')
+    p_nld.add_argument('--rows', type=int, default=24,
+                       help='Terminal rows for TtyrecDataset decode')
+    p_nld.add_argument('--cols', type=int, default=80,
+                       help='Terminal cols for TtyrecDataset decode')
+    p_nld.add_argument('--seq-length', type=int, default=64,
+                       help='Frames per minibatch when iterating TtyrecDataset')
+    p_nld.add_argument('--max-steps-per-game', type=int, default=None,
+                       help='Optional cap on decoded actions per game')
+    p_nld.add_argument('--max-context-tokens', type=int, default=128_000,
+                       help='Approximate context budget used to trim history windows')
+    p_nld.add_argument('--reserve-output-tokens', type=int, default=16,
+                       help='Reserved assistant-token budget during history packing')
+    p_nld.add_argument('--source', type=str, default=None,
+                       help='Override metadata source label stored in examples')
+
+    p_long_eval = subparsers.add_parser('evaluate-long-sequences', help='Evaluate exact next-action match on long-sequence JSONL')
+    p_long_eval.add_argument('--input', type=str, required=True,
+                             help='Input long-sequence JSONL file')
+    p_long_eval.add_argument('--server-url', type=str, default='http://127.0.0.1:8765',
+                             help='OpenAI-compatible server URL')
+    p_long_eval.add_argument('--model-name', type=str, default='llama-server',
+                             help='Served model name')
+    p_long_eval.add_argument('--max-examples', type=int, default=None,
+                             help='Optional cap on evaluation examples')
+
+    p_long_bench = subparsers.add_parser('build-long-sequence-benchmark', help='Materialize a deterministic held-out benchmark shard')
+    p_long_bench.add_argument('--input', type=str, required=True,
+                              help='Input long-sequence JSONL file')
+    p_long_bench.add_argument('--output', type=str, required=True,
+                              help='Output benchmark JSONL file')
+    p_long_bench.add_argument('--per-bucket', type=int, default=32,
+                              help='Max rows per context bucket')
+    p_long_bench.add_argument('--per-phase', type=int, default=32,
+                              help='Max rows per game phase')
+    p_long_bench.add_argument('--per-action-family', type=int, default=32,
+                              help='Max rows per action family')
+
+    p_long_compare = subparsers.add_parser('compare-long-sequence-evals', help='Compare multiple long-sequence evaluation reports')
+    p_long_compare.add_argument('--inputs', type=str, nargs='+', required=True,
+                                help='Evaluation reports as name=path pairs')
+    p_long_compare.add_argument('--output', type=str, default=None,
+                                help='Optional output JSON path')
+
     # --- report ---
     p_rep = subparsers.add_parser('report', help='Run a game and generate reports')
     p_rep.add_argument('--seed', type=int, default=42,
@@ -1988,6 +2290,18 @@ def main():
     try:
         if args.command == 'generate':
             return cmd_generate(args)
+        elif args.command == 'generate-long-sequences':
+            return cmd_generate_long_sequences(args)
+        elif args.command == 'convert-long-sequences':
+            return cmd_convert_long_sequences(args)
+        elif args.command == 'import-nld-long-sequences':
+            return cmd_import_nld_long_sequences(args)
+        elif args.command == 'evaluate-long-sequences':
+            return cmd_evaluate_long_sequences(args)
+        elif args.command == 'build-long-sequence-benchmark':
+            return cmd_build_long_sequence_benchmark(args)
+        elif args.command == 'compare-long-sequence-evals':
+            return cmd_compare_long_sequence_evals(args)
         elif args.command == 'report':
             return cmd_report(args)
         elif args.command == 'evaluate':
