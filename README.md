@@ -134,7 +134,6 @@ cli.py                     CLI: generate, report, evaluate, manifest, smoke-test
 train.py                   Unsloth LoRA training (GPU required)
 pyproject.toml             uv project definition and dependency groups
 uv.lock                    Locked dependency resolution for reproducible setup
-.gitattributes             Git LFS tracking rules for datasets
 docker-compose.yml         Local Docker Compose training job with GPU access
 docs/consolidated-2026-04/ Consolidated research, architecture, eval, lit review, and operator docs
 docs/archive/root-history/ Historical markdown trail moved out of the project root
@@ -142,11 +141,33 @@ docs/archive/root-history/ Historical markdown trail moved out of the project ro
 
 ## Quick Start
 
+### Artifact Storage
+
+This source repo should stay small and should not rely on Git LFS for datasets
+or checkpoints.
+
+Canonical artifact remotes:
+
+- datasets: `https://huggingface.co/datasets/lmc7150/rl-nethack-data`
+- models: `https://huggingface.co/lmc7150/rl-nethack-models`
+
+Rules:
+
+- keep code, configs, and docs in this git repo
+- push datasets, manifests, sqlite metadata, and benchmark shards to the HF dataset repo
+- push adapters, checkpoints, eval reports, and training artifacts to the HF model repo
+- do not add new large `data/` or `output/` artifacts directly to the source repo
+- do not reintroduce Git LFS tracking in the source repo
+
+Local helper scripts:
+
+- `scripts/push_hf_data.sh`
+- `scripts/push_hf_models.sh`
+
 ### Requirements
 
 - Python 3.10+
 - `uv`
-- `git-lfs` if you want dataset files to round-trip cleanly through Git
 - [NLE](https://github.com/heuritech/nle) (NetHack Learning Environment)
 - Docker (for AutoAscend traces)
 - For training: CUDA GPU, [Unsloth](https://github.com/unslothai/unsloth), TRL, PEFT
