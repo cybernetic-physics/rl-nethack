@@ -9,6 +9,8 @@ __pycache__/
 unsloth_compiled_cache/
 output/
 data/
+hf-data/
+hf-models/
 *.egg-info/
 *.ttyrec*
 nle.ttyrec*
