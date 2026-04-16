@@ -1,292 +1,336 @@
 # rl-nethack
 
-NetHack RL research: LLM agents, expert trace capture, and LoRA fine-tuning for local GPU machines.
+NetHack research repo spanning three active directions:
 
-## Current Orientation
+- offline teacher building from explicit trace data
+- APPO-style online improvement with teacher constraints
+- long-context next-action SFT on rolling game histories
 
-If you are trying to understand the repo as it exists now, start with the consolidated docs:
+As of 2026-04-16, this is no longer just a small forward-model project. The repo contains a real RL stack under `rl/`, a long-sequence data and evaluation path under `src/`, and the earlier forward-model tooling remains available as a secondary path.
 
-- [docs/consolidated-2026-04/README.md](/home/luc/rl-nethack-worktree-20260416/docs/consolidated-2026-04/README.md)
-- [docs/consolidated-2026-04/07-operator-quickstart.md](/home/luc/rl-nethack-worktree-20260416/docs/consolidated-2026-04/07-operator-quickstart.md)
+## Problem
 
-Those docs summarize the committed markdown trail and preserve citations back to the original reports, plans, handoffs, and research notes.
+The repo is trying to solve a specific NetHack research problem:
 
-Important current status:
+- build strong local teachers from traces, long-context supervision, and auxiliary models
+- use those teachers to improve a learned online policy
+- do that under a benchmark that is stable enough to trust
 
-- the repo now has a real APPO backend, a strong offline teacher path, a world-model representation path, and a trusted deterministic trace benchmark
-- the main open problem is no longer infrastructure
-- the main open problem is teacher-constrained online improvement without drift
+What is solved well enough to work with:
 
-The strongest broad conclusions are synthesized in:
+- offline teacher construction
+- trace generation and deterministic trace evaluation
+- BC, world-model, reward-model, scheduler-model, and APPO plumbing
+- long-history next-action dataset building and LoRA training
 
-- [docs/consolidated-2026-04/03-experimental-timeline.md](/home/luc/rl-nethack-worktree-20260416/docs/consolidated-2026-04/03-experimental-timeline.md)
-- [docs/consolidated-2026-04/04-evaluation-and-benchmarks.md](/home/luc/rl-nethack-worktree-20260416/docs/consolidated-2026-04/04-evaluation-and-benchmarks.md)
-- [docs/consolidated-2026-04/05-blockers-and-next-steps.md](/home/luc/rl-nethack-worktree-20260416/docs/consolidated-2026-04/05-blockers-and-next-steps.md)
+What is still not solved:
 
-Important benchmark warning:
+- online improvement that beats the strongest teacher without drifting off the teacher manifold
 
-- do not use live seeded evaluation as the main promotion gate
-- use deterministic held-out trace match instead
-- do not compare numbers across different trace / representation regimes unless the benchmark setup matches
+## Start Here
 
-## What's Here
+Read these first if you want the current state of the project rather than the historical root markdown trail:
 
-### AutoAscend Expert Trace Capture (`autoascend_traces/`)
+- [docs/consolidated-2026-04/README.md](docs/consolidated-2026-04/README.md)
+- [docs/consolidated-2026-04/02-system-architecture.md](docs/consolidated-2026-04/02-system-architecture.md)
+- [docs/consolidated-2026-04/04-evaluation-and-benchmarks.md](docs/consolidated-2026-04/04-evaluation-and-benchmarks.md)
+- [docs/consolidated-2026-04/05-blockers-and-next-steps.md](docs/consolidated-2026-04/05-blockers-and-next-steps.md)
+- [docs/consolidated-2026-04/07-operator-quickstart.md](docs/consolidated-2026-04/07-operator-quickstart.md)
 
-Capture step-by-step gameplay traces from [AutoAscend](https://github.com/maciej-sypetkowski/autoascend), a classical NetHack bot that explores dungeons, fights monsters, and descends stairs. These traces serve as expert demonstrations for training or evaluating LLM agents.
+Two recent repo-local notes matter for the current long-context branch:
 
-```bash
-cd autoascend_traces/
+- [LONG-CONTEXT-QWEN-1M-PLAN-2026-04-16.md](LONG-CONTEXT-QWEN-1M-PLAN-2026-04-16.md)
+- [LONG-CONTEXT-NLD-TRAINING-RESULTS-2026-04-16.md](LONG-CONTEXT-NLD-TRAINING-RESULTS-2026-04-16.md)
 
-# Build the Docker image (Ubuntu 20.04, NLE v0.7.3, no GPU needed)
-docker build -f Dockerfile.light -t autoascend .
+## Current Status
 
-# Run 3 games x 2000 steps
-docker run --rm -v $(pwd)/output:/output autoascend
+Current high-level picture:
 
-# Output: output/autoascend_traces.json
+- the repo has working offline teacher, world-model, proxy-reward, and APPO infrastructure
+- deterministic trace evaluation is the trusted short-loop gate
+- the main unsolved problem is teacher-constrained online improvement without drift
+- the newest text-policy direction is long-history next-action prediction, not short-context delta prediction
+
+Current long-context status from committed notes on 2026-04-16:
+
+- the repo can build and train on long-sequence next-action corpora
+- a `Qwen/Qwen2.5-14B-Instruct-1M` LoRA run completed successfully at `32k` context on `4x H200`
+- the same trainer path did not fit `64k` context in that configuration
+- the larger NLD-trained adapter changed online action behavior, but did not yet beat the earlier medium bootstrap adapter on the short live harness
+
+## Evaluation Rule
+
+Do not use live seeded evaluation as the main promotion gate.
+
+The trusted gate in this repo is:
+
+- deterministic held-out trace match
+
+That is the main evaluation policy reflected in the consolidated docs and the RL tooling.
+
+## Which Files Matter
+
+If you are changing code, these are the files most likely to matter:
+
+- [cli.py](/home/luc/rl-nethack-worktree-20260416/cli.py): main operator surface and subcommand wiring
+- [README.md](/home/luc/rl-nethack-worktree-20260416/README.md): top-level repo orientation
+- [pyproject.toml](/home/luc/rl-nethack-worktree-20260416/pyproject.toml): dependency groups and Python version
+- [docs/consolidated-2026-04/07-operator-quickstart.md](/home/luc/rl-nethack-worktree-20260416/docs/consolidated-2026-04/07-operator-quickstart.md): shortest current workflow doc
+
+For long-context data and text-policy work:
+
+- [src/long_sequence_dataset.py](/home/luc/rl-nethack-worktree-20260416/src/long_sequence_dataset.py)
+- [src/long_sequence_corpus.py](/home/luc/rl-nethack-worktree-20260416/src/long_sequence_corpus.py)
+- [src/long_sequence_eval.py](/home/luc/rl-nethack-worktree-20260416/src/long_sequence_eval.py)
+- [src/long_sequence_benchmark.py](/home/luc/rl-nethack-worktree-20260416/src/long_sequence_benchmark.py)
+- [src/nld_long_sequence_import.py](/home/luc/rl-nethack-worktree-20260416/src/nld_long_sequence_import.py)
+- [train.py](/home/luc/rl-nethack-worktree-20260416/train.py)
+- [train_preferences.py](/home/luc/rl-nethack-worktree-20260416/train_preferences.py)
+- [train_kto.py](/home/luc/rl-nethack-worktree-20260416/train_kto.py)
+- [scripts/start_vllm_qwen_1m_server.sh](/home/luc/rl-nethack-worktree-20260416/scripts/start_vllm_qwen_1m_server.sh)
+
+For traces, BC teachers, and trace evaluation:
+
+- [rl/traces.py](/home/luc/rl-nethack-worktree-20260416/rl/traces.py)
+- [rl/train_bc.py](/home/luc/rl-nethack-worktree-20260416/rl/train_bc.py)
+- [rl/evaluate_bc.py](/home/luc/rl-nethack-worktree-20260416/rl/evaluate_bc.py)
+- [rl/trace_eval.py](/home/luc/rl-nethack-worktree-20260416/rl/trace_eval.py)
+- [rl/debug_tools.py](/home/luc/rl-nethack-worktree-20260416/rl/debug_tools.py)
+- [rl/teacher_report.py](/home/luc/rl-nethack-worktree-20260416/rl/teacher_report.py)
+
+For online RL:
+
+- [rl/train_appo.py](/home/luc/rl-nethack-worktree-20260416/rl/train_appo.py)
+- [rl/trainer.py](/home/luc/rl-nethack-worktree-20260416/rl/trainer.py)
+- [rl/config.py](/home/luc/rl-nethack-worktree-20260416/rl/config.py)
+- [rl/sf_env.py](/home/luc/rl-nethack-worktree-20260416/rl/sf_env.py)
+- [rl/env_adapter.py](/home/luc/rl-nethack-worktree-20260416/rl/env_adapter.py)
+- [rl/teacher_reg.py](/home/luc/rl-nethack-worktree-20260416/rl/teacher_reg.py)
+- [rl/evaluate.py](/home/luc/rl-nethack-worktree-20260416/rl/evaluate.py)
+- [rl/bootstrap.py](/home/luc/rl-nethack-worktree-20260416/rl/bootstrap.py)
+
+For world-model, reward, proxy, and scheduler branches:
+
+- [rl/train_world_model.py](/home/luc/rl-nethack-worktree-20260416/rl/train_world_model.py)
+- [rl/world_model.py](/home/luc/rl-nethack-worktree-20260416/rl/world_model.py)
+- [rl/world_model_eval.py](/home/luc/rl-nethack-worktree-20260416/rl/world_model_eval.py)
+- [rl/proxy_dataset.py](/home/luc/rl-nethack-worktree-20260416/rl/proxy_dataset.py)
+- [rl/train_proxy_model.py](/home/luc/rl-nethack-worktree-20260416/rl/train_proxy_model.py)
+- [rl/proxy_eval.py](/home/luc/rl-nethack-worktree-20260416/rl/proxy_eval.py)
+- [rl/train_reward_model.py](/home/luc/rl-nethack-worktree-20260416/rl/train_reward_model.py)
+- [rl/train_scheduler.py](/home/luc/rl-nethack-worktree-20260416/rl/train_scheduler.py)
+
+For the older forward-model/reporting path:
+
+- [src/state_encoder.py](/home/luc/rl-nethack-worktree-20260416/src/state_encoder.py)
+- [src/data_generator.py](/home/luc/rl-nethack-worktree-20260416/src/data_generator.py)
+- [src/evaluator.py](/home/luc/rl-nethack-worktree-20260416/src/evaluator.py)
+- [src/reporter.py](/home/luc/rl-nethack-worktree-20260416/src/reporter.py)
+- [generate_demo_report.py](/home/luc/rl-nethack-worktree-20260416/generate_demo_report.py)
+- [smoke_test.py](/home/luc/rl-nethack-worktree-20260416/smoke_test.py)
+
+For AutoAscend expert capture:
+
+- [autoascend_traces/run_with_trace.py](/home/luc/rl-nethack-worktree-20260416/autoascend_traces/run_with_trace.py)
+- [autoascend_traces/trace_recorder.py](/home/luc/rl-nethack-worktree-20260416/autoascend_traces/trace_recorder.py)
+- [autoascend_traces/patch_nle.py](/home/luc/rl-nethack-worktree-20260416/autoascend_traces/patch_nle.py)
+- [autoascend_traces/Dockerfile.light](/home/luc/rl-nethack-worktree-20260416/autoascend_traces/Dockerfile.light)
+- [references/README.md](/home/luc/rl-nethack-worktree-20260416/references/README.md)
+
+## Main Code Paths
+
+### 1. Long-context next-action SFT
+
+This is the newest main text-policy direction.
+
+- `src/long_sequence_dataset.py`: builds rolling-history ShareGPT-style next-action data
+- `src/long_sequence_corpus.py`: compiles token-budgeted mixed corpora
+- `src/long_sequence_eval.py`: exact next-action evaluation on long-sequence JSONL
+- `src/long_sequence_benchmark.py`: deterministic benchmark shard builder
+- `train.py`: LoRA SFT, including metadata filtering, weighted SFT, and native curriculum support
+- `train_preferences.py`: pairwise preference LoRA training
+- `train_kto.py`: KTO-style LoRA training
+
+The training target here is:
+
+- long serialized game history -> next action
+
+not:
+
+- state + action -> delta
+
+### 2. Explicit traces and offline teacher training
+
+This is still the strongest policy-building substrate in the repo.
+
+- `rl/traces.py`: multi-turn trace generation
+- `rl/train_bc.py`: behavior cloning from traces
+- `rl/relabel_traces.py`: relabel traces with a BC teacher
+- `rl/trace_eval.py`: deterministic trace-match evaluation
+- `rl/teacher_report.py`: teacher and checkpoint reports
+
+### 3. APPO online improvement
+
+This is the real RL stack under `rl/`.
+
+- `rl/train_appo.py`: APPO entrypoint
+- `rl/trainer.py`: trainer scaffold
+- `rl/sf_env.py`, `rl/env_adapter.py`: environment and Sample Factory integration
+- `rl/teacher_reg.py`: teacher-aware online losses and replay
+- `rl/evaluate.py`: live policy evaluation
+
+### 4. World-model and proxy branches
+
+These are implemented and used as support paths rather than the main answer by themselves.
+
+- `rl/train_world_model.py`, `rl/world_model.py`, `rl/world_model_eval.py`
+- `rl/proxy_dataset.py`, `rl/train_proxy_model.py`, `rl/proxy_eval.py`
+- `rl/train_reward_model.py`, `rl/train_scheduler.py`
+
+### 5. Earlier forward-model path
+
+The original short-context forward-model tooling is still present.
+
+- `src/state_encoder.py`
+- `src/data_generator.py`
+- `src/evaluator.py`
+- `src/reporter.py`
+
+This path is still usable, but it is no longer the best description of the repo.
+
+## CLI Surface
+
+The main operator entrypoint is `cli.py`.
+
+Notable command families:
+
+- long-sequence data and eval: `generate-long-sequences`, `convert-long-sequences`, `import-nld-long-sequences`, `build-long-sequence-corpus`, `evaluate-long-sequences`, `build-long-sequence-benchmark`, `compare-long-sequence-evals`
+- RL and traces: `rl-generate-traces`, `rl-verify-traces`, `rl-train-bc`, `rl-evaluate-bc`, `rl-train-appo`, `rl-evaluate-appo`, `rl-rank-checkpoints`, `rl-teacher-reg-report`, `rl-run-dagger`, `rl-dagger-iterate`
+- world-model and proxy: `rl-train-world-model`, `rl-evaluate-world-model`, `rl-build-proxy-dataset`, `rl-train-proxy`, `rl-evaluate-proxy`
+- older baseline utilities: `generate`, `report`, `evaluate`, `manifest`, `golden-generate`, `golden-evaluate`, `smoke-test`
+
+## Repo Layout
+
+```text
+autoascend_traces/          AutoAscend trace capture and NLE compatibility patches
+docs/consolidated-2026-04/  Current durable docs and operator guidance
+docs/archive/root-history/  Historical reports, plans, and handoffs
+nle_agent/                  HTTP/text-policy agent code
+references/                 Papers and external-repo notes
+rl/                         APPO, BC, world-model, proxy-reward, trace-eval stack
+scripts/                    Launchers and dataset preparation scripts
+src/                        Long-sequence builders, forward-model utilities, reporting
+tests/                      472 collected tests in this worktree
+cli.py                      Main CLI entrypoint
+train.py                    LoRA SFT training
+train_preferences.py        Pairwise preference LoRA training
+train_kto.py                KTO-style LoRA training
 ```
 
-The captured traces include per-step: ASCII dungeon map, HP/max_hp, depth, position, action taken, game messages, kill events. Convert to the game viewer format and serve:
+## Install
 
-```bash
-# See scripts/ for conversion and viewer generation
-python3 -m http.server 8080 -d output/
-# Open autoascend_viewer.html in browser
-```
+Requirements:
 
-**Compatibility fixes applied** (see `fix_env_wrapper_gym_compat.patch`):
-- Legacy AutoAscend NetHackChallenge wrapper patched for deterministic seeding (`patch_nle.py`)
-- Core repo note: plain `nle.env.NLE().reset(seed=...)` is still not reproducible enough for trusted policy regression
-- gym>=0.21 `env._actions` -> `env.unwrapped._actions`
-- `seed()` takes 1 arg, not 2
-
-### LLM Agent (`nle_agent/`)
-
-An HTTP-based LLM agent that plays NetHack via NLE. Sends structured game state (HP, position, adjacent tiles, monsters, items) to a language model and receives action commands back.
-
-Supports multiple backends:
-- Local vLLM / OpenAI-compatible server
-- Local llama-server
-- OpenRouter API
-- Any OpenAI-compatible endpoint
-
-### Forward Model Training Pipeline
-
-Train a LoRA adapter to predict state deltas in NetHack -- not to play, but to learn game physics. A model that can predict what changes after an action has internalized the rules of the world.
-
-**Core insight: delta prediction.** Instead of predicting the full next state (90%+ identical to input), predict only what changed:
-
-```
-pos:(-1,0) | hp:-2 | gold:same | depth:same | alive:yes | msg:The newt bites!
-```
-
-This produces denser training signal, shorter sequences, and cleaner gradients.
-
-### Evaluation + Manifest
-
-The pipeline can generate training data, fine-tune a LoRA adapter, evaluate a model on held-out seeds, and build a manifest that records the model, dataset, adapter, and scores used for a run.
-
-### Current Local Benchmarks
-
-- Machine: 4x NVIDIA H200
-- Random data generation via `cli.py generate`: 1,000 examples in about 1.35s
-- LLM-policy data generation via vLLM on GPUs `0,1`: 5,000 examples in about 30s with `Qwen/Qwen2.5-0.5B-Instruct`
-- Improved local policy generation with `Qwen/Qwen2.5-3B-Instruct` and frontier-biased fallback:
-  - `1,000` samples in `9.04s` on one TP=2 vLLM server
-  - `1,000` samples in `8.09s` on two 1-GPU vLLM replicas
-  - `10,000` samples in `78.76s` on two replicas
-- Experimental in-process `vllm-batch` backend:
-  - `1,000` samples in `43.30s` end-to-end on 2 GPUs
-  - `10,000` samples in `111.20s` end-to-end on 2 GPUs
-  - Quality is acceptable, but on current settings it is slower than the replica-server path once startup is included
-- The earlier 5k `0.5B` dataset is still only a throughput baseline; the newer `3B` replica path is the first one with a reasonably balanced action mix.
-
-## Project Structure
-
-```
-autoascend_traces/        Expert bot trace capture (Docker + trace runner)
-  Dockerfile.light        Lightweight image, no GPU
-  run_with_trace.py       Monkey-patches agent.step() to record observations
-  trace_recorder.py       Writes JSON traces
-  patch_nle.py            Seeds the legacy NetHackChallenge wrapper deterministically
-  requirements.light.txt  Pinned deps (gym, NLE, torch, etc.)
-
-nle_agent/
-  agent_http.py           LLM agent with action map (direction names -> NLE indices)
-
-scripts/
-  generate_counterfactual_data.py   What-if analysis at combat moments
-  generate_training_data.py         LLM policy data generation -> ShareGPT JSONL
-  start_vllm_policy_server.sh       Start local vLLM policy server on GPUs 0,1
-  start_vllm_policy_replicas.sh     Start two 1-GPU vLLM replicas on GPUs 0 and 1
-
-src/
-  state_encoder.py        NLE obs -> structured features + delta encoding
-  data_generator.py       Random play -> training pairs
-  evaluator.py            Prediction accuracy scoring
-  reporter.py             HTML + text gameplay replays
-  manifest.py             Manifest builder (SHA256 hashes)
-  memory_tracker.py       Memory-augmented forward model training pairs
-
-tests/                     295 tests across 7 test files
-cli.py                     CLI: generate, report, evaluate, manifest, smoke-test
-train.py                   Unsloth LoRA training (GPU required)
-pyproject.toml             uv project definition and dependency groups
-uv.lock                    Locked dependency resolution for reproducible setup
-docker-compose.yml         Local Docker Compose training job with GPU access
-docs/consolidated-2026-04/ Consolidated research, architecture, eval, lit review, and operator docs
-docs/archive/root-history/ Historical markdown trail moved out of the project root
-```
-
-## Quick Start
-
-### Artifact Storage
-
-This source repo should stay small and should not rely on Git LFS for datasets
-or checkpoints.
-
-Canonical artifact remotes:
-
-- datasets: `https://huggingface.co/datasets/lmc7150/rl-nethack-data`
-- models: `https://huggingface.co/lmc7150/rl-nethack-models`
-
-Rules:
-
-- keep code, configs, and docs in this git repo
-- push datasets, manifests, sqlite metadata, and benchmark shards to the HF dataset repo
-- push adapters, checkpoints, eval reports, and training artifacts to the HF model repo
-- do not add new large `data/` or `output/` artifacts directly to the source repo
-- do not reintroduce Git LFS tracking in the source repo
-
-Local helper scripts:
-
-- `scripts/push_hf_data.sh`
-- `scripts/push_hf_models.sh`
-
-### Requirements
-
-- Python 3.10+
+- Python `>=3.10,<3.13`
 - `uv`
-- [NLE](https://github.com/heuritech/nle) (NetHack Learning Environment)
-- Docker (for AutoAscend traces)
-- For training: CUDA GPU, [Unsloth](https://github.com/unslothai/unsloth), TRL, PEFT
+- `nle==1.2.0`
+- CUDA GPUs for training or vLLM serving
+- Docker if you want the AutoAscend trace-capture path
 
-### Install
+Install only tests:
 
 ```bash
 uv sync --extra test
+```
 
-# For local GPU training:
-uv sync --extra train --extra test
+Install the usual full local stack:
 
-# For local GPU policy serving with vLLM:
-uv sync --extra serve
-
-# If you want training + serving tools in one env:
+```bash
 uv sync --extra train --extra test --extra serve
 ```
 
-### Smoke Test (no GPU needed)
+The APPO backend is bootstrapped on demand by `rl/bootstrap.py` because upstream `sample-factory` packaging does not align cleanly with the working `nle==1.2.0` environment.
+
+If you want the containerized legacy forward-model path instead of a local env:
+
+```bash
+docker compose up
+```
+
+That uses [docker-compose.yml](/home/luc/rl-nethack-worktree-20260416/docker-compose.yml) to generate baseline data, run `train.py`, and emit a manifest.
+
+## First Validation
 
 ```bash
 uv run python cli.py smoke-test
+uv run pytest -q tests/test_rl_scaffold.py
 ```
 
-### Generate Random Forward-Model Data
+Those are the fastest useful sanity checks for the baseline repo path and the RL/world-model/proxy scaffold.
+
+You can also run the standalone reporter smoke script directly:
 
 ```bash
-uv run python cli.py generate --num-games 200 --max-steps 50 --output data/train.jsonl
+uv run python smoke_test.py
 ```
 
-This generates one supervised training example per environment step for the
-forward model. These are single-step examples, but they are collected from
-multi-turn episodes.
-
-### Generate LLM-Policy Data at High Throughput
-
-Preferred path: serve two 1-GPU replicas on GPUs `0,1`:
+And generate the interactive HTML replay demo with:
 
 ```bash
-./scripts/start_vllm_policy_replicas.sh Qwen/Qwen2.5-3B-Instruct
+uv run python generate_demo_report.py
 ```
 
-Then run concurrent local policy generation against both replicas:
+## Quick Starts
+
+### Long-sequence smoke corpus from live NLE rollouts
 
 ```bash
-uv run python scripts/generate_training_data.py \
-  --backend vllm \
-  --model Qwen/Qwen2.5-3B-Instruct \
-  --server-url http://127.0.0.1:8000/v1,http://127.0.0.1:8001/v1 \
-  --num-games 200 \
-  --max-steps 50 \
-  --workers 64 \
-  --cooldown 0
+uv run python cli.py generate-long-sequences \
+  --num-games 6 \
+  --max-steps 1024 \
+  --seed-start 2000 \
+  --output data/long_bootstrap/long_sequence_train.jsonl \
+  --eval-output data/long_bootstrap/long_sequence_eval.jsonl \
+  --eval-fraction 0.2 \
+  --max-context-tokens 65536 \
+  --board-mode tokenized \
+  --persist-dual-views \
+  --source long_bootstrap_nle
 ```
 
-If you want the older single-server path instead, serve one TP=2 instance on GPUs `0,1`:
+Build a deterministic benchmark shard:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 ./scripts/start_vllm_policy_server.sh Qwen/Qwen2.5-1.5B-Instruct
+uv run python cli.py build-long-sequence-benchmark \
+  --input data/long_bootstrap/long_sequence_eval.jsonl \
+  --output data/long_bootstrap/long_sequence_benchmark.jsonl \
+  --per-bucket 256 \
+  --per-phase 256 \
+  --per-action-family 256
 ```
 
-Then point generation at one server URL:
+Evaluate a served model on that benchmark:
 
 ```bash
-uv run python scripts/generate_training_data.py \
-  --backend vllm \
-  --model Qwen/Qwen2.5-3B-Instruct \
+uv run python cli.py evaluate-long-sequences \
+  --input data/long_bootstrap/long_sequence_benchmark.jsonl \
   --server-url http://127.0.0.1:8000/v1 \
-  --num-games 200 \
-  --max-steps 50 \
-  --workers 64 \
-  --cooldown 0
+  --model-name Qwen/Qwen2.5-14B-Instruct-1M
 ```
 
-This setup keeps GPUs `2,3` available for other work, including training.
+### Import NLD/ttyrec data into long-sequence format
 
-### Download And Process NLD-AA
-
-For the new long-context next-action training path, the best local supervised source is currently `NLD-AA`.
-
-The extracted `NLD-AA` layout is treated as `nle_data/...`, not `altorg`, so the processing flow is:
-
-1. download shard zips
-2. extract and register the local `nle_data` root
-3. import into the repo’s long-sequence JSONL format
-4. train a LoRA adapter on that imported corpus
-
-Download all `NLD-AA` shards:
+Register the extracted dataset root with the helper script:
 
 ```bash
-mkdir -p data/nld-aa
-for shard in aa ab ac ad ae af ag ah ai aj ak al am an ao ap; do
-  curl -L -C - -o "data/nld-aa/nld-aa-dir-${shard}.zip" \
-    "https://dl.fbaipublicfiles.com/nld/nld-aa/nld-aa-dir-${shard}.zip"
-done
-```
-
-Extract and register the local dataset root:
-
-```bash
-ZIP_ARGS=()
-for shard in aa ab ac ad ae af ag ah ai aj ak al am an ao ap; do
-  ZIP_ARGS+=(--zip "data/nld-aa/nld-aa-dir-${shard}.zip")
-done
-
 uv run python scripts/prepare_nld_dataset.py \
-  "${ZIP_ARGS[@]}" \
+  --zip data/nld-aa/nld-aa-dir-aa.zip \
   --extract-dir data/nld-aa/extracted \
   --dataset-name nld-aa-local \
   --register
 ```
 
-That creates a local `ttyrecs.db` registration for:
-
-- extracted root: `data/nld-aa/extracted/nle_data`
-- dataset name: `nld-aa-local`
-
-Import a bounded smoke shard first:
+Then import a bounded shard:
 
 ```bash
 uv run python cli.py import-nld-long-sequences \
@@ -300,41 +344,14 @@ uv run python cli.py import-nld-long-sequences \
   --source nld-aa-local
 ```
 
-Then scale to a larger training shard:
-
-```bash
-uv run python cli.py import-nld-long-sequences \
-  --dataset-name nld-aa-local \
-  --output data/nld-aa_long_sequences_train.jsonl \
-  --dbfilename ttyrecs.db \
-  --max-games 2048 \
-  --min-turns 1000 \
-  --min-maxlvl 5 \
-  --max-context-tokens 65536 \
-  --source nld-aa-local
-```
-
-If you want to mix that imported shard into the token-budgeted long-context corpus builder:
-
-```bash
-uv run python cli.py build-long-sequence-corpus \
-  --input data/nld-aa_long_sequences_train.jsonl \
-  --output data/nld-aa_long_sequences_train_mixed.jsonl \
-  --manifest-output data/nld-aa_long_sequences_train_mixed.manifest.json \
-  --target-tokens 1000000000
-```
-
-### Train On The New Long-Sequence Data
-
-The long-context path is next-action prediction on rolling histories, not delta prediction.
-
-Start with a small smoke run:
+### Long-context LoRA smoke train
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 uv run python train.py \
-  --model Qwen/Qwen2.5-14B-Instruct-1M \
-  --data data/nld-aa_long_sequences_smoke.jsonl \
-  --output output/qwen14b_nldaa_smoke \
+  --model Qwen/Qwen2.5-0.5B-Instruct \
+  --data data/long_bootstrap/long_sequence_train.jsonl \
+  --eval-data data/long_bootstrap/long_sequence_eval.jsonl \
+  --output output/long_bootstrap_qwen_0_5b_smoke256 \
   --max-seq-length 8192 \
   --batch-size 1 \
   --gradient-accumulation-steps 1 \
@@ -346,162 +363,62 @@ CUDA_VISIBLE_DEVICES=0 uv run python train.py \
   --warmup-steps 2 \
   --dataset-num-proc 1 \
   --dataloader-num-workers 0 \
-  --gradient-checkpointing
+  --gradient-checkpointing \
+  --max-train-examples 256 \
+  --max-eval-examples 64
 ```
 
-Then move to a larger single-node LoRA run:
+For the current 1M-context serving branch, launch vLLM with the repo script:
 
 ```bash
-MODEL=Qwen/Qwen2.5-14B-Instruct-1M \
-TRAIN_DATA=data/nld-aa_long_sequences_train.jsonl \
-EVAL_DATA=data/nld-aa_long_sequences_smoke.jsonl \
-OUTPUT=output/qwen14b_nldaa_long_lora \
-MAX_SEQ_LENGTH=65536 \
-GRAD_ACCUM=16 \
-DATASET_NUM_PROC=4 \
-DATALOADER_NUM_WORKERS=2 \
-bash scripts/train_qwen_1m_long_lora.sh
+./scripts/start_vllm_qwen_1m_server.sh
 ```
 
-If you want the native in-code curriculum instead of a flat run:
+That script reads optional settings from [scripts/qwen_1m_vllm.env.example](/home/luc/rl-nethack-worktree-20260416/scripts/qwen_1m_vllm.env.example) if you copy it to `scripts/qwen_1m_vllm.env`.
+
+For the older short-context policy-generation server:
 
 ```bash
-MODEL=Qwen/Qwen2.5-14B-Instruct-1M \
-TRAIN_DATA=data/nld-aa_long_sequences_train.jsonl \
-EVAL_DATA=data/nld-aa_long_sequences_smoke.jsonl \
-OUTPUT=output/qwen14b_nldaa_curriculum \
-bash scripts/train_qwen_1m_native_curriculum.sh
+./scripts/start_vllm_policy_server.sh Qwen/Qwen2.5-1.5B-Instruct
 ```
 
-Practical notes:
-
-- `ttyrecs.db` must exist before `add_nledata_directory(...)` can register the root; the prep script handles this for you.
-- `NLD-AA` metadata uses hex-like strings such as `0x0` for some fields; the importer now handles that.
-- Run a bounded smoke import and smoke train first before scaling to thousands of games.
-
-## Full Pipeline
-
-This section is the real operator guide.
-
-If you want to go from:
-
-1. data generation
-2. forward-model SFT
-3. trace generation
-4. reward / scheduler training
-5. behavior cloning
-6. APPO RL
-7. evaluation
-
-these are the commands to run, in order.
-
-There are now **three distinct training/data tracks** in this repo:
-
-- forward-model SFT
-- trace-based policy training / BC
-- APPO RL
-
-They are related, but they are not the same thing.
-
-### Mental Model
-
-Before the exact commands, here is the right way to think about the system.
-
-#### Track A: forward model
-
-This is trained by [train.py](/home/luc/rl-nethack/train.py).
-
-Input:
-
-- current state
-- chosen action
-
-Target:
-
-- predicted delta after the action
-
-This is the SFT path.
-
-It does **not** directly produce an RL policy. It produces a model that can
-predict what will happen next.
-
-#### Track B: traces
-
-This is the bridge between planning/SFT-style supervision and policy training.
-
-A trace file is a **multi-turn** episode export.
-
-Each row in a trace file contains:
-
-- `episode_id`
-- `step`
-- `task`
-- `action`
-- `allowed_actions`
-- `feature_vector`
-- `delta`
-- `reward`
-- `done`
-- hashes and planner metadata
-
-Important:
-
-- trace files are explicitly **multi-turn**
-- there is now a verifier command that checks this
-
-#### Track C: RL / policy training
-
-This is the APPO path under [rl/](/home/luc/rl-nethack/rl).
-
-This is now real learned RL:
-
-- rollout workers
-- recurrence
-- policy/value training
-- checkpoints
-
-The current best way to bootstrap that policy is:
-
-- generate good traces
-- optionally train BC from those traces
-- train reward / scheduler models
-- run APPO with masking and learned components
-
-
-## Stage 0: Environment Setup
-
-### Minimal install for docs/tests
+### Trace generation and BC teacher training
 
 ```bash
-uv sync --extra test
+uv run python cli.py rl-generate-traces \
+  --output data/pipeline_explore_traces_clean.jsonl \
+  --num-episodes 40 \
+  --max-steps 24 \
+  --task explore \
+  --policy task_greedy
+
+uv run python cli.py rl-verify-traces \
+  --input data/pipeline_explore_traces_clean.jsonl
+
+uv run python cli.py rl-train-bc \
+  --input data/pipeline_explore_traces_clean.jsonl \
+  --output output/pipeline_explore_bc.pt \
+  --epochs 25 \
+  --lr 0.001
 ```
 
-### Full install for training + serving + RL
+### APPO run with the repo scaffold
 
 ```bash
-uv sync --extra train --extra test --extra serve
+uv run python cli.py rl-train-appo \
+  --experiment appo_debug \
+  --train-dir train_dir/rl \
+  --train-for-env-steps 200000 \
+  --trace-eval-input data/pipeline_explore_traces_clean.jsonl \
+  --trace-eval-interval-env-steps 50000 \
+  --teacher-bc-path output/pipeline_explore_bc.pt
 ```
 
-What this gives you:
+Use short trace-gated runs first. Do not start with long blind reward sweeps.
 
-- `train.py` dependencies for LoRA SFT
-- test dependencies
-- vLLM serving dependencies
-- the project CLI
+### Older forward-model path
 
-The APPO backend itself is auto-bootstrapped on demand the first time you run:
-
-```bash
-uv run python cli.py rl-train-appo ...
-```
-
-because upstream `sample-factory` metadata conflicts with current `nle`
-packaging.
-
-
-## Stage 1: Generate Forward-Model Training Data
-
-This is the simplest path and does not require any model server.
+Generate delta-prediction training data:
 
 ```bash
 uv run python cli.py generate \
@@ -512,626 +429,80 @@ uv run python cli.py generate \
   --eval-fraction 0.2
 ```
 
-What this does:
-
-- plays `200` NetHack episodes
-- each episode is up to `50` steps
-- writes one JSONL row per step
-- each row is a ShareGPT-style conversation:
-  - system prompt
-  - user prompt with state + action
-  - assistant target with the delta
-
-This dataset is for SFT of the forward model.
-
-It is not a trace file for BC/RL.
-
-
-## Stage 2: Train The Forward Model With SFT
-
-Use all 4 H200s:
+Train the forward model:
 
 ```bash
 uv run torchrun --standalone --nproc_per_node=4 train.py \
   --model Qwen/Qwen2.5-3B-Instruct \
   --data data/train.jsonl \
   --eval-data data/eval.jsonl \
-  --output output/adapter \
-  --lora-rank 16 \
-  --lora-alpha 32 \
-  --lr 2e-4 \
-  --epochs 1 \
-  --batch-size 4 \
-  --gradient-accumulation-steps 2 \
-  --dataset-num-proc 8 \
-  --dataloader-num-workers 8
+  --output output/adapter
 ```
 
-Notes:
-
-- this is distributed LoRA training
-- default path is bf16 LoRA, not 4-bit, because this box has enough memory
-- output is a LoRA adapter directory, typically:
-  - `output/adapter`
-
-This SFT model is a **forward model**, not a policy.
-
-That means:
-
-- it can be evaluated on next-step prediction
-- it can be used as a teacher/planner for trace generation
-- it cannot be directly loaded into the APPO actor-critic as weights
-
-
-## Stage 3: Serve The Forward Model
-
-If you want to use the forward model during trace generation, you need to serve
-it.
-
-The repo’s evaluation and forward-model trace path expect an OpenAI-compatible
-chat endpoint.
-
-Example with your own server:
+Run a local replay/report:
 
 ```bash
-# Example only: use whatever OpenAI-compatible server you prefer
-# and point it at your trained adapter / merged model.
+uv run python cli.py report --seed 42 --max-steps 30 --output-dir output/report_seed_42
 ```
 
-The CLI assumes:
-
-- server URL like `http://127.0.0.1:8765`
-- chat endpoint at `/v1/chat/completions`
-
-You will use that server in:
-
-- `cli.py evaluate`
-- `cli.py golden-evaluate`
-- `cli.py rl-generate-traces --policy forward_model`
-
-
-## Stage 4: Evaluate The Forward Model
-
-Basic held-out evaluation:
+Evaluate against a served model:
 
 ```bash
 uv run python cli.py evaluate \
-  --seeds 500,501,502,503,504 \
+  --seeds 42,43,44 \
   --max-steps 20 \
-  --server-url http://127.0.0.1:8765
+  --server-url http://127.0.0.1:8000
 ```
 
-Golden debug evaluation:
+## Artifacts And Storage
+
+This source repo is intended to stay relatively small.
+
+Canonical remotes already used by the repo:
+
+- dataset artifacts: `https://huggingface.co/datasets/lmc7150/rl-nethack-data`
+- model artifacts: `https://huggingface.co/lmc7150/rl-nethack-models`
+
+Helper scripts:
+
+- `scripts/push_hf_data.sh`
+- `scripts/push_hf_models.sh`
+
+Keep code, configs, and docs here. Push larger datasets, checkpoints, manifests, and reports to the artifact remotes instead of growing the git repo.
+
+## Historical Material
+
+The old root markdown trail has been moved under:
+
+- [docs/archive/root-history/](docs/archive/root-history/)
+
+Use the source map here if you need to audit the historical reasoning trail:
+
+- [docs/consolidated-2026-04/99-source-index.md](docs/consolidated-2026-04/99-source-index.md)
+
+## References
+
+External paper and repo notes live in:
+
+- [references/README.md](references/README.md)
+
+AutoAscend trace capture lives in:
+
+- [autoascend_traces/](autoascend_traces/)
+
+Build and run the lightweight capture container with:
 
 ```bash
-uv run python cli.py golden-generate \
-  --seed 42 \
-  --max-steps 10 \
-  --output data/golden_episode.jsonl
-
-uv run python cli.py golden-evaluate \
-  --input data/golden_episode.jsonl \
-  --server-url http://127.0.0.1:8765
+cd autoascend_traces
+docker build -f Dockerfile.light -t autoascend .
+docker run --rm -v "$(pwd)/output:/output" autoascend
 ```
 
-Use the golden path before trusting larger evaluations. It catches train/eval
-format mismatches fast.
+## Bottom Line
 
+Treat this repo as:
 
-## Stage 5: Generate Multi-Turn Traces
-
-This is the new path you asked for explicitly.
-
-These traces are **definitely multi-turn** now.
-
-You can verify them with a dedicated command.
-
-### Option A: Generate traces from `task_greedy`
-
-```bash
-uv run python cli.py rl-generate-traces \
-  --output data/explore_task_greedy_traces.jsonl \
-  --num-episodes 100 \
-  --max-steps 30 \
-  --task explore \
-  --policy task_greedy
-```
-
-### Option B: Generate traces from the served forward model
-
-This is the main way to use the SFT model in the RL workflow.
-
-```bash
-uv run python cli.py rl-generate-traces \
-  --output data/explore_forward_model_traces.jsonl \
-  --num-episodes 100 \
-  --max-steps 30 \
-  --task explore \
-  --policy forward_model \
-  --server-url http://127.0.0.1:8765 \
-  --model-name llama-server
-```
-
-How this works:
-
-- for each state
-- for each allowed action
-- the forward model predicts the delta
-- the trace generator scores the predicted outcome
-- it picks the best action
-- then it rolls the real env forward
-
-So this is a true **multi-turn teacher-in-the-loop trace generator** using the
-SFT forward model.
-
-### Option C: Generate traces from a trained APPO policy
-
-```bash
-uv run python cli.py rl-generate-traces \
-  --output data/explore_appo_traces.jsonl \
-  --num-episodes 100 \
-  --max-steps 30 \
-  --task explore \
-  --policy appo \
-  --appo-experiment appo_explore_masked
-```
-
-### Option D: Generate traces from a BC policy
-
-```bash
-uv run python cli.py rl-generate-traces \
-  --output data/explore_bc_traces.jsonl \
-  --num-episodes 100 \
-  --max-steps 30 \
-  --task explore \
-  --policy bc \
-  --bc-model-path output/explore_bc.pt
-```
-
-### Verify that traces are actually multi-turn
-
-```bash
-uv run python cli.py rl-verify-traces \
-  --input data/explore_task_greedy_traces.jsonl
-```
-
-Expected output includes:
-
-- `episodes`
-- `rows`
-- `max_steps_in_episode`
-- `avg_steps_in_episode`
-- `multi_turn_episodes`
-- `all_multi_turn`
-
-If `all_multi_turn` is `true`, the trace file is a real multi-turn dataset.
-
-
-## Stage 6: Train A Behavior Cloning Policy From Traces
-
-Once you have a trace file, you can train a policy directly on it.
-
-Example:
-
-```bash
-uv run python cli.py rl-train-bc \
-  --input data/explore_task_greedy_traces.jsonl \
-  --output output/explore_bc.pt \
-  --epochs 20 \
-  --lr 1e-3
-```
-
-This trains a compact policy network on:
-
-- `feature_vector`
-- action labels
-- allowed-action masks
-
-This is the cleanest direct bridge from:
-
-- teacher traces
-- to a trainable policy
-
-without going straight into RL.
-
-Evaluate the BC policy:
-
-```bash
-uv run python cli.py rl-evaluate-bc \
-  --model output/explore_bc.pt \
-  --task explore \
-  --seeds 42,43,44 \
-  --max-steps 50 \
-  --compare-baseline
-```
-
-Use BC as:
-
-- a bootstrap policy,
-- a control baseline,
-- or a future initialization source for RL-related policy work.
-
-
-## Stage 7: Train Learned Reward Models
-
-Reward models are now trainable from task-harness preference pairs.
-
-Example:
-
-```bash
-uv run python cli.py rl-train-reward \
-  --task explore \
-  --seeds 42,43,44,45,46,47 \
-  --max-steps 30 \
-  --dataset-output data/explore_reward_prefs.jsonl \
-  --output output/explore_reward.pt \
-  --epochs 20 \
-  --lr 1e-3
-```
-
-This uses task-harness counterfactual branches to build pairwise preferences
-and then trains a Bradley-Terry-style reward model.
-
-You can then use that model in APPO.
-
-
-## Stage 8: Train A Learned Scheduler
-
-The scheduler path is also trainable now.
-
-Example:
-
-```bash
-uv run python cli.py rl-train-scheduler \
-  --seeds 42,43,44,45,46,47 \
-  --max-steps 30 \
-  --dataset-output data/scheduler_rows.jsonl \
-  --output output/scheduler.pt \
-  --epochs 20 \
-  --lr 1e-3
-```
-
-This trains a small classifier to imitate the current rule-based scheduler.
-
-That gives you a real learned high-level scheduler artifact for the APPO env.
-
-
-## Stage 9: Train APPO RL
-
-There are now several useful APPO modes.
-
-### Baseline APPO with hand-shaped reward
-
-```bash
-uv run python cli.py rl-train-appo \
-  --experiment appo_explore \
-  --num-workers 4 \
-  --num-envs-per-worker 8 \
-  --rollout-length 32 \
-  --recurrence 16 \
-  --batch-size 1024 \
-  --num-batches-per-epoch 1 \
-  --ppo-epochs 1 \
-  --train-for-env-steps 20000 \
-  --enabled-skills explore
-```
-
-Important:
-
-- env-side invalid action clamping is on by default now
-- invalid requests are penalized
-- this is a real RL run
-
-### APPO with learned reward
-
-```bash
-uv run python cli.py rl-train-appo \
-  --experiment appo_explore_learned_reward \
-  --num-workers 4 \
-  --num-envs-per-worker 8 \
-  --rollout-length 32 \
-  --recurrence 16 \
-  --batch-size 1024 \
-  --num-batches-per-epoch 1 \
-  --ppo-epochs 1 \
-  --train-for-env-steps 20000 \
-  --enabled-skills explore \
-  --reward-source learned \
-  --learned-reward-path output/explore_reward.pt
-```
-
-### APPO with learned scheduler
-
-```bash
-uv run python cli.py rl-train-appo \
-  --experiment appo_learned_scheduler \
-  --num-workers 4 \
-  --num-envs-per-worker 8 \
-  --rollout-length 32 \
-  --recurrence 16 \
-  --batch-size 1024 \
-  --num-batches-per-epoch 1 \
-  --ppo-epochs 1 \
-  --train-for-env-steps 20000 \
-  --scheduler learned \
-  --scheduler-model-path output/scheduler.pt
-```
-
-### APPO with both learned reward and learned scheduler
-
-```bash
-uv run python cli.py rl-train-appo \
-  --experiment appo_full_stack \
-  --num-workers 4 \
-  --num-envs-per-worker 8 \
-  --rollout-length 32 \
-  --recurrence 16 \
-  --batch-size 1024 \
-  --num-batches-per-epoch 1 \
-  --ppo-epochs 1 \
-  --train-for-env-steps 20000 \
-  --reward-source learned \
-  --learned-reward-path output/explore_reward.pt \
-  --scheduler learned \
-  --scheduler-model-path output/scheduler.pt
-```
-
-
-## Stage 10: Evaluate APPO
-
-Use the built-in evaluator:
-
-```bash
-uv run python cli.py rl-evaluate-appo \
-  --experiment appo_explore \
-  --seeds 42,43,44 \
-  --max-steps 50 \
-  --compare-baseline
-```
-
-This reports:
-
-- avg task reward
-- avg unique tiles
-- avg rooms discovered
-- repeated action rate
-- invalid action rate
-- action counts
-
-If `--compare-baseline` is set and the run is single-skill, it also runs
-`task_greedy` so you can compare directly.
-
-
-## Recommended End-To-End Flows
-
-### Flow A: simplest useful forward-model path
-
-```bash
-uv sync --extra train --extra test --extra serve
-
-uv run python cli.py generate \
-  --num-games 200 \
-  --max-steps 50 \
-  --output data/train.jsonl \
-  --eval-output data/eval.jsonl
-
-uv run torchrun --standalone --nproc_per_node=4 train.py \
-  --model Qwen/Qwen2.5-3B-Instruct \
-  --data data/train.jsonl \
-  --eval-data data/eval.jsonl \
-  --output output/adapter
-```
-
-### Flow B: teacher traces -> BC
-
-```bash
-uv run python cli.py rl-generate-traces \
-  --output data/explore_task_greedy_traces.jsonl \
-  --num-episodes 100 \
-  --max-steps 30 \
-  --task explore \
-  --policy task_greedy
-
-uv run python cli.py rl-verify-traces \
-  --input data/explore_task_greedy_traces.jsonl
-
-uv run python cli.py rl-train-bc \
-  --input data/explore_task_greedy_traces.jsonl \
-  --output output/explore_bc.pt
-
-uv run python cli.py rl-evaluate-bc \
-  --model output/explore_bc.pt \
-  --task explore \
-  --seeds 42,43,44 \
-  --max-steps 50
-```
-
-### Flow C: SFT forward model -> teacher traces -> BC -> RL
-
-```bash
-# 1. Generate SFT data
-uv run python cli.py generate \
-  --num-games 200 \
-  --max-steps 50 \
-  --output data/train.jsonl \
-  --eval-output data/eval.jsonl
-
-# 2. Train forward model
-uv run torchrun --standalone --nproc_per_node=4 train.py \
-  --model Qwen/Qwen2.5-3B-Instruct \
-  --data data/train.jsonl \
-  --eval-data data/eval.jsonl \
-  --output output/adapter
-
-# 3. Serve that forward model using your OpenAI-compatible server
-
-# 4. Generate multi-turn traces with the forward model in the loop
-uv run python cli.py rl-generate-traces \
-  --output data/explore_forward_model_traces.jsonl \
-  --num-episodes 100 \
-  --max-steps 30 \
-  --task explore \
-  --policy forward_model \
-  --server-url http://127.0.0.1:8765 \
-  --model-name llama-server
-
-# 5. Verify they are multi-turn
-uv run python cli.py rl-verify-traces \
-  --input data/explore_forward_model_traces.jsonl
-
-# 6. Train BC from those traces
-uv run python cli.py rl-train-bc \
-  --input data/explore_forward_model_traces.jsonl \
-  --output output/explore_bc.pt
-
-# 7. Train reward model
-uv run python cli.py rl-train-reward \
-  --task explore \
-  --output output/explore_reward.pt
-
-# 8. Train scheduler
-uv run python cli.py rl-train-scheduler \
-  --output output/scheduler.pt
-
-# 9. Run APPO with learned reward + learned scheduler
-uv run python cli.py rl-train-appo \
-  --experiment appo_full_stack \
-  --num-workers 4 \
-  --num-envs-per-worker 8 \
-  --rollout-length 32 \
-  --recurrence 16 \
-  --batch-size 1024 \
-  --num-batches-per-epoch 1 \
-  --ppo-epochs 1 \
-  --train-for-env-steps 20000 \
-  --reward-source learned \
-  --learned-reward-path output/explore_reward.pt \
-  --scheduler learned \
-  --scheduler-model-path output/scheduler.pt
-
-# 10. Evaluate APPO against baseline
-uv run python cli.py rl-evaluate-appo \
-  --experiment appo_full_stack \
-  --seeds 42,43,44 \
-  --max-steps 50 \
-  --compare-baseline
-```
-
-
-## What “Use The SFT Model” Means In This Repo
-
-This is important because it is easy to misunderstand.
-
-Right now, “use the SFT model” means:
-
-- train the forward model with `train.py`
-- serve it behind an OpenAI-compatible endpoint
-- use it in `rl-generate-traces --policy forward_model`
-
-It does **not** currently mean:
-
-- directly loading LoRA weights into the APPO actor-critic
-
-because those architectures are different.
-
-The correct bridge today is:
-
-- SFT forward model
-- multi-turn trace generation
-- BC and/or RL training from those traces
-
-
-## Current State Of The Stack
-
-Today the repo can do all of the following:
-
-- generate forward-model SFT data
-- train a distributed LoRA forward model
-- evaluate the forward model
-- generate explicit multi-turn traces
-- verify that traces are multi-turn
-- train BC from traces
-- train learned reward models
-- train learned schedulers
-- train APPO RL with masking
-- evaluate APPO checkpoints against baselines
-
-The main thing that is still not true is:
-
-- APPO does not yet beat `task_greedy` reliably
-
-So the stack is now functionally complete enough to iterate on policy quality,
-which is the correct next bottleneck.
-
-## Current Priorities
-
-The repo is no longer blocked on local compute. The bottleneck has moved to policy-data quality and how efficiently requests are fed to the inference server.
-
-Recommended next moves:
-- Keep `Qwen/Qwen2.5-3B-Instruct` as the local policy baseline and use the replica topology on GPUs `0,1`
-- Keep the new `vllm-batch` backend as an experiment, but do not switch default generation to it yet
-- Generate a filtered local corpus at 50k-200k examples now that the action distribution looks materially better
-- Use all 4 H200s for forward-model LoRA runs on at least Qwen 2.5 3B, and likely 7B once the dataset is no longer tiny
-
-### Train Fast on 4x H200 (GPU required)
-
-```bash
-uv run torchrun --standalone --nproc_per_node=4 train.py \
-  --model Qwen/Qwen2.5-3B-Instruct \
-  --data data/train.jsonl \
-  --eval-data data/eval.jsonl \
-  --output output/adapter \
-  --lora-rank 16 \
-  --lora-alpha 32 \
-  --lr 2e-4 \
-  --epochs 1 \
-  --batch-size 4 \
-  --gradient-accumulation-steps 2 \
-  --dataset-num-proc 8 \
-  --dataloader-num-workers 8
-```
-
-For this host, the training script is set up for distributed `torchrun` and defaults to bf16 LoRA instead of 4-bit loading, because H200s have enough memory and bf16 is the faster path.
-
-### Evaluate & Build Manifest
-
-```bash
-uv run python cli.py evaluate --seeds 500,501,502,503,504 --max-steps 20
-
-uv run python cli.py manifest \
-  --base-model Qwen/Qwen2.5-3B-Instruct \
-  --training-data data/train.jsonl \
-  --adapter output/adapter \
-  --baseline-scores '{"field_accuracy": 0.32}' \
-  --post-scores '{"field_accuracy": 0.71}' \
-  --output output/manifest.json
-```
-
-### Golden Debug Harness
-
-```bash
-uv run python cli.py golden-generate --seed 42 --max-steps 10 --output data/golden_episode.jsonl
-uv run python cli.py golden-evaluate --input data/golden_episode.jsonl --server-url http://127.0.0.1:8000
-```
-
-Use this before trusting larger runs. The goal is to catch prompt-format, parsing, and evaluator mismatches on a tiny saved episode.
-
-### Run with Docker Compose on This Machine
-
-```bash
-docker compose up
-```
-
-The compose job installs `uv`, syncs the `train` extra from [pyproject.toml](/home/luc/rl-nethack/pyproject.toml), mounts the repo into the container, and launches distributed training with `torchrun --nproc_per_node=4`. On this 4x H200 host it exposes `CUDA_VISIBLE_DEVICES=0,1,2,3` by default.
-
-## How the Forward Model Works
-
-1. **Collect data**: Play NetHack with wall-avoidance random policy. Record (obs_before, action, obs_after).
-2. **Extract features**: Convert raw NLE observations into structured text.
-3. **Compute deltas**: What changed between observations.
-4. **Train**: LoRA fine-tune to predict deltas from (state, action).
-5. **Evaluate**: On unseen held-out seeds, measure per-field accuracy.
-
-## License
-
-See repository for license information.
+- a strong teacher-building system
+- a credible deterministic evaluation system
+- an implemented but still unsolved online improver stack
+- an active long-context next-action training branch centered on Qwen 1M models
