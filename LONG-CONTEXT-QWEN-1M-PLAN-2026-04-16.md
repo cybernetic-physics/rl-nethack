@@ -50,6 +50,7 @@ That is no longer the main direction.
 - [x] Add a weighted preference LoRA launch script.
 - [x] Add a pairwise preference LoRA launch script.
 - [x] Add a KTO LoRA launch script.
+- [x] Add a repo-native fallback LoRA training path that works without `trl` / `unsloth`.
 - [x] Add a preference-method comparison launcher.
 - [x] Add a native single-run curriculum launcher.
 - [x] Add an NLD gold-wins import launcher.
@@ -68,12 +69,14 @@ That is no longer the main direction.
 
 ### Not Done
 
-- [ ] Validate real `4x H200` `Qwen/Qwen2.5-14B-Instruct-1M` serving.
+- [~] Validate real `4x H200` `Qwen/Qwen2.5-14B-Instruct-1M` serving.
+  Current status: the host does have `4x H200` available and the repo now has the Qwen 1M launch/config path, but the actual vLLM `Qwen/Qwen2.5-14B-Instruct-1M` server has not been brought up yet.
 - [~] Mine / import long winning traces.
   Current status: repo-side NLD / ttyrec registration, ranking, and long-sequence import tooling is implemented, including a `gold_wins`-oriented launcher; actual dataset-root registration and import on this host is still pending.
 - [x] Add actual model training on losing-segment negatives.
   Current status: the repo now supports weighted-SFT training on mined positive/negative long-sequence rows, pairwise-preference training on teacher-preferred losing-segment alternatives, and a repo-native KTO-style training path for labeled positives/negatives without requiring `trl`.
-- [ ] Validate long-horizon evaluation against a real served model on meaningful held-out data.
+- [~] Validate long-horizon evaluation against a real served model on meaningful held-out data.
+  Current status: deterministic benchmark building and report comparison are implemented and a local one-step LoRA smoke train has completed on a small shard, but served-model evaluation on meaningful held-out long-horizon data is still pending.
 
 
 ## Why This Change
@@ -498,9 +501,12 @@ If we cannot, the fallback is still coherent:
 
 ## Immediate Execution Todo
 
-- [ ] Generate a small long-sequence train/eval shard from live NLE rollouts.
-- [ ] Build a deterministic long-sequence benchmark shard from that eval split.
-- [ ] Run one small weighted-SFT smoke training pass on the shard.
+- [x] Generate a small long-sequence train/eval shard from live NLE rollouts.
+  Current status: completed with `data/smoke/long_sequence_train.jsonl` and `data/smoke/long_sequence_eval.jsonl`.
+- [x] Build a deterministic long-sequence benchmark shard from that eval split.
+  Current status: completed with `data/smoke/long_sequence_benchmark.jsonl`.
+- [x] Run one small weighted-SFT smoke training pass on the shard.
+  Current status: completed as a one-step LoRA smoke run with `Qwen/Qwen2.5-0.5B-Instruct` and the repo-native `transformers+peft` fallback trainer, producing `output/smoke_qwen_0_5b_longseq`.
 - [ ] Run one small pairwise-preference smoke training pass if teacher-preference rows are available.
 - [ ] Run one small KTO-style smoke training pass if labeled positive/negative rows are available.
 - [ ] Launch the Qwen 1M vLLM stack on the `4x H200` host and verify health.

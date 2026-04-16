@@ -20,6 +20,7 @@ Usage:
 """
 
 import argparse
+import inspect
 import json
 import os
 import sys
@@ -433,6 +434,31 @@ def prepare_dataset(dataset, num_proc):
     )
 
 
+def tokenize_text_dataset(dataset, tokenizer, max_seq_length, num_proc):
+    """Tokenize preformatted text rows for plain transformers Trainer fallback."""
+    if "input_ids" in dataset.column_names:
+        return dataset
+    if "text" not in dataset.column_names:
+        dataset = prepare_dataset(dataset, num_proc)
+
+    def tokenize_batch(examples):
+        encoded = tokenizer(
+            examples["text"],
+            truncation=True,
+            max_length=max_seq_length,
+            padding=False,
+        )
+        encoded["labels"] = [list(ids) for ids in encoded["input_ids"]]
+        return encoded
+
+    return dataset.map(
+        tokenize_batch,
+        batched=True,
+        num_proc=max(1, num_proc),
+        remove_columns=[col for col in dataset.column_names if col not in {"sample_weight"}],
+    )
+
+
 def weighted_mean_loss(per_example_loss, sample_weight):
     """Compute a signed weighted mean with abs-weight normalization."""
     import torch
@@ -440,6 +466,18 @@ def weighted_mean_loss(per_example_loss, sample_weight):
     weights = sample_weight.to(per_example_loss.device).to(per_example_loss.dtype)
     denom = weights.abs().sum().clamp_min(torch.finfo(per_example_loss.dtype).eps)
     return (per_example_loss * weights).sum() / denom
+
+
+def build_training_arguments_kwargs(training_arguments_cls, **kwargs):
+    """Filter kwargs to those supported by the installed transformers version."""
+    supported = set(inspect.signature(training_arguments_cls.__init__).parameters)
+    return {key: value for key, value in kwargs.items() if key in supported}
+
+
+def build_trainer_init_kwargs(trainer_cls, **kwargs):
+    """Filter trainer init kwargs to those supported by the installed version."""
+    supported = set(inspect.signature(trainer_cls.__init__).parameters)
+    return {key: value for key, value in kwargs.items() if key in supported}
 
 
 def save_training_metadata(
@@ -520,9 +558,21 @@ def main():
         # -- Late imports: these require GPU --
         import torch
         import torch.nn.functional as F
-        from unsloth import FastLanguageModel
-        from trl import SFTTrainer
-        from transformers import TrainingArguments
+        try:
+            from unsloth import FastLanguageModel
+        except Exception:
+            FastLanguageModel = None
+        try:
+            from trl import SFTTrainer
+        except Exception:
+            SFTTrainer = None
+        from transformers import (
+            AutoModelForCausalLM,
+            AutoTokenizer,
+            DataCollatorForLanguageModeling,
+            Trainer,
+            TrainingArguments,
+        )
         from src.manifest import hash_file
 
         if not torch.cuda.is_available():
@@ -558,6 +608,8 @@ def main():
         log(f"Precision  : {'bf16' if use_bf16 else 'fp16'}")
         log(f"4-bit load : {args.load_in_4bit}")
         log(f"Weighted SFT: {args.weighted_sft}")
+        using_unsloth = FastLanguageModel is not None and SFTTrainer is not None
+        log(f"Trainer stack: {'unsloth+trl' if using_unsloth else 'transformers+peft fallback'}")
         curriculum_buckets = parse_curriculum_buckets(args.curriculum_buckets)
         curriculum_stage_repeats = parse_curriculum_stage_repeats(
             args.curriculum_stage_repeats,
@@ -573,27 +625,50 @@ def main():
         if metadata_filters:
             log(f"Metadata filters: {metadata_filters}")
 
-        model_load_kwargs = {
-            "model_name": args.model,
-            "max_seq_length": args.max_seq_length,
-            "load_in_4bit": args.load_in_4bit,
-            "dtype": torch.bfloat16 if use_bf16 else torch.float16,
-        }
-        if dist["world_size"] > 1:
-            model_load_kwargs["device_map"] = {"": torch.cuda.current_device()}
+        if using_unsloth:
+            model_load_kwargs = {
+                "model_name": args.model,
+                "max_seq_length": args.max_seq_length,
+                "load_in_4bit": args.load_in_4bit,
+                "dtype": torch.bfloat16 if use_bf16 else torch.float16,
+            }
+            if dist["world_size"] > 1:
+                model_load_kwargs["device_map"] = {"": torch.cuda.current_device()}
 
-        model, tokenizer = FastLanguageModel.from_pretrained(**model_load_kwargs)
+            model, tokenizer = FastLanguageModel.from_pretrained(**model_load_kwargs)
 
-        model = FastLanguageModel.get_peft_model(
-            model,
-            r=args.lora_rank,
-            lora_alpha=args.lora_alpha,
-            lora_dropout=0,
-            target_modules=LORA_TARGET_MODULES,
-            use_rslora=True,
-            bias="none",
-            use_gradient_checkpointing="unsloth" if args.gradient_checkpointing else False,
-        )
+            model = FastLanguageModel.get_peft_model(
+                model,
+                r=args.lora_rank,
+                lora_alpha=args.lora_alpha,
+                lora_dropout=0,
+                target_modules=LORA_TARGET_MODULES,
+                use_rslora=True,
+                bias="none",
+                use_gradient_checkpointing="unsloth" if args.gradient_checkpointing else False,
+            )
+        else:
+            from peft import LoraConfig, get_peft_model
+
+            tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=True)
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+            model = AutoModelForCausalLM.from_pretrained(
+                args.model,
+                torch_dtype=torch.bfloat16 if use_bf16 else torch.float16,
+            )
+            if args.gradient_checkpointing:
+                model.gradient_checkpointing_enable()
+            peft_config = LoraConfig(
+                r=args.lora_rank,
+                lora_alpha=args.lora_alpha,
+                lora_dropout=0.0,
+                bias="none",
+                target_modules=LORA_TARGET_MODULES,
+                task_type="CAUSAL_LM",
+                use_rslora=True,
+            )
+            model = get_peft_model(model, peft_config)
 
         train_dataset = load_training_data(args.data)
         train_dataset = normalize_training_dataset(
@@ -609,7 +684,10 @@ def main():
             curriculum_stage_repeats,
             metadata_key=args.curriculum_metadata_key,
         )
-        train_dataset = prepare_dataset(train_dataset, args.dataset_num_proc)
+        if using_unsloth:
+            train_dataset = prepare_dataset(train_dataset, args.dataset_num_proc)
+        else:
+            train_dataset = tokenize_text_dataset(train_dataset, tokenizer, args.max_seq_length, args.dataset_num_proc)
         use_weighted_sft = bool(args.weighted_sft or dataset_has_sample_weights(train_dataset))
         log(f"Training examples: {len(train_dataset)}")
         if use_weighted_sft:
@@ -625,32 +703,38 @@ def main():
             )
             eval_dataset = filter_dataset_by_metadata(eval_dataset, metadata_filters)
             eval_dataset = truncate_dataset(eval_dataset, args.max_eval_examples)
-            eval_dataset = prepare_dataset(eval_dataset, args.dataset_num_proc)
+            if using_unsloth:
+                eval_dataset = prepare_dataset(eval_dataset, args.dataset_num_proc)
+            else:
+                eval_dataset = tokenize_text_dataset(eval_dataset, tokenizer, args.max_seq_length, args.dataset_num_proc)
             log(f"Eval examples: {len(eval_dataset)}")
 
         training_args = TrainingArguments(
-            output_dir=args.output,
-            per_device_train_batch_size=args.batch_size,
-            gradient_accumulation_steps=args.gradient_accumulation_steps,
-            warmup_steps=args.warmup_steps,
-            num_train_epochs=args.epochs,
-            max_steps=args.max_steps if args.max_steps > 0 else -1,
-            learning_rate=args.lr,
-            fp16=use_fp16,
-            bf16=use_bf16,
-            logging_steps=args.logging_steps,
-            save_strategy="steps",
-            save_steps=args.save_steps,
-            save_total_limit=args.save_total_limit,
-            seed=42,
-            report_to="none",
-            ddp_find_unused_parameters=args.ddp_find_unused_parameters,
-            dataloader_num_workers=args.dataloader_num_workers,
-            dataloader_pin_memory=True,
-            gradient_checkpointing=args.gradient_checkpointing,
-            save_on_each_node=False,
-            remove_unused_columns=False,
-            group_by_length=not bool(curriculum_buckets),
+            **build_training_arguments_kwargs(
+                TrainingArguments,
+                output_dir=args.output,
+                per_device_train_batch_size=args.batch_size,
+                gradient_accumulation_steps=args.gradient_accumulation_steps,
+                warmup_steps=args.warmup_steps,
+                num_train_epochs=args.epochs,
+                max_steps=args.max_steps if args.max_steps > 0 else -1,
+                learning_rate=args.lr,
+                fp16=use_fp16,
+                bf16=use_bf16,
+                logging_steps=args.logging_steps,
+                save_strategy="steps",
+                save_steps=args.save_steps,
+                save_total_limit=args.save_total_limit,
+                seed=42,
+                report_to="none",
+                ddp_find_unused_parameters=args.ddp_find_unused_parameters,
+                dataloader_num_workers=args.dataloader_num_workers,
+                dataloader_pin_memory=True,
+                gradient_checkpointing=args.gradient_checkpointing,
+                save_on_each_node=False,
+                remove_unused_columns=False,
+                group_by_length=not bool(curriculum_buckets),
+            )
         )
 
         class SampleWeightDataCollator:
@@ -668,13 +752,15 @@ def main():
                 batch["sample_weight"] = torch.tensor(sample_weights, dtype=torch.float32)
                 return batch
 
-        class CurriculumSFTTrainer(SFTTrainer):
-            def _get_train_sampler(self):
+        base_trainer_cls = SFTTrainer if using_unsloth else Trainer
+
+        class CurriculumSFTTrainer(base_trainer_cls):
+            def _get_train_sampler(self, *args, **kwargs):
                 if curriculum_buckets:
                     from torch.utils.data import SequentialSampler
 
                     return SequentialSampler(self.train_dataset)
-                return super()._get_train_sampler()
+                return super()._get_train_sampler(*args, **kwargs)
 
         class WeightedSFTTrainer(CurriculumSFTTrainer):
             def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
@@ -716,19 +802,39 @@ def main():
 
             trainer_kwargs["callbacks"] = [CurriculumProgressCallback()]
 
-        trainer = trainer_cls(
-            model=model,
-            tokenizer=tokenizer,
-            train_dataset=train_dataset,
-            eval_dataset=eval_dataset,
-            dataset_text_field="text",
-            max_seq_length=args.max_seq_length,
-            args=training_args,
-            packing=args.packing,
-            **trainer_kwargs,
-        )
-        if use_weighted_sft:
-            trainer.data_collator = SampleWeightDataCollator(trainer.data_collator)
+        if using_unsloth:
+            trainer = trainer_cls(
+                **build_trainer_init_kwargs(
+                    trainer_cls,
+                    model=model,
+                    tokenizer=tokenizer,
+                    train_dataset=train_dataset,
+                    eval_dataset=eval_dataset,
+                    dataset_text_field="text",
+                    max_seq_length=args.max_seq_length,
+                    args=training_args,
+                    packing=args.packing,
+                    **trainer_kwargs,
+                )
+            )
+            if use_weighted_sft:
+                trainer.data_collator = SampleWeightDataCollator(trainer.data_collator)
+        else:
+            data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+            if use_weighted_sft:
+                data_collator = SampleWeightDataCollator(data_collator)
+            trainer = trainer_cls(
+                **build_trainer_init_kwargs(
+                    trainer_cls,
+                    model=model,
+                    tokenizer=tokenizer,
+                    train_dataset=train_dataset,
+                    eval_dataset=eval_dataset,
+                    args=training_args,
+                    data_collator=data_collator,
+                    **trainer_kwargs,
+                )
+            )
 
         log("Starting training...")
         train_result = trainer.train()
