@@ -470,6 +470,348 @@ Helper scripts:
 
 Keep code, configs, and docs here. Push larger datasets, checkpoints, manifests, and reports to the artifact remotes instead of growing the git repo.
 
+## Fresh Machine Recovery
+
+This section is the canonical recovery procedure if we need to continue work on a new machine using only:
+
+- GitHub for source code
+- Hugging Face for large artifacts
+
+Do not assume any local disk transfer, shared NAS, or old machine SSH access.
+
+### Recovery Goal
+
+After following this section, the new machine should have:
+
+- the source repo from GitHub,
+- the artifact mirrors from Hugging Face,
+- Git LFS objects fully present locally,
+- the expected `hf-data/` and `hf-models/` directories,
+- and enough context to continue training, evaluation, or artifact inspection from the published state.
+
+### What Lives Where
+
+Use this split consistently:
+
+- GitHub source repo:
+  - code
+  - docs
+  - configs
+  - small metadata
+- Hugging Face dataset repo `lmc7150/rl-nethack-data`:
+  - datasets
+  - reports
+  - large metadata
+  - any mirrored `data/` or non-model experiment outputs
+- Hugging Face model repo `lmc7150/rl-nethack-models`:
+  - LoRA adapters
+  - checkpoints
+  - eval JSONs for model runs
+  - RL training directories and model-like artifacts
+
+### One-Time Prerequisites On The New Machine
+
+Install:
+
+- `git`
+- `git-lfs`
+- `uv`
+- Python `>=3.10,<3.13`
+
+Then enable Git LFS:
+
+```bash
+git lfs install
+```
+
+If the Hugging Face repos are private or gated, authenticate first:
+
+```bash
+huggingface-cli login
+```
+
+or set a token in the environment for scripted access:
+
+```bash
+export HF_TOKEN=...
+```
+
+### Canonical Clone Layout
+
+Create a single parent directory and clone all three repos side by side:
+
+```bash
+mkdir -p ~/src
+cd ~/src
+
+git clone git@github.com:cybernetic-physics/rl-nethack.git
+git clone https://huggingface.co/datasets/lmc7150/rl-nethack-data hf-data
+git clone https://huggingface.co/lmc7150/rl-nethack-models hf-models
+```
+
+The expected layout is:
+
+```text
+~/src/
+  rl-nethack/
+  hf-data/
+  hf-models/
+```
+
+This repo’s helper scripts assume the artifact repos are available as siblings named exactly:
+
+- `hf-data`
+- `hf-models`
+
+If you prefer a different parent directory, keep the same sibling layout.
+
+### Recommended Workspace Layout For This Repo
+
+The simplest recovery layout is:
+
+```text
+~/src/
+  rl-nethack/   # GitHub source
+  hf-data/      # Hugging Face dataset repo
+  hf-models/    # Hugging Face model repo
+```
+
+Then either:
+
+1. work from `~/src/rl-nethack` and set `HF_REPO_DIR` manually when pushing, or
+2. create symlinks inside the source repo so the existing helper scripts work unchanged.
+
+Symlink option:
+
+```bash
+cd ~/src/rl-nethack
+ln -s ../hf-data hf-data
+ln -s ../hf-models hf-models
+```
+
+After that, this source repo will look like:
+
+```text
+rl-nethack/
+  hf-data -> ../hf-data
+  hf-models -> ../hf-models
+```
+
+That matches the repo’s existing helper scripts:
+
+- `scripts/push_hf_data.sh`
+- `scripts/push_hf_models.sh`
+
+### Pull Everything From Hugging Face
+
+After cloning the artifact repos, fetch all LFS payloads:
+
+```bash
+cd ~/src/hf-data
+git lfs pull
+
+cd ~/src/hf-models
+git lfs pull
+```
+
+If you want to be explicit and refresh all remote refs first:
+
+```bash
+cd ~/src/hf-data
+git fetch origin
+git checkout main
+git lfs pull
+
+cd ~/src/hf-models
+git fetch origin
+git checkout main
+git lfs pull
+```
+
+### Bring Up The Python Environment
+
+From the source repo:
+
+```bash
+cd ~/src/rl-nethack
+uv sync --extra train --extra test --extra serve
+```
+
+Fast sanity checks:
+
+```bash
+uv run python cli.py smoke-test
+uv run pytest -q tests/test_rl_scaffold.py
+```
+
+### What Paths Are Expected In The Artifact Repos
+
+The artifact repos are mirrors. They intentionally keep their payload under `artifacts/`.
+
+Common path pattern:
+
+- data mirror entries look like `hf-data/artifacts/...`
+- model mirror entries look like `hf-models/artifacts/...`
+
+Examples already present on Hugging Face as of `2026-04-16`:
+
+In `hf-data`:
+
+- `artifacts/data/long_bootstrap/long_sequence_train.jsonl`
+- `artifacts/data/long_bootstrap/long_sequence_eval.jsonl`
+- `artifacts/data/long_bootstrap/long_sequence_benchmark.jsonl`
+- `artifacts/data/long_bootstrap/preferences/long_sequence_kto_train.jsonl`
+- `artifacts/data/nld_large_run/train.jsonl`
+- `artifacts/data/nld_large_run/eval.jsonl`
+- `artifacts/data/nld_large_run/eval_tail_1024.jsonl`
+- `artifacts/metadata/ttyrecs.db`
+- `artifacts/LONG-CONTEXT-NLD-TRAINING-RESULTS-2026-04-16.md`
+
+In `hf-models`:
+
+- `artifacts/output/qwen14b_nld_long_32k_run/`
+- `artifacts/output/qwen14b_long_medium_50step/`
+- `artifacts/output_evals/qwen14b_long_medium_live_eval_4x32.json`
+- `artifacts/output_evals/qwen14b_long_medium_live_eval_small.json`
+- `artifacts/output_evals/qwen14b_nld_long_32k_live_eval_4x32.json`
+- `artifacts/train_dir/rl/...`
+
+### How To Use Mirrored Artifacts On The New Machine
+
+The Hugging Face repos preserve the original relative paths under `artifacts/`.
+
+Examples:
+
+- source-repo path `data/long_bootstrap/long_sequence_train.jsonl`
+  corresponds to
+  `hf-data/artifacts/data/long_bootstrap/long_sequence_train.jsonl`
+- source-repo path `output/qwen14b_nld_long_32k_run`
+  corresponds to
+  `hf-models/artifacts/output/qwen14b_nld_long_32k_run`
+
+That means a command that needs a dataset or model can either:
+
+- point directly into `hf-data/artifacts/...` or `hf-models/artifacts/...`, or
+- copy/symlink the mirrored artifact back into the source repo layout if a script expects `data/...` or `output/...`.
+
+Examples:
+
+```bash
+cd ~/src/rl-nethack
+
+mkdir -p data/long_bootstrap
+ln -s ../../hf-data/artifacts/data/long_bootstrap/long_sequence_train.jsonl \
+  data/long_bootstrap/long_sequence_train.jsonl
+ln -s ../../hf-data/artifacts/data/long_bootstrap/long_sequence_eval.jsonl \
+  data/long_bootstrap/long_sequence_eval.jsonl
+ln -s ../../hf-data/artifacts/data/long_bootstrap/long_sequence_benchmark.jsonl \
+  data/long_bootstrap/long_sequence_benchmark.jsonl
+```
+
+```bash
+cd ~/src/rl-nethack
+
+mkdir -p output
+ln -s ../../hf-models/artifacts/output/qwen14b_nld_long_32k_run \
+  output/qwen14b_nld_long_32k_run
+```
+
+If you prefer copies instead of symlinks:
+
+```bash
+cp -r ~/src/hf-models/artifacts/output/qwen14b_nld_long_32k_run ~/src/rl-nethack/output/
+cp -r ~/src/hf-data/artifacts/data/long_bootstrap ~/src/rl-nethack/data/
+```
+
+Symlinks are usually better because they avoid duplicating large LFS payloads.
+
+### Minimal Recovery For Long-Context Work
+
+If the goal is only to resume the currently published long-context branch, the minimum useful recovery set is:
+
+- source repo from GitHub
+- `hf-data/artifacts/data/long_bootstrap/`
+- `hf-data/artifacts/data/nld_large_run/`
+- `hf-data/artifacts/LONG-CONTEXT-NLD-TRAINING-RESULTS-2026-04-16.md`
+- `hf-models/artifacts/output/qwen14b_nld_long_32k_run/`
+- `hf-models/artifacts/output_evals/qwen14b_nld_long_32k_live_eval_4x32.json`
+
+### Minimal Recovery For Older Medium Adapter Comparison
+
+If the goal is to compare against the older medium adapter that still matters in the docs, also pull:
+
+- `hf-models/artifacts/output/qwen14b_long_medium_50step/`
+- `hf-models/artifacts/output_evals/qwen14b_long_medium_live_eval_4x32.json`
+- `hf-models/artifacts/output_evals/qwen14b_long_medium_live_eval_small.json`
+
+### Verify The Artifact Repos Are Complete After Clone
+
+From each artifact repo:
+
+```bash
+cd ~/src/hf-data
+git status
+git lfs ls-files
+
+cd ~/src/hf-models
+git status
+git lfs ls-files
+```
+
+The repos should be clean after clone and `git lfs pull`.
+
+### Important Migration Warning
+
+As of `2026-04-16`, not every current local artifact in the working machine has been pushed to Hugging Face yet.
+
+In particular, newer rebuilt artifacts and reports that exist locally may still be absent from the published `hf-data` and `hf-models` repos.
+
+That means:
+
+- the procedure in this section is sufficient to recover the published state,
+- but it is not sufficient to recover unpublished local-only artifacts,
+- so those must be pushed before the machine move if they matter.
+
+Examples of local-only artifacts that were not yet present in the Hugging Face mirrors when this README section was written:
+
+- `output/qwen14b_rebuilt_canonical_nld_32k_fullsize_validation/`
+- `output/rebuilt/long_bootstrap_qwen_0_5b_smoke256/`
+- `output/rebuilt/old_bootstrap_qwen_0_5b_smoke256_v2/`
+- `output/rebuilt/rebuilt_long_bootstrap_qwen_0_5b_smoke256_v2/`
+- `data/rebuilt/nld_hf_taster/fullsize_validation/`
+- `data/rebuilt/preferences/`
+- `LONG-SPAN-INFERENCE-VALIDATION-RESULTS-2026-04-16.md`
+- `REBUILT-CANONICAL-NLD-32K-FULLSIZE-VALIDATION-RESULTS-2026-04-16.md`
+
+If those artifacts are required on the new machine, push them to Hugging Face before migration.
+
+### Pre-Migration Checklist
+
+Before decommissioning the old machine:
+
+1. Push the GitHub source branch you care about.
+2. Push any missing data artifacts into `hf-data`.
+3. Push any missing model artifacts into `hf-models`.
+4. Run `git fetch` and verify the artifact repos are synced to `origin/main`.
+5. On a clean directory, simulate the recovery steps from this section and confirm the required files are reachable.
+
+### Post-Recovery Sanity Checks
+
+Once the new machine is set up, confirm:
+
+```bash
+cd ~/src/rl-nethack
+test -e ../hf-data/artifacts/data/long_bootstrap/long_sequence_train.jsonl
+test -e ../hf-models/artifacts/output/qwen14b_nld_long_32k_run/adapter_model.safetensors
+uv run python cli.py smoke-test
+```
+
+If those checks pass, the new machine has:
+
+- code from GitHub,
+- large artifacts from Hugging Face,
+- and a valid local runtime for continuing work.
+
 ## Historical Material
 
 The old root markdown trail has been moved under:
